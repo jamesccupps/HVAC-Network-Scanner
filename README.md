@@ -6,6 +6,8 @@ A zero-dependency BACnet/IP, Modbus TCP, and HVAC service discovery tool with a 
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+> ⚠️ **Authorized use only.** This tool actively probes building automation networks and includes a default-credentials database. Use it only on networks you own or have explicit written permission to scan. See the [Disclaimer](#disclaimer) at the bottom of this document.
+
 ## Features
 
 - **BACnet/IP Discovery** — Raw UDP Who-Is/I-Am with full ReadProperty support (no BAC0 or bacpypes needed)
@@ -191,3 +193,7 @@ Pull requests welcome. Areas that could use work:
 ## License
 
 MIT License — see [LICENSE](LICENSE)
+
+## Disclaimer
+
+This tool is intended for authorized network discovery, asset inventory, and building automation research on networks you own or have explicit written permission to scan. Active probing of BACnet, Modbus, SNMP, and other building automation protocols may be prohibited on networks you do not control, and unauthorized scanning may violate computer fraud and abuse statutes. The scanner is read-only and does not write to any device, but you are solely responsible for ensuring your use of this tool complies with all applicable laws, contracts, and organizational policies. The default-credentials database is provided for defensive auditing purposes — to help owners find and remediate unchanged factory passwords on their own systems. The author assumes no liability for misuse or damages.
