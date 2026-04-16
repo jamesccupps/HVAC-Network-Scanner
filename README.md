@@ -23,20 +23,21 @@ A zero-dependency BACnet/IP, Modbus TCP, and HVAC service discovery tool with a 
 
 ## Screenshots
 
-*Add your own screenshots here after running a scan*
+<img width="2150" height="1354" alt="image" src="https://github.com/user-attachments/assets/b26df53e-18c1-43a8-a003-d9ec93c1ca33" />
+
 
 ## Quick Start
 
 ### Windows
 ```
-git clone https://github.com/YOUR_USERNAME/hvac-network-scanner.git
+git clone https://github.com/jamesccupps/hvac-network-scanner.git
 cd hvac-network-scanner
 run_hvac_scanner.bat
 ```
 
 ### Linux / macOS
 ```bash
-git clone https://github.com/YOUR_USERNAME/hvac-network-scanner.git
+git clone https://github.com/jamesccupps/hvac-network-scanner.git
 cd hvac-network-scanner
 pip install pymodbus  # optional, for Modbus deep scan
 python3 hvac_scanner.py
