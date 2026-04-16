@@ -2316,7 +2316,28 @@ class HVACNetworkScanner:
 
 
 def main():
+    # --- Windows DPI awareness (must be before Tk() creation) ---
+    try:
+        import ctypes
+        # Per-monitor DPI aware (Windows 8.1+)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            # System DPI aware fallback (Windows Vista+)
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass  # Not on Windows or older version
+
     root = tk.Tk()
+
+    # Apply DPI-aware scaling for tk widgets
+    try:
+        dpi = root.winfo_fpixels('1i')  # actual DPI
+        scale = dpi / 72.0
+        root.tk.call('tk', 'scaling', scale)
+    except Exception:
+        pass
+
     try:
         root.iconbitmap(default='')
     except Exception:
