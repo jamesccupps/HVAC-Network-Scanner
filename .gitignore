@@ -2,32 +2,63 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
-*.egg
+develop-eggs/
+eggs/
+.eggs/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-link
+MANIFEST
 
 # Virtual environments
 venv/
 .venv/
 env/
+.env
+ENV/
 
-# IDE
-.vscode/
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+nosetests.xml
+*.cover
+
+# Scan output artifacts
+*.scan.json
+*.scan.csv
+scan_*.json
+scan_*.csv
+hvac_scan_*.json
+hvac_scan_*.csv
+/output/
+
+# Logs
+*.log
+
+# IDEs
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
 
-# OS
+# OS clutter
 .DS_Store
 Thumbs.db
-desktop.ini
+Desktop.ini
 
-# Scan exports (may contain sensitive network data)
-hvac_scan_*.csv
-hvac_scan_*.json
-*.pcap
-
-# Logs
-*.log
+# Local config
+.local/
+config.local.*
