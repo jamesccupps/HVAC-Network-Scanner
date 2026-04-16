@@ -47,7 +47,6 @@ jobs:
 
       - name: CLI help smoke test
         run: python -m hvac_scanner.cli --help
-help > /dev/null
 
   build:
     name: Build distributable
