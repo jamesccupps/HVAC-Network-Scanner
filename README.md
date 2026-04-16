@@ -5,7 +5,7 @@ A multi-protocol discovery and audit tool for HVAC and building automation netwo
 [![CI](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-
+![HVAC Network Scanner](docs/screenshots/main-window.png)
 ## What it does
 
 Finds and fingerprints controllers, gateways, and workstations on a BAS network. Works against:
