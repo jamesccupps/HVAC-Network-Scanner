@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hvac-network-scanner"
+version = "2.0.2"
+description = "Multi-protocol HVAC / building automation network scanner (BACnet/IP, MSTP, Modbus TCP, Niagara Fox, OPC UA, SNMP, and more)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "James Cupps"}]
+requires-python = ">=3.10"
+keywords = ["bacnet", "modbus", "hvac", "building-automation", "niagara", "siemens", "trane", "network-scanner"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+
+[project.urls]
+Homepage = "https://github.com/jamesccupps/HVAC-Network-Scanner"
+Issues = "https://github.com/jamesccupps/HVAC-Network-Scanner/issues"
+Changelog = "https://github.com/jamesccupps/HVAC-Network-Scanner/blob/main/CHANGELOG.md"
+
+[project.scripts]
+hvac-scanner = "hvac_scanner.cli:main"
+hvac-scanner-gui = "hvac_scanner.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["hvac_scanner*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

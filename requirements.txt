@@ -1,0 +1,9 @@
+# HVAC Network Scanner runtime dependencies
+#
+# None! Everything is standard library:
+#   - socket, struct, threading, concurrent.futures
+#   - tkinter (for the GUI)
+#   - ipaddress, json, csv, argparse
+#
+# If you want faster/richer Modbus support, you can optionally install:
+# pymodbus>=3.5.0
