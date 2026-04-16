@@ -32,17 +32,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Syntax check (py_compile)
-        run: python -m py_compile hvac_scanner/*.py
+      - name: Syntax check
+        run: python -m compileall -q hvac_scanner
 
       - name: Run pytest
         run: python -m pytest tests/ -v --tb=short
 
       - name: Import smoke test
+        shell: python
         run: |
-          python -c "import hvac_scanner; print(f'v{hvac_scanner.__version__}')"
-          python -c "from hvac_scanner import ScanEngine, ScanOptions, BACnetClient"
-          python -m hvac_scanner.cli --help > nul 2>&1 || python -m hvac_scanner.cli --help > /dev/null
+          import hvac_scanner
+          from hvac_scanner import ScanEngine, ScanOptions, BACnetClient
+          print(f'v{hvac_scanner.__version__}')
+
+      - name: CLI help smoke test
+        run: python -m hvac_scanner.cli --help
+help > /dev/null
 
   build:
     name: Build distributable
