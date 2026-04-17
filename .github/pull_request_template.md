@@ -15,7 +15,7 @@ What does this change do and why?
 ## Checklist
 - [ ] Tests added or updated for the change
 - [ ] `python -m pytest tests/` passes locally
-- [ ] `python -m py_compile hvac_scanner/*.py` passes locally
+- [ ] `python -m compileall hvac_scanner` passes locally
 - [ ] CHANGELOG.md updated under `[Unreleased]` (or a new version section)
 - [ ] README / docs updated if public behavior changed
 - [ ] No secrets, site-identifying network info, or captured packets from
