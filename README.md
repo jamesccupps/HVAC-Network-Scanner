@@ -76,6 +76,8 @@ Export to CSV or JSON with the **EXPORT** button.
 - **Test suite.** 98 tests covering packet encode/decode correctness, cross-request socket contamination, engine behavior, fingerprinting, and per-property type validation. CI runs them on Python 3.10 / 3.11 / 3.12 / 3.13 on Ubuntu and Windows.
 - **Bug fixes.** 17 bare-except blocks replaced with targeted handling; MSTP devices at the same router IP disambiguated by instance; BACnet engineering unit 118 correctly mapped to `gal/s` (v1 had it as `L/min`, which is 81); Modbus unit ID 255 now scanned (default for many TCP-only gateways).
 
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+
 ## Using the CLI
 
 New in v2. Runs headless — no display, no Tk. Intended for Task Scheduler, cron, and CI pipelines.
@@ -103,8 +105,6 @@ Exit codes:
 - `1` — bad arguments
 - `2` — interrupted (SIGINT)
 - `3` — internal error
-
-See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Safety and legal
 
