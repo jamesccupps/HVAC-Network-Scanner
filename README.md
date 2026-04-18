@@ -14,7 +14,7 @@ Scans a network and tells you what building-automation gear lives on it. For eac
 
 Works against:
 
-- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency.
+- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions.
 - **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs.
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
 - **HVAC services** — Niagara Fox, OPC UA, Siemens S7, EtherNet/IP CIP, KNXnet/IP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
@@ -65,6 +65,12 @@ Click column headers to sort. IP addresses sort numerically by octet, not lexico
 
 Export to CSV or JSON with the **EXPORT** button.
 
+## What's new in v2.1
+
+- **MSTP routing fix.** ReadProperty now correctly routes across BACnet routers to MSTP devices. v2.0.x hardcoded an unrouted NPDU, which caused every MSTP device behind a router to respond with "Object not found" — the router processed the request as addressed to itself instead of forwarding. IP-direct devices worked, anything behind a BASRT-B / PXC / Trane SC+ didn't. Now when a device was discovered via routed Who-Is and has a `source_network` in its I-Am response, deep-scan packets carry the correct DNET/DLEN/DADR/hop-count so the router forwards them across the MSTP trunk. Credit: OldAutomator on r/BuildingAutomation for the packet-sniff analysis.
+- **Chunked Who-Is for large sites** (`--whois-chunk SIZE`). A single global Who-Is on a busy multi-building network causes every BACnet device to I-Am simultaneously. With chunked mode, the scanner issues Who-Is requests with instance-range filters (e.g. `low=0 high=999`, `low=1000 high=1999`, ...), so each device only responds in the chunk its instance falls into. Spreads return traffic over time, much gentler on small field controllers. Auto-stops after 10 consecutive empty chunks.
+- **CLI summary consistency.** The `hvac-scanner` summary now prints "Unique hosts: N" matching the engine log and GUI stats bar, instead of summing protocol counts (which triple-counted any IP that answered on BACnet + HTTPS + FTP).
+
 ## What's new in v2
 
 - **Parser rewrite.** The BACnet codec is now a pure-function module with proper extended-tag-number and extended-length handling. Fixes silent failures on vendors that reorder I-Am tags, and on devices with property IDs above 255.
@@ -73,8 +79,10 @@ Export to CSV or JSON with the **EXPORT** button.
 - **Rate limiting.** Optional per-IP inter-packet delay so dense deep scans don't DoS small field controllers.
 - **Headless CLI.** `python -m hvac_scanner.cli` runs end-to-end without the GUI, for Task Scheduler automation.
 - **Package structure.** The monolithic v1 script is now a proper package: `codec`, `bacnet`, `modbus`, `services`, `snmp`, `fingerprint`, `engine`, `cli`, `gui`. Every module is testable in isolation.
-- **Test suite.** 98 tests covering packet encode/decode correctness, cross-request socket contamination, engine behavior, fingerprinting, and per-property type validation. CI runs them on Python 3.10 / 3.11 / 3.12 / 3.13 on Ubuntu and Windows.
+- **Test suite.** 128 tests covering packet encode/decode correctness, cross-request socket contamination, MSTP routing, engine behavior, fingerprinting, and per-property type validation. CI runs them on Python 3.10 / 3.11 / 3.12 / 3.13 on Ubuntu and Windows.
 - **Bug fixes.** 17 bare-except blocks replaced with targeted handling; MSTP devices at the same router IP disambiguated by instance; BACnet engineering unit 118 correctly mapped to `gal/s` (v1 had it as `L/min`, which is 81); Modbus unit ID 255 now scanned (default for many TCP-only gateways).
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Using the CLI
 
@@ -91,6 +99,10 @@ python -m hvac_scanner.cli 10.0.0.0/24 10.0.1.0/24 \
 # BACnet only, with conservative rate limiting for small JACEs / UC400s
 python -m hvac_scanner.cli 192.168.5.0/24 --bacnet-only --rate-limit 50
 
+# Large-campus friendly: chunk Who-Is by 1000-instance ranges instead of
+# one global broadcast. Avoids I-Am storms on big sites.
+python -m hvac_scanner.cli 10.0.0.0/24 --whois-chunk 1000 --rate-limit 50
+
 # Quiet mode for scheduled runs
 python -m hvac_scanner.cli 192.168.5.0/24 --json /var/log/bas-scan.json --quiet
 ```
@@ -103,8 +115,6 @@ Exit codes:
 - `1` — bad arguments
 - `2` — interrupted (SIGINT)
 - `3` — internal error
-
-See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Safety and legal
 
@@ -149,6 +159,10 @@ pytest
 ```
 
 Pull requests welcome. See [CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
+## Contact
+
+Open an [issue](https://github.com/jamesccupps/HVAC-Network-Scanner/issues) for bugs and feature requests. For security reports or general questions, email <jamesccupps@proton.me>.
 
 ## License
 

@@ -131,6 +131,11 @@ class HVACNetworkScannerGUI:
         self.timeout_entry.pack(side=tk.LEFT, padx=(4, 12))
         self.timeout_entry.insert(0, "5")
 
+        ttk.Label(inner, text="Chunk:", style="Dim.TLabel").pack(side=tk.LEFT)
+        self.whois_chunk_entry = ttk.Entry(inner, width=6, font=("Consolas", 10))
+        self.whois_chunk_entry.pack(side=tk.LEFT, padx=(4, 12))
+        self.whois_chunk_entry.insert(0, "0")  # 0 = single broadcast (default)
+
         self.scan_bacnet    = tk.BooleanVar(value=True)
         self.scan_mstp      = tk.BooleanVar(value=True)
         self.scan_modbus    = tk.BooleanVar(value=True)
@@ -392,6 +397,10 @@ class HVACNetworkScannerGUI:
         try:
             networks = [n.strip() for n in self.network_entry.get().split(",") if n.strip()]
             timeout = float(self.timeout_entry.get() or "5")
+            try:
+                chunk = int(self.whois_chunk_entry.get() or "0")
+            except ValueError:
+                chunk = 0
             opts = ScanOptions(
                 networks=networks,
                 timeout=timeout,
@@ -402,6 +411,7 @@ class HVACNetworkScannerGUI:
                 scan_snmp=self.scan_snmp.get(),
                 deep_scan=self.deep_scan.get(),
                 use_rpm=self.use_rpm.get(),
+                whois_chunk_size=chunk,
             )
 
             engine = ScanEngine(opts, callback=self.log_message,

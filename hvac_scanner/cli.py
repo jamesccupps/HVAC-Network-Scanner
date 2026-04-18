@@ -51,6 +51,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
 
+    # Large-network probing
+    d = p.add_argument_group("large-network probing")
+    d.add_argument("--whois-chunk", type=int, default=0, metavar="SIZE",
+                   help="Split Who-Is by instance range in steps of SIZE "
+                        "(default: 0 = single broadcast). Gentler on big "
+                        "sites that would otherwise I-Am-storm on a global.")
+    d.add_argument("--whois-max-instance", type=int, default=4_194_303,
+                   metavar="N",
+                   help="Upper bound on instance ranges when chunking "
+                        "(default: 4194303, the BACnet max). Only used "
+                        "with --whois-chunk.")
+    d.add_argument("--whois-chunk-delay", type=int, default=50, metavar="MS",
+                   help="Sleep between chunked Who-Is broadcasts (default: 50ms)")
+
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
     g.add_argument("--no-bacnet", action="store_true")
@@ -93,7 +107,10 @@ def _print_summary(result) -> None:
     for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
-    print(f"Total devices: {sum(v for k, v in result.counts.items() if k != 'points')}")
+    # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
+    # An IP that answered on BACnet + HTTPS + FTP is one host, not three.
+    unique_hosts = len({d.get('ip') for d in result.devices if d.get('ip')})
+    print(f"Unique hosts: {unique_hosts}")
 
 
 def _print_table(result) -> None:
@@ -144,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,
         max_objects_per_device=args.max_objects,
+        whois_chunk_size=args.whois_chunk,
+        whois_max_instance=args.whois_max_instance,
+        whois_chunk_delay_ms=args.whois_chunk_delay,
     )
 
     # Progress callback — streams log lines to stderr unless quiet
