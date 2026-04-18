@@ -64,6 +64,15 @@ class ScanOptions:
     service_workers: int = 80
     modbus_workers: int = 50
     snmp_workers: int = 50
+    # Large-network discovery behavior:
+    #   whois_chunk_size=0 → single global broadcast Who-Is (default, fine for /24)
+    #   whois_chunk_size>0 → chunked Who-Is by instance range, much gentler on
+    #   large sites because each device sees many Who-Is broadcasts but only
+    #   I-Ams back for the one chunk its instance falls into (spreads return
+    #   traffic over time instead of concentrating it in one storm).
+    whois_chunk_size: int = 0
+    whois_max_instance: int = 4_194_303  # 2^22 - 1, the BACnet instance max
+    whois_chunk_delay_ms: int = 50       # throttle between chunked Who-Is broadcasts
 
 
 @dataclass
@@ -242,7 +251,7 @@ class ScanEngine:
                     break
                 bcast = self._bcast_for(network)
                 self._log(f"\nBACnet/IP scan: {network}")
-                devices = client.discover_who_is(target_ip=bcast)
+                devices = self._discover_whois_on(client, bcast)
 
                 for dev in devices:
                     if self._stopped():
@@ -258,6 +267,56 @@ class ScanEngine:
 
         finally:
             client.close()
+
+    def _discover_whois_on(self, client: BACnetClient, bcast: str) -> list[dict]:
+        """Discover devices on a subnet. Chunked by instance range if configured.
+
+        Single-broadcast mode (default): one Who-Is to the subnet, collect all
+        I-Ams. Fine for /24s and small sites.
+
+        Chunked mode (`whois_chunk_size > 0`): Who-Is low=N high=N+chunk-1 in a
+        loop from 0 to `whois_max_instance`. Intended for large/busy sites where
+        a global Who-Is would produce a damaging I-Am storm. Each chunk sleeps
+        `whois_chunk_delay_ms` between broadcasts. Stops early after 10
+        consecutive empty chunks (avoids scanning the full 4M instance space
+        on a small network).
+        """
+        chunk = self.opts.whois_chunk_size
+        if chunk <= 0:
+            return client.discover_who_is(target_ip=bcast)
+
+        # Chunked discovery
+        self._log(f"  Chunked Who-Is: range 0–{self.opts.whois_max_instance} "
+                  f"in steps of {chunk}")
+        seen: set[tuple[str, int]] = set()
+        out: list[dict] = []
+        empty_streak = 0
+        low = 0
+        while low <= self.opts.whois_max_instance and not self._stopped():
+            high = min(low + chunk - 1, self.opts.whois_max_instance)
+            batch = client.discover_who_is(target_ip=bcast, low=low, high=high)
+            new_in_batch = 0
+            for dev in batch:
+                key = (dev['ip'], dev.get('instance'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(dev)
+                new_in_batch += 1
+            if new_in_batch:
+                self._log(f"    {low}–{high}: +{new_in_batch} device(s) "
+                          f"(total {len(out)})")
+                empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak >= 10:
+                    self._log(f"    10 empty chunks in a row — stopping "
+                              f"early at instance {high}")
+                    break
+            if self.opts.whois_chunk_delay_ms > 0:
+                time.sleep(self.opts.whois_chunk_delay_ms / 1000.0)
+            low = high + 1
+        return out
 
     def _scan_mstp(self, client: BACnetClient) -> None:
         self._log("\n" + "=" * 65)
@@ -295,18 +354,33 @@ class ScanEngine:
                     self.result.counts['mstp'] += 1
 
     def _deep_read(self, client: BACnetClient, dev: dict[str, Any]) -> None:
-        """Read device-level properties + object list + per-point properties."""
+        """Read device-level properties + object list + per-point properties.
+
+        For MSTP devices (those with a `source_network` from a routed I-Am),
+        the ReadProperty packets include DNET/DADR routing info so the router
+        forwards requests across the MSTP trunk. Without this, IP-to-IP works
+        but every MSTP device returns 'Object not found' because the router
+        tries to answer as itself. (Root cause: v2.0.2 `build_read_property`
+        hardcoded an unrouted NPDU. Fix: v2.1.0, credit OldAutomator/Reddit.)
+        """
         ip = dev['ip']
         instance = dev.get('instance')
         if instance is None:
             return
 
-        self._log(f"  Deep scan device {instance} at {ip}...")
+        # If this device was discovered behind a router, the router's IP is
+        # still where we send UDP — but the NPDU must carry the MSTP route.
+        dnet = dev.get('source_network')
+        dadr = dev.get('source_address')
+        route_suffix = (f" (MSTP net={dnet} mac={dadr})"
+                        if dnet is not None else "")
+        self._log(f"  Deep scan device {instance} at {ip}{route_suffix}...")
 
         # Device-level properties (uses RPM if supported)
         try:
             props = client.read_device_info(ip, instance,
-                                            prefer_multiple=self.opts.use_rpm)
+                                            prefer_multiple=self.opts.use_rpm,
+                                            dnet=dnet, dadr=dadr)
         except Exception as e:
             log.debug("read_device_info %s failed: %s", ip, e)
             props = {}
@@ -321,7 +395,8 @@ class ScanEngine:
         try:
             obj_list = client.read_object_list(
                 ip, instance,
-                max_objects=self.opts.max_objects_per_device
+                max_objects=self.opts.max_objects_per_device,
+                dnet=dnet, dadr=dadr,
             )
         except Exception as e:
             log.debug("object list %s failed: %s", ip, e)
@@ -350,6 +425,7 @@ class ScanEngine:
                 raw = client.read_point_properties(
                     ip, obj_type, obj_inst,
                     prefer_multiple=self.opts.use_rpm,
+                    dnet=dnet, dadr=dadr,
                 )
             except Exception as e:
                 log.debug("point props %s %s:%d failed: %s", ip, obj_type, obj_inst, e)

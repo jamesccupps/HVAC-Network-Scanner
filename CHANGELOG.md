@@ -3,6 +3,81 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] — 2026-04-17
+
+Thanks to OldAutomator on r/BuildingAutomation for the field testing and the
+Yabe-vs-ours packet-sniff analysis that located the MSTP routing bug. This
+release is the fix plus follow-on work to make the tool friendlier on large
+sites.
+
+### Fixed
+
+- **BACnet MSTP ReadProperty was not routed across the router.** The v2.0.x
+  `build_read_property` / `build_read_property_multiple` hardcoded the NPDU
+  as `0x01 0x04` — version plus the expecting-reply flag, but no destination
+  specifier. This worked for IP-direct devices but caused every MSTP device
+  behind a router to respond with "Object not found," because the router
+  processed the unicast packet as if it were addressed to the router's own
+  device object instead of forwarding it across the MSTP trunk.
+
+  Field symptom: Who-Is discovery found MSTP devices fine (because
+  `build_whois(dnet=N)` already included the destination specifier), but
+  every subsequent property read failed silently. Reporters saw BACnet/IP
+  controllers populate cleanly while every MSTP device — Trane UC400, JCI
+  FEC, or any third-party behind a BASRT-B / PXC router — came back empty.
+
+  Fix: `build_read_property` and `build_read_property_multiple` now accept
+  `dnet` and `dadr` arguments. When set, the NPDU emits the correct routed
+  form: `0x01 0x24 <DNET-H> <DLEN> <DADR-bytes> 0xFF`. New `build_npdu()`
+  helper centralizes NPDU construction; `build_whois()` refactored to use it
+  for consistency. New `_encode_dadr()` handles all three `source_address`
+  shapes `parse_iam` produces (decimal MSTP MAC, hex-colon BACnet/IP addr,
+  raw bytes, int).
+
+  The `BACnetClient.read_property`, `read_property_multiple`,
+  `read_device_info`, `read_object_list`, and `read_point_properties`
+  methods thread `dnet`/`dadr` through. `ScanEngine._deep_read` now pulls
+  `source_network` and `source_address` off the device dict and passes them
+  to every client call, logging `(MSTP net=X mac=Y)` when routing is active.
+
+- **CLI summary "Total devices" was summing protocol counts.** The engine's
+  `_finish()` and the GUI's stats bar both correctly count unique IPs, but
+  `cli._print_summary` still summed. Now also prints `Unique hosts:` and
+  matches. (Flagged during v2.0.2 audit, landed now with the rest of 2.1.)
+
+### Added
+
+- **Chunked Who-Is for large sites** (`--whois-chunk SIZE`). Instead of one
+  global Who-Is producing an I-Am storm on a busy site, issues Who-Is with
+  `low`/`high` instance-range filters in steps of SIZE. Each device only
+  I-Ams to the chunk its instance falls into, spreading return traffic over
+  time. Early-stops after 10 consecutive empty chunks to avoid scanning the
+  full 4M BACnet instance space on a small network.
+
+  New `ScanOptions`: `whois_chunk_size` (0 = disabled, default),
+  `whois_max_instance` (4,194,303 = 2^22-1), `whois_chunk_delay_ms` (50ms
+  between chunks).
+
+  New CLI flags: `--whois-chunk SIZE`, `--whois-max-instance N`,
+  `--whois-chunk-delay MS`. New GUI field: "Chunk:" entry next to
+  "Timeout:", defaults to 0.
+
+- **MSTP routing end-to-end regression test.** `test_mstp_routing.py`
+  exercises DADR encoding (all 3 formats), NPDU building, routed
+  ReadProperty/RPM wire format, Who-Is backwards compatibility, engine-level
+  threading of source_network through to the client, and the full chunked
+  Who-Is state machine including dedup and early-stop. 30 new tests.
+
+### Changed
+
+- **`build_whois()` refactored** to use the new `build_npdu()` helper.
+  Wire output is bytewise identical to v2.0.x — existing tests verify this.
+
+### Test count
+Went from 98 to 128 tests (+30).
+
+---
+
 ## [2.0.2] — 2026-04-16
 
 Second post-first-scan patch. Fixes the real root cause behind the "column
