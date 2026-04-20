@@ -195,10 +195,12 @@ class BACnetClient:
                     continue
                 seen.add(key)
                 out.append(_iam_to_dict(device))
-                self._log(
-                    f"  Found device {device.instance} at {addr[0]}"
-                    + (f" (MSTP net {device.source_network})" if device.source_network else "")
-                )
+                # v2.1.2: Don't log per-I-Am here. The engine applies a
+                # target-spec filter to the results and logs the kept
+                # devices (and a summary of how many were dropped).
+                # Logging every raw I-Am was misleading because users
+                # saw out-of-range IPs in the log and assumed they'd
+                # be deep-scanned.
         finally:
             self._sock.settimeout(old_timeout)
         return out
@@ -206,24 +208,39 @@ class BACnetClient:
     # -- ReadProperty -----------------------------------------------------
 
     def read_property(self, ip: str, obj_type: int | str, obj_instance: int,
-                      prop_id: int | str, array_index: Optional[int] = None) -> Any:
-        """Issue a ReadProperty request and return the decoded value."""
+                      prop_id: int | str, array_index: Optional[int] = None,
+                      dnet: Optional[int] = None,
+                      dadr: "str | int | bytes | None" = None) -> Any:
+        """Issue a ReadProperty request and return the decoded value.
+
+        For MSTP devices behind a router, pass `dnet`=source_network and
+        `dadr`=source_address from the IAm response. `ip` is then the
+        router's IP (where UDP unicast goes); the NPDU carries the DNET/DADR
+        so the router forwards across the MSTP trunk.
+        """
         self._throttle(ip)
         invoke_id = self._next_invoke_id()
         pkt = codec.build_read_property(obj_type, obj_instance, prop_id,
-                                        array_index=array_index, invoke_id=invoke_id)
+                                        array_index=array_index, invoke_id=invoke_id,
+                                        dnet=dnet, dadr=dadr)
 
         with self._lock:  # serialize socket access
             return self._request_response(ip, pkt, invoke_id,
                                           parser=codec.parse_read_property_ack)
 
     def read_property_multiple(self, ip: str, obj_type: int | str, obj_instance: int,
-                               prop_ids: list[int | str]) -> dict[int, Any]:
-        """Issue a ReadPropertyMultiple request; returns {prop_id: value}."""
+                               prop_ids: list[int | str],
+                               dnet: Optional[int] = None,
+                               dadr: "str | int | bytes | None" = None) -> dict[int, Any]:
+        """Issue a ReadPropertyMultiple request; returns {prop_id: value}.
+
+        See `read_property` for MSTP routing semantics.
+        """
         self._throttle(ip)
         invoke_id = self._next_invoke_id()
         pkt = codec.build_read_property_multiple(obj_type, obj_instance, prop_ids,
-                                                 invoke_id=invoke_id)
+                                                 invoke_id=invoke_id,
+                                                 dnet=dnet, dadr=dadr)
 
         with self._lock:
             result = self._request_response(
@@ -292,8 +309,13 @@ class BACnetClient:
 
     def read_device_info(self, ip: str, instance: int,
                          prop_names: Optional[list[str]] = None,
-                         prefer_multiple: bool = True) -> dict[str, str]:
-        """Read a bundle of device-level properties. Tries RPM first."""
+                         prefer_multiple: bool = True,
+                         dnet: Optional[int] = None,
+                         dadr: "str | int | bytes | None" = None) -> dict[str, str]:
+        """Read a bundle of device-level properties. Tries RPM first.
+
+        Pass `dnet`/`dadr` for MSTP devices behind a router (see `read_property`).
+        """
         prop_names = prop_names or DEFAULT_DEVICE_PROPERTIES
         prop_num_to_key = {}
         for name in prop_names:
@@ -308,7 +330,8 @@ class BACnetClient:
         if prefer_multiple:
             try:
                 rpm_result = self.read_property_multiple(
-                    ip, 'Device', instance, list(prop_num_to_key.keys())
+                    ip, 'Device', instance, list(prop_num_to_key.keys()),
+                    dnet=dnet, dadr=dadr,
                 )
                 if rpm_result:
                     for num, val in rpm_result.items():
@@ -321,33 +344,74 @@ class BACnetClient:
 
         # Fallback: one ReadProperty per property
         for name in prop_names:
-            val = self.read_property(ip, 'Device', instance, name)
+            val = self.read_property(ip, 'Device', instance, name,
+                                     dnet=dnet, dadr=dadr)
             if val is not None:
                 key = name.replace('-', '_').replace(' ', '_')
                 props[key] = _stringify(val)
 
         return props
 
+    def read_object_list_count(self, ip: str, instance: int,
+                               dnet: Optional[int] = None,
+                               dadr: "str | int | bytes | None" = None) -> int:
+        """Read just the `objectList` length. Cheap preliminary read so
+        callers can classify the device before committing to a full
+        enumeration depth. Returns 0 if the device doesn't respond.
+        """
+        count = self.read_property(ip, 'Device', instance, 'objectList',
+                                   array_index=0, dnet=dnet, dadr=dadr)
+        return count if isinstance(count, int) and count > 0 else 0
+
+    def read_object_list_entries(self, ip: str, instance: int,
+                                 indices: list[int],
+                                 dnet: Optional[int] = None,
+                                 dadr: "str | int | bytes | None" = None,
+                                 stop_fn=None) -> list[tuple[str, int]]:
+        """Read specified array indices from `objectList`. Caller decides
+        which indices (enables interleaving by object type, see engine).
+
+        `stop_fn`, if given, is called after each read; returning True
+        aborts enumeration (plumbing for the STOP button).
+        """
+        out: list[tuple[str, int]] = []
+        for i in indices:
+            if stop_fn and stop_fn():
+                break
+            result = self.read_property(ip, 'Device', instance, 'objectList',
+                                        array_index=i, dnet=dnet, dadr=dadr)
+            if isinstance(result, tuple) and len(result) == 2:
+                out.append(result)
+        return out
+
     def read_object_list(self, ip: str, instance: int,
-                         max_objects: int = 500) -> list[tuple[str, int]]:
-        """Read the object list from a device."""
-        count = self.read_property(ip, 'Device', instance, 'objectList', array_index=0)
-        if not isinstance(count, int) or count <= 0:
+                         max_objects: int = 500,
+                         dnet: Optional[int] = None,
+                         dadr: "str | int | bytes | None" = None) -> list[tuple[str, int]]:
+        """Read the full object list from a device.
+
+        Convenience wrapper that reads count + enumerates in array order,
+        capped at max_objects. For classification-aware scans the engine
+        uses read_object_list_count + read_object_list_entries directly
+        so it can pre-classify and interleave by type.
+
+        Pass `dnet`/`dadr` for MSTP devices behind a router.
+        """
+        count = self.read_object_list_count(ip, instance, dnet=dnet, dadr=dadr)
+        if count == 0:
             return []
 
         cap = min(count, max_objects)
         self._log(f"    Object list has {count} entries; reading {cap}")
-
-        objects: list[tuple[str, int]] = []
-        for i in range(1, cap + 1):
-            result = self.read_property(ip, 'Device', instance, 'objectList', array_index=i)
-            if isinstance(result, tuple) and len(result) == 2:
-                objects.append(result)
-        return objects
+        return self.read_object_list_entries(
+            ip, instance, list(range(1, cap + 1)), dnet=dnet, dadr=dadr,
+        )
 
     def read_point_properties(self, ip: str, obj_type: int | str, obj_instance: int,
                               prop_names: Optional[list[str]] = None,
-                              prefer_multiple: bool = True) -> dict[str, Any]:
+                              prefer_multiple: bool = True,
+                              dnet: Optional[int] = None,
+                              dadr: "str | int | bytes | None" = None) -> dict[str, Any]:
         """Read per-point properties (presentValue, name, units, description).
 
         Returns a dict keyed by property NAME (presentValue, objectName, units,
@@ -362,6 +426,8 @@ class BACnetClient:
         Trane Tracer quirk where ReadPropertyMultiple responses occasionally
         reorder values at the packet level), we DROP the bad value rather than
         let it leak into the wrong column downstream.
+
+        Pass `dnet`/`dadr` for MSTP devices behind a router.
         """
         prop_names = prop_names or DEFAULT_POINT_PROPERTIES
         num_to_name = {PROP_IDS[name]: name for name in prop_names if name in PROP_IDS}
@@ -370,7 +436,8 @@ class BACnetClient:
         if prefer_multiple:
             try:
                 raw = self.read_property_multiple(ip, obj_type, obj_instance,
-                                                  list(num_to_name.keys())) or {}
+                                                  list(num_to_name.keys()),
+                                                  dnet=dnet, dadr=dadr) or {}
             except Exception as e:
                 log.debug("RPM point read failed on %s %s:%d: %s",
                           ip, obj_type, obj_instance, e)
@@ -378,7 +445,8 @@ class BACnetClient:
         # Fallback / fill missing props individually
         if not raw:
             for name in prop_names:
-                val = self.read_property(ip, obj_type, obj_instance, name)
+                val = self.read_property(ip, obj_type, obj_instance, name,
+                                         dnet=dnet, dadr=dadr)
                 if val is not None:
                     num = PROP_IDS.get(name)
                     if num is not None:

@@ -3,6 +3,283 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] — 2026-04-20
+
+### Added
+
+- **Classification report export** (`--export-classification PATH` on
+  the CLI, or save as `.txt` in the GUI Export dialog). Produces a
+  plain-text report of every BACnet device the scan classified, including
+  vendor, model, observed object count, which classification path hit
+  (known profile / vendor substring match / family rule / heuristic /
+  default), cap applied, and points read. Designed for users who
+  encounter unknown gear and want to submit a device profile to the
+  project without requiring the maintainer to physically access their
+  hardware.
+
+- **Contribution workflow.** `CONTRIBUTING.md` documents how to submit
+  device profiles, bug reports, and pull requests. GitHub issue
+  templates added at `.github/ISSUE_TEMPLATE/` for:
+  - Device profile submission (includes the classification report
+    attachment instructions)
+  - Bug report (with scanner version, environment, and wireshark
+    capture request)
+
+- **`Tested against`** section in the README listing the verified
+  hardware (Trane Tracer SC+, Symbio, TES; Siemens PXC Compact,
+  PXC Modular, DXR2 variants, Desigo CC). Devices not on the list
+  use the heuristic fallback, which is correctness-complete.
+
+- **Explicit out-of-scope documentation.** README now names Siemens
+  APOGEE P2-over-Ethernet (PME1252, PXME V2.8.x firmware) as
+  unreachable, directing users to commercial gateways like
+  PurpleSwift BACnetP2 for that generation.
+
+### Changed
+
+- Scan log banner now reflects the actual installed version instead
+  of hardcoded "v2.0". It reads `__version__` from the package.
+
+### Internal
+
+- Deep-scan pipeline now stashes classification metadata on each
+  device dict at `dev['_classification']`. Used by the new report
+  writer and available to any downstream code consuming `ScanResult`.
+
+## [2.1.2] — 2026-04-20
+
+### Fixed
+
+- **Silent failure when scanning a CIDR narrower than the physical subnet.**
+  Typing `10.0.0.0/26` on a physical `10.0.0.0/24` network made the engine
+  compute broadcast address `10.0.0.63`. That's a valid /26 broadcast
+  mathematically but NOT a real Ethernet broadcast on the host's /24 — the
+  OS sends it as unicast to whoever owns .63 (usually nobody), it gets
+  dropped, and zero I-Am responses come back. The scan reported
+  "Scan complete, 0 devices" with no hint that no packets ever went out.
+  **Fix: the engine now auto-computes the right broadcast address for every
+  supported target syntax.** No UI field, no decision required from the user.
+
+  - `/24` or wider CIDR → use its own broadcast
+  - `/25`–`/31` CIDR → use the enclosing `/24` broadcast
+  - `/32` single host → enclosing `/24` broadcast
+  - IP range / host list in one `/24` → that `/24` broadcast
+  - Range spanning multiple `/24`s → limited broadcast `255.255.255.255`
+  - Every choice is logged to the scan log so it's never magic
+
+- **User-intent violation: narrow BACnet targets deep-scanned every device
+  on the subnet.** A Who-Is broadcast reaches every BACnet device on the
+  physical /24, not just the ones in the user's target range. v2.1.1 and
+  earlier took every I-Am that came back and deep-scanned it, so typing
+  `10.0.0.2-10.0.0.21` could result in ReadProperty storms against devices
+  at 10.0.0.230, 10.0.1.x (via BBMD-bridged subnets), etc. — things the
+  user never asked for, with no obvious way to stop it without hitting STOP.
+  Fix: I-Am responses are now filtered against the user's target spec
+  before deep-scan on both BACnet/IP and MSTP paths. Scan log shows
+  "Discovered N device(s); kept M in target range (dropped K out-of-range)."
+  Found during v2.1.2 verification testing at OCC; confirmed at the wire
+  level (13,071 packets, 11,067 of them to out-of-range IPs).
+
+- **Silent truncation on supervisory controllers.** The fixed 500-object
+  cap on BACnet deep-scan silently truncated Trane Tracer SC+ controllers
+  (which aggregate ~3000+ mapped objects from downstream LonTalk/MSTP
+  devices). Because the SC+ enumerates objects type-by-type in array
+  order, hitting the cap meant the user got 500 Analog Inputs and *no*
+  Analog Values, Binaries, or Multi-State objects — silently wrong.
+  **Fix: per-vendor/model device profiles.** When the scanner reads
+  `vendorName` and `modelName`, it classifies the device against a
+  verified profile table:
+
+  - **Trane Tracer SC+ / SC:** cap 5000 (supervisory)
+  - **Trane Symbio 400-500 / 700-800 / UC400 / UC600:** cap 500 (field)
+  - **Unknown devices:** size-based heuristic (large / mid / field classes
+    get progressively tighter caps)
+
+  When a cap would still truncate (e.g. a 10,000-point Niagara supervisory),
+  the scanner reads the full object-type layout first, then enumerates a
+  type-interleaved sample so users always see a representative mix of
+  AI/AO/AV/BI/BO/BV/MSV/etc. instead of just the first type alphabetically.
+  Every classification decision is logged so users can see exactly why a
+  particular cap was picked.
+
+- **SCAN / STOP / EXPORT buttons clipped off when window was narrow.**
+  Config row split into two rows. Buttons now pack right-first so they
+  can never be clipped by the checkboxes growing.
+- **Window title said "v2.0"** despite being v2.1.x. Now unversioned.
+
+### Added
+
+- **IP range / host-list syntax in the target field.** Previously only CIDR
+  was accepted, which forced users to compute prefix lengths in their
+  heads. Now any of these work (and can be mixed in one field):
+  ```
+  10.0.0.0/24                       # CIDR (as before)
+  10.0.0.5                          # single host
+  10.0.0.2-100                      # last-octet range
+  10.0.0.2-10.0.0.12                # full-IP range
+  10.0.0.0/30, 10.0.1.5, 10.0.2.1-20  # mixed list
+  ```
+  The target field in the GUI shows a subtle hint line with these
+  examples. Input is deduplicated, large ranges (>65 536 hosts) are
+  rejected to guard against typo'd ranges exhausting memory.
+
+- **Quick / Normal / Full scan depth dropdown.** New control next to the
+  existing checkboxes (and `--scan-depth` CLI flag):
+
+  - **Quick** — samples ~5% of each device's objects (minimum 50). Fast
+    inventory pass for a "what's here" overview.
+  - **Normal** (default) — honors vendor-aware caps from the device
+    profile table.
+  - **Full** — reads every object regardless of cap. Slow on big
+    supervisory controllers but exhaustive when you need it.
+
+- **Point detail popup.** Double-click any row in the BACnet Points tab
+  to open a popup showing the full object name, value, units, and
+  description in wrapped, selectable, copy-pasteable text. Useful for
+  long BACnet names that get truncated in the table view (e.g.
+  `"Auto Commissioning Discharge Air Temperature|vav-1"`).
+
+- **Wider Name and Description columns** in the Points tab (360px each,
+  up from 240/280). Users can still drag column headers to resize.
+
+- **Device profile system.** New module `hvac_scanner/device_profiles.py`
+  with verified per-vendor/model entries plus size-based heuristic fallback
+  for unknown devices. Seeded with Trane entries verified against OCC
+  Portland hardware. Siemens, JCI, Tridium, and others will be added as
+  they're verified against real equipment. Every entry records where and
+  when it was validated.
+
+- **+72 regression tests** (27 range parser, 18 auto-broadcast, 10 target
+  filtering, 18 device profiles). 227 total, all passing.
+
+### Notes
+
+- Existing users with scripts that pass CIDR strings need no changes; the
+  parser is a strict superset of the old behavior.
+- `max_objects_per_device` in `ScanOptions` is preserved as a global
+  override, but the new per-device profile classification is the
+  recommended path. If both are set, the profile classification wins
+  (with scan-depth multiplier applied).
+
+## [2.1.1] — 2026-04-18
+
+Thanks again to OldAutomator on r/BuildingAutomation for a second round of
+detailed field testing on v2.1.0. Every issue they reported was real — this
+release fixes all of them.
+
+### Fixed
+
+- **Double-click on a device opens the Details popup, not a web browser.**
+  For MSTP devices the table's "IP" column shows the router's IP, so
+  double-clicking took the user to the router's login page instead of the
+  device they were looking at. Web UI is still one right-click away.
+- **MSTP checkbox gated on BACnet.** Previously, checking MSTP by itself
+  did nothing — the MSTP scan runs inside the BACnet scan path — but
+  there was no visible feedback. The MSTP checkbox is now disabled when
+  BACnet is unchecked; if a user still passes `scan_mstp=True` without
+  `scan_bacnet=True` via the CLI or a saved config, the engine turns
+  BACnet on automatically and logs a warning.
+- **Per-object-type property querying.** The scanner now only asks for
+  `units` on analog objects (AI/AO/AV/Loop/Accumulator/etc.) and only
+  asks `presentValue` on object types that have one. Binary, multi-state,
+  and config objects no longer produce "unknown property" noise or waste
+  round-trips. See `POINT_PROPERTIES_BY_TYPE` in `constants.py`.
+- **Services scan now defaults OFF.** The 25+ port TCP sweep picked up
+  TVs, printers, cameras, and NAS boxes and dumped them into the device
+  list — overwhelming the BAS devices the user was actually looking for.
+  Users who want the service sweep can still enable it explicitly.
+
+### Updated
+
+- **BACNET_VENDORS expanded from 34 entries to 593.** Previously, any
+  vendor ID above ~100 showed as a bare number in the output. The vendor
+  table is now regenerated from the official ASHRAE BACnet vendor
+  registry (https://bacnet.org/assigned-vendor-ids/) and covers every
+  vendor assigned through the current registry publication.
+
+### Not a bug (clarification)
+
+- "Scanner sends an I-Am globally every time it launches" — the scanner
+  does not build or send I-Am packets. What was observed is a Who-Is
+  global broadcast that fires when the user clicks SCAN (not at app
+  launch). v2.1.0 already provides the `--whois-chunk SIZE` option for
+  large sites that need to avoid the global-broadcast storm.
+
+## [2.1.0] — 2026-04-17
+
+Thanks to OldAutomator on r/BuildingAutomation for the field testing and the
+Yabe-vs-ours packet-sniff analysis that located the MSTP routing bug. This
+release is the fix plus follow-on work to make the tool friendlier on large
+sites.
+
+### Fixed
+
+- **BACnet MSTP ReadProperty was not routed across the router.** The v2.0.x
+  `build_read_property` / `build_read_property_multiple` hardcoded the NPDU
+  as `0x01 0x04` — version plus the expecting-reply flag, but no destination
+  specifier. This worked for IP-direct devices but caused every MSTP device
+  behind a router to respond with "Object not found," because the router
+  processed the unicast packet as if it were addressed to the router's own
+  device object instead of forwarding it across the MSTP trunk.
+
+  Field symptom: Who-Is discovery found MSTP devices fine (because
+  `build_whois(dnet=N)` already included the destination specifier), but
+  every subsequent property read failed silently. Reporters saw BACnet/IP
+  controllers populate cleanly while every MSTP device — Trane UC400, JCI
+  FEC, or any third-party behind a BASRT-B / PXC router — came back empty.
+
+  Fix: `build_read_property` and `build_read_property_multiple` now accept
+  `dnet` and `dadr` arguments. When set, the NPDU emits the correct routed
+  form: `0x01 0x24 <DNET-H> <DLEN> <DADR-bytes> 0xFF`. New `build_npdu()`
+  helper centralizes NPDU construction; `build_whois()` refactored to use it
+  for consistency. New `_encode_dadr()` handles all three `source_address`
+  shapes `parse_iam` produces (decimal MSTP MAC, hex-colon BACnet/IP addr,
+  raw bytes, int).
+
+  The `BACnetClient.read_property`, `read_property_multiple`,
+  `read_device_info`, `read_object_list`, and `read_point_properties`
+  methods thread `dnet`/`dadr` through. `ScanEngine._deep_read` now pulls
+  `source_network` and `source_address` off the device dict and passes them
+  to every client call, logging `(MSTP net=X mac=Y)` when routing is active.
+
+- **CLI summary "Total devices" was summing protocol counts.** The engine's
+  `_finish()` and the GUI's stats bar both correctly count unique IPs, but
+  `cli._print_summary` still summed. Now also prints `Unique hosts:` and
+  matches. (Flagged during v2.0.2 audit, landed now with the rest of 2.1.)
+
+### Added
+
+- **Chunked Who-Is for large sites** (`--whois-chunk SIZE`). Instead of one
+  global Who-Is producing an I-Am storm on a busy site, issues Who-Is with
+  `low`/`high` instance-range filters in steps of SIZE. Each device only
+  I-Ams to the chunk its instance falls into, spreading return traffic over
+  time. Early-stops after 10 consecutive empty chunks to avoid scanning the
+  full 4M BACnet instance space on a small network.
+
+  New `ScanOptions`: `whois_chunk_size` (0 = disabled, default),
+  `whois_max_instance` (4,194,303 = 2^22-1), `whois_chunk_delay_ms` (50ms
+  between chunks).
+
+  New CLI flags: `--whois-chunk SIZE`, `--whois-max-instance N`,
+  `--whois-chunk-delay MS`. New GUI field: "Chunk:" entry next to
+  "Timeout:", defaults to 0.
+
+- **MSTP routing end-to-end regression test.** `test_mstp_routing.py`
+  exercises DADR encoding (all 3 formats), NPDU building, routed
+  ReadProperty/RPM wire format, Who-Is backwards compatibility, engine-level
+  threading of source_network through to the client, and the full chunked
+  Who-Is state machine including dedup and early-stop. 30 new tests.
+
+### Changed
+
+- **`build_whois()` refactored** to use the new `build_npdu()` helper.
+  Wire output is bytewise identical to v2.0.x — existing tests verify this.
+
+### Test count
+Went from 98 to 128 tests (+30).
+
+---
+
 ## [2.0.2] — 2026-04-16
 
 Second post-first-scan patch. Fixes the real root cause behind the "column

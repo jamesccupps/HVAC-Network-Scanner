@@ -42,6 +42,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("networks", nargs="+",
                    help="CIDR networks to scan (e.g. 192.168.1.0/24)")
+    p.add_argument("--networks", dest="networks", nargs="+", default=None,
+                   help=argparse.SUPPRESS)  # alternate spelling
+    p.add_argument("--broadcast", type=str, default=None, metavar="IP",
+                   help="Override BACnet Who-Is broadcast target (e.g. "
+                        "10.0.0.255 or 255.255.255.255). Needed when "
+                        "scanning a narrower CIDR than the physical subnet.")
+    p.add_argument("--scan-depth", choices=["quick", "normal", "full"],
+                   default="normal",
+                   help="Scan depth. 'quick' samples ~5%% of each device's "
+                        "points (fast overview). 'normal' uses vendor-aware "
+                        "caps (default). 'full' reads every object (slow on "
+                        "supervisory controllers).")
     p.add_argument("--timeout", type=float, default=5.0,
                    help="Per-operation timeout in seconds (default: 5)")
     p.add_argument("--rate-limit", type=int, default=0, metavar="MS",
@@ -50,6 +62,20 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Max objects to enumerate per BACnet device (default: 500)")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
+
+    # Large-network probing
+    d = p.add_argument_group("large-network probing")
+    d.add_argument("--whois-chunk", type=int, default=0, metavar="SIZE",
+                   help="Split Who-Is by instance range in steps of SIZE "
+                        "(default: 0 = single broadcast). Gentler on big "
+                        "sites that would otherwise I-Am-storm on a global.")
+    d.add_argument("--whois-max-instance", type=int, default=4_194_303,
+                   metavar="N",
+                   help="Upper bound on instance ranges when chunking "
+                        "(default: 4194303, the BACnet max). Only used "
+                        "with --whois-chunk.")
+    d.add_argument("--whois-chunk-delay", type=int, default=50, metavar="MS",
+                   help="Sleep between chunked Who-Is broadcasts (default: 50ms)")
 
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
@@ -67,6 +93,9 @@ def _build_parser() -> argparse.ArgumentParser:
     o = p.add_argument_group("output")
     o.add_argument("--json", metavar="PATH", help="Write results to JSON file")
     o.add_argument("--csv",  metavar="PATH", help="Write results to CSV file")
+    o.add_argument("--export-classification", metavar="PATH",
+                   help="Write a classification report (v2.2). Useful for "
+                        "submitting device profile contributions.")
     o.add_argument("--print", choices=["summary", "table", "json", "none"],
                    default="summary", help="Stdout format (default: summary)")
     o.add_argument("--quiet", "-q", action="store_true",
@@ -93,7 +122,10 @@ def _print_summary(result) -> None:
     for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
-    print(f"Total devices: {sum(v for k, v in result.counts.items() if k != 'points')}")
+    # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
+    # An IP that answered on BACnet + HTTPS + FTP is one host, not three.
+    unique_hosts = len({d.get('ip') for d in result.devices if d.get('ip')})
+    print(f"Unique hosts: {unique_hosts}")
 
 
 def _print_table(result) -> None:
@@ -144,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,
         max_objects_per_device=args.max_objects,
+        whois_chunk_size=args.whois_chunk,
+        whois_max_instance=args.whois_max_instance,
+        whois_chunk_delay_ms=args.whois_chunk_delay,
+        bacnet_broadcast=args.broadcast,
+        scan_depth=args.scan_depth,
     )
 
     # Progress callback — streams log lines to stderr unless quiet
@@ -183,6 +220,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Wrote CSV:  {args.csv}", file=sys.stderr)
         except OSError as e:
             print(f"ERROR: could not write {args.csv}: {e}", file=sys.stderr)
+            return 3
+
+    if args.export_classification:
+        try:
+            result.write_classification_report(args.export_classification)
+            if not args.quiet:
+                print(f"Wrote classification report: {args.export_classification}",
+                      file=sys.stderr)
+        except OSError as e:
+            print(f"ERROR: could not write {args.export_classification}: {e}",
+                  file=sys.stderr)
             return 3
 
     if args.print == "summary":

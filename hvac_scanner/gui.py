@@ -46,7 +46,7 @@ class Colors:
 class HVACNetworkScannerGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("HVAC Network Scanner v2.0 - Full Protocol Discovery")
+        self.root.title("HVAC Network Scanner - Full Protocol Discovery")
         self.root.geometry("1440x920")
         self.root.configure(bg=Colors.BG_DARK)
         self.root.minsize(1100, 700)
@@ -115,53 +115,105 @@ class HVACNetworkScannerGUI:
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(hdr, textvariable=self.status_var, style="Status.TLabel").pack(side=tk.RIGHT)
 
-        # config row
+        # config rows
         cfg = ttk.Frame(self.root, style="Card.TFrame")
         cfg.pack(fill=tk.X, padx=16, pady=(4, 4))
-        inner = ttk.Frame(cfg, style="Card.TFrame")
-        inner.pack(fill=tk.X, padx=12, pady=8)
 
-        ttk.Label(inner, text="Target Network(s):", style="Info.TLabel").pack(side=tk.LEFT)
-        self.network_entry = ttk.Entry(inner, width=44, font=("Consolas", 10))
+        # Row 1: target + timeout + chunk.
+        # v2.1.2: Broadcast address is computed automatically by the engine
+        # based on the target — narrow CIDR / range / single-host targets
+        # auto-broadcast to the enclosing /24. No UI field needed.
+        row1 = ttk.Frame(cfg, style="Card.TFrame")
+        row1.pack(fill=tk.X, padx=12, pady=(8, 2))
+
+        ttk.Label(row1, text="Target Network(s):", style="Info.TLabel").pack(side=tk.LEFT)
+        self.network_entry = ttk.Entry(row1, width=56, font=("Consolas", 10))
         self.network_entry.pack(side=tk.LEFT, padx=(6, 16))
         self.network_entry.insert(0, "192.168.1.0/24")
 
-        ttk.Label(inner, text="Timeout:", style="Dim.TLabel").pack(side=tk.LEFT)
-        self.timeout_entry = ttk.Entry(inner, width=4, font=("Consolas", 10))
+        ttk.Label(row1, text="Timeout:", style="Dim.TLabel").pack(side=tk.LEFT)
+        self.timeout_entry = ttk.Entry(row1, width=4, font=("Consolas", 10))
         self.timeout_entry.pack(side=tk.LEFT, padx=(4, 12))
         self.timeout_entry.insert(0, "5")
+
+        ttk.Label(row1, text="Chunk:", style="Dim.TLabel").pack(side=tk.LEFT)
+        self.whois_chunk_entry = ttk.Entry(row1, width=6, font=("Consolas", 10))
+        self.whois_chunk_entry.pack(side=tk.LEFT, padx=(4, 12))
+        self.whois_chunk_entry.insert(0, "0")  # 0 = single broadcast (default)
+
+        # v2.1.2: scan depth preset
+        ttk.Label(row1, text="Depth:", style="Dim.TLabel").pack(side=tk.LEFT)
+        self.scan_depth_var = tk.StringVar(value="normal")
+        depth_combo = ttk.Combobox(
+            row1, textvariable=self.scan_depth_var, width=8, state="readonly",
+            values=["quick", "normal", "full"], font=("Consolas", 10),
+        )
+        depth_combo.pack(side=tk.LEFT, padx=(4, 12))
+
+        # Target hint (small muted line under the field showing accepted syntax)
+        hint = ttk.Frame(cfg, style="Card.TFrame")
+        hint.pack(fill=tk.X, padx=12, pady=(0, 2))
+        ttk.Label(hint,
+                  text="Accepts:  10.0.0.0/24   10.0.0.5   10.0.0.2-100   "
+                       "10.0.0.2-10.0.0.12   (or comma-separated lists)",
+                  style="Dim.TLabel").pack(side=tk.LEFT, padx=(150, 0))
+
+        # Row 2: checkboxes + buttons. Buttons packed RIGHT FIRST so they never
+        # get clipped if the window is narrow — checkboxes collapse instead.
+        row2 = ttk.Frame(cfg, style="Card.TFrame")
+        row2.pack(fill=tk.X, padx=12, pady=(2, 8))
+
+        # Buttons pack first (right side) to reserve their space.
+        self.scan_btn = ttk.Button(row2, text="SCAN", style="Accent.TButton", command=self.start_scan)
+        self.scan_btn.pack(side=tk.RIGHT, padx=4)
+        self.stop_btn = ttk.Button(row2, text="STOP", style="Danger.TButton",
+                                   command=self.stop_scan, state='disabled')
+        self.stop_btn.pack(side=tk.RIGHT, padx=4)
+        self.export_btn = ttk.Button(row2, text="EXPORT", style="Export.TButton",
+                                     command=self.export_results, state='disabled')
+        self.export_btn.pack(side=tk.RIGHT, padx=4)
 
         self.scan_bacnet    = tk.BooleanVar(value=True)
         self.scan_mstp      = tk.BooleanVar(value=True)
         self.scan_modbus    = tk.BooleanVar(value=True)
-        self.scan_services  = tk.BooleanVar(value=True)
+        self.scan_services  = tk.BooleanVar(value=False)  # v2.1.1: default off (TVs/printers flood)
         self.scan_snmp      = tk.BooleanVar(value=True)
-        self.deep_scan      = tk.BooleanVar(value=True)
+        self.deep_scan      = tk.BooleanVar(value=True)   # power-user toggle, now on by default
         self.use_rpm        = tk.BooleanVar(value=True)
 
-        cb_frame = ttk.Frame(inner, style="Card.TFrame")
+        cb_frame = ttk.Frame(row2, style="Card.TFrame")
         cb_frame.pack(side=tk.LEFT, padx=(0, 12))
+        # v2.1.1: "BACnet" = find and query IP devices. "Include MSTP" = also
+        # query devices behind BACnet routers. "Services" default off. Deep
+        # and RPM are power-user toggles; v2.1.1 enables both by default.
+        self.mstp_cb = None  # reference saved so we can enable/disable it
         for text, var, color in [
-            ("BACnet",   self.scan_bacnet,   Colors.GREEN),
-            ("MSTP",     self.scan_mstp,     Colors.CYAN),
-            ("Modbus",   self.scan_modbus,   Colors.YELLOW),
-            ("Services", self.scan_services, Colors.ORANGE),
-            ("SNMP",     self.scan_snmp,     Colors.PURPLE),
-            ("Deep",     self.deep_scan,     Colors.ACCENT),
-            ("RPM",      self.use_rpm,       Colors.TEAL),
+            ("BACnet",        self.scan_bacnet,   Colors.GREEN),
+            ("Include MSTP",  self.scan_mstp,     Colors.CYAN),
+            ("Modbus",        self.scan_modbus,   Colors.YELLOW),
+            ("Services",      self.scan_services, Colors.ORANGE),
+            ("SNMP",          self.scan_snmp,     Colors.PURPLE),
+            ("Deep",          self.deep_scan,     Colors.ACCENT),
+            ("RPM",           self.use_rpm,       Colors.TEAL),
         ]:
-            tk.Checkbutton(cb_frame, text=text, variable=var, bg=Colors.BG_PANEL, fg=color,
-                           selectcolor=Colors.BG_INPUT, activebackground=Colors.BG_PANEL,
-                           activeforeground=color, font=("Consolas", 9)).pack(side=tk.LEFT, padx=3)
+            cb = tk.Checkbutton(cb_frame, text=text, variable=var, bg=Colors.BG_PANEL, fg=color,
+                                selectcolor=Colors.BG_INPUT, activebackground=Colors.BG_PANEL,
+                                activeforeground=color, font=("Consolas", 9))
+            cb.pack(side=tk.LEFT, padx=3)
+            if text == "Include MSTP":
+                self.mstp_cb = cb
 
-        self.scan_btn = ttk.Button(inner, text="SCAN", style="Accent.TButton", command=self.start_scan)
-        self.scan_btn.pack(side=tk.RIGHT, padx=4)
-        self.stop_btn = ttk.Button(inner, text="STOP", style="Danger.TButton",
-                                   command=self.stop_scan, state='disabled')
-        self.stop_btn.pack(side=tk.RIGHT, padx=4)
-        self.export_btn = ttk.Button(inner, text="EXPORT", style="Export.TButton",
-                                     command=self.export_results, state='disabled')
-        self.export_btn.pack(side=tk.RIGHT, padx=4)
+        # v2.1.1: tie MSTP enabled-state to BACnet checkbox. MSTP scanning
+        # lives inside the BACnet scan path; it does nothing if BACnet is off.
+        def _update_mstp_enabled(*_args):
+            if self.mstp_cb is None:
+                return
+            if self.scan_bacnet.get():
+                self.mstp_cb.configure(state='normal')
+            else:
+                self.mstp_cb.configure(state='disabled')
+        self.scan_bacnet.trace_add('write', _update_mstp_enabled)
+        _update_mstp_enabled()
 
         # tabs
         paned = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
@@ -201,7 +253,8 @@ class HVACNetworkScannerGUI:
         self.stats_var = tk.StringVar(value="No scan performed yet")
         ttk.Label(sbar, textvariable=self.stats_var, style="Dim.TLabel").pack(side=tk.LEFT, padx=8, pady=4)
 
-        self.log_message("HVAC Network Scanner v2.0 - Full Protocol Discovery")
+        from . import __version__
+        self.log_message(f"HVAC Network Scanner v{__version__} - Full Protocol Discovery")
         self.log_message("  BACnet/IP | BACnet MSTP (via routers) | Modbus TCP")
         self.log_message("  Niagara Fox | OPC UA | KNX | LonWorks | EtherNet/IP | S7")
         self.log_message("  HTTP/HTTPS banner grab | SNMP | SSH/Telnet/FTP")
@@ -248,11 +301,16 @@ class HVACNetworkScannerGUI:
         self.notebook.add(pts_frame, text="  BACnet Points  ")
         pts_columns = ("device", "type", "address", "name", "value", "units", "description")
         self.points_tree = ttk.Treeview(pts_frame, columns=pts_columns, show="headings", selectmode="browse")
+        # v2.1.2: Name column widened (240→360) and Description widened
+        # (280→360). Long BACnet object names like
+        # "Auto Commissioning Discharge Air Temperature|vav-1" were getting
+        # truncated with "..." and the full text was invisible. Columns are
+        # still user-resizable (drag the header divider).
         for col, text, width in [
             ("device", "Device", 130), ("type", "Object Type", 130),
-            ("address", "Instance", 80), ("name", "Name", 240),
+            ("address", "Instance", 80), ("name", "Name", 360),
             ("value", "Present Value", 100), ("units", "Units", 70),
-            ("description", "Description", 280),
+            ("description", "Description", 360),
         ]:
             self._setup_sortable(self.points_tree, col, text)
             self.points_tree.column(col, width=width, minwidth=50)
@@ -260,6 +318,50 @@ class HVACNetworkScannerGUI:
         self.points_tree.configure(yscrollcommand=pts_scroll.set)
         self.points_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         pts_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # v2.1.2: Double-click any point row to open a popup showing the
+        # full name / description / value (useful for names too long for
+        # the column, and for copy-paste of the full string).
+        self.points_tree.bind("<Double-Button-1>", self._on_point_double_click)
+
+    def _on_point_double_click(self, _event) -> None:
+        sel = self.points_tree.selection()
+        if not sel:
+            return
+        item = self.points_tree.item(sel[0])
+        vals = item.get('values', [])
+        if len(vals) < 7:
+            return
+        device, obj_type, instance, name, value, units, description = vals
+
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Point — {obj_type} {instance}")
+        popup.configure(bg=Colors.BG_DARK)
+        popup.geometry("640x360")
+
+        fields = [
+            ("Device", device), ("Object Type", obj_type),
+            ("Instance", instance), ("Name", name),
+            ("Present Value", value), ("Units", units),
+            ("Description", description),
+        ]
+        for i, (label, val) in enumerate(fields):
+            row = tk.Frame(popup, bg=Colors.BG_DARK)
+            row.pack(fill=tk.X, padx=12, pady=4)
+            tk.Label(row, text=label + ":", bg=Colors.BG_DARK,
+                     fg=Colors.ACCENT, font=("Consolas", 9, "bold"),
+                     width=14, anchor='nw').pack(side=tk.LEFT)
+            # Use a read-only Text widget so long values wrap & are selectable
+            txt = tk.Text(row, bg=Colors.BG_INPUT, fg=Colors.TEXT_PRIMARY,
+                          font=("Consolas", 10), height=2, wrap=tk.WORD,
+                          relief=tk.FLAT, highlightthickness=0)
+            txt.insert("1.0", str(val))
+            txt.configure(state='disabled')
+            txt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Button(popup, text="Close", command=popup.destroy,
+                  bg=Colors.BG_PANEL, fg=Colors.TEXT_PRIMARY,
+                  activebackground=Colors.ACCENT).pack(pady=8)
 
     def _build_registers_tab(self) -> None:
         reg_frame = ttk.Frame(self.notebook, style="Dark.TFrame")
@@ -392,6 +494,10 @@ class HVACNetworkScannerGUI:
         try:
             networks = [n.strip() for n in self.network_entry.get().split(",") if n.strip()]
             timeout = float(self.timeout_entry.get() or "5")
+            try:
+                chunk = int(self.whois_chunk_entry.get() or "0")
+            except ValueError:
+                chunk = 0
             opts = ScanOptions(
                 networks=networks,
                 timeout=timeout,
@@ -402,6 +508,12 @@ class HVACNetworkScannerGUI:
                 scan_snmp=self.scan_snmp.get(),
                 deep_scan=self.deep_scan.get(),
                 use_rpm=self.use_rpm.get(),
+                whois_chunk_size=chunk,
+                scan_depth=self.scan_depth_var.get(),
+                # v2.1.2: No explicit broadcast override from GUI — engine
+                # auto-computes the right broadcast target based on the
+                # user's target spec (enclosing /24 for narrow CIDRs and
+                # ranges, limited broadcast 255.255.255.255 for mixed lists).
             )
 
             engine = ScanEngine(opts, callback=self.log_message,
@@ -447,12 +559,21 @@ class HVACNetworkScannerGUI:
             self._add_device_to_tree(dev)
 
         # Points tab
+        # v2.1.2: prefer the device's BACnet objectName (e.g. "SC-1 +
+        # E22J04614") over the generic "ip (instance)" label when
+        # available. Falls back to IP+instance when name is missing.
         for dev in self.result.devices:
             ip = dev.get('ip', '?')
             instance = dev.get('instance', '?')
+            props = dev.get('properties', {}) or {}
+            device_name = props.get('object_name', '').strip()
+            if device_name:
+                device_label = f"{device_name} ({ip})"
+            else:
+                device_label = f"{ip} ({instance})"
             for pt in dev.get('objects', []):
                 self.points_tree.insert("", tk.END, values=(
-                    f"{ip} ({instance})", pt.get('type', '?'),
+                    device_label, pt.get('type', '?'),
                     pt.get('instance', '?'), pt.get('name', ''),
                     pt.get('present_value', ''), pt.get('units', ''),
                     pt.get('description', ''),
@@ -538,14 +659,11 @@ class HVACNetworkScannerGUI:
         return self.device_tree.item(selection[0])['values']
 
     def _on_device_double_click(self, _event) -> None:
-        vals = self._get_selected_vals()
-        if not vals:
-            return
-        web_url = vals[7]
-        if web_url and str(web_url).startswith('http'):
-            webbrowser.open(str(web_url))
-        else:
-            webbrowser.open(f"https://{vals[1]}")
+        # v2.1.1: double-click opens details popup, not the web UI.
+        # Rationale: for MSTP devices the row's IP is the router's IP, so
+        # opening it as a web URL takes the user to the wrong place. The
+        # Web UI is still one right-click away for IP devices that need it.
+        self._ctx_show_details()
 
     def _on_device_right_click(self, event) -> None:
         iid = self.device_tree.identify_row(event.y)
@@ -706,14 +824,23 @@ class HVACNetworkScannerGUI:
             return
         filepath = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("JSON files", "*.json"), ("All files", "*.*")],
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("JSON files", "*.json"),
+                ("Classification report (v2.2)", "*.txt"),
+                ("All files", "*.*"),
+            ],
             initialfile=f"hvac_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         )
         if not filepath:
             return
         try:
-            if filepath.lower().endswith('.json'):
+            lower = filepath.lower()
+            if lower.endswith('.json'):
                 self.result.write_json(filepath)
+            elif lower.endswith('.txt'):
+                # v2.2: classification report format for contribution flow
+                self.result.write_classification_report(filepath)
             else:
                 self.result.write_csv(filepath)
             self.log_message(f"Exported to {filepath}")

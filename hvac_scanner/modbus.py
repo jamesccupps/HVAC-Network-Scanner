@@ -109,13 +109,18 @@ class ModbusScanner:
                      max_workers: int = 50,
                      stop_event=None) -> list[dict[str, Any]]:
         self.devices = []
+        # v2.1.2: accept CIDR, single IPs, shorthand ranges (10.0.0.2-100),
+        # full-IP ranges (10.0.0.2-10.0.0.100), or comma-separated lists.
+        from .netrange import parse_targets, InvalidTargetSyntaxError
         try:
-            network = ipaddress.ip_network(network_cidr, strict=False)
-        except ValueError as e:
-            self._log(f"Invalid network: {e}")
+            hosts = parse_targets(network_cidr)
+        except InvalidTargetSyntaxError as e:
+            self._log(f"Invalid target: {e}")
+            return []
+        if not hosts:
+            self._log(f"No hosts parsed from target {network_cidr!r}")
             return []
 
-        hosts = [str(h) for h in network.hosts()]
         self._log(f"Scanning {len(hosts)} hosts for Modbus TCP on port {port}...")
 
         def check_port(ip: str) -> Optional[str]:
