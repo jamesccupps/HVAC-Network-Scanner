@@ -49,13 +49,17 @@ class HVACServiceScanner:
         if not ports:
             return []
 
+        # v2.1.2: accept CIDR, single IPs, shorthand ranges, full-IP ranges, lists.
+        from .netrange import parse_targets, InvalidTargetSyntaxError
         try:
-            network = ipaddress.ip_network(network_cidr, strict=False)
-        except ValueError as e:
-            self._log(f"Invalid network: {e}")
+            hosts = parse_targets(network_cidr)
+        except InvalidTargetSyntaxError as e:
+            self._log(f"Invalid target: {e}")
+            return []
+        if not hosts:
+            self._log(f"No hosts parsed from target {network_cidr!r}")
             return []
 
-        hosts = [str(h) for h in network.hosts()]
         self._log(f"Scanning {len(hosts)} hosts x {len(ports)} HVAC service ports...")
         targets = [(ip, p) for ip in hosts for p in ports]
 

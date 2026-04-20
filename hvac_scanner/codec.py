@@ -202,6 +202,80 @@ def build_bvlc(function: int, payload: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# NPDU builder and DADR encoder
+#
+# These are the plumbing for cross-router unicast (BACnet MSTP and routed
+# BACnet/IP). The v2.0.2 `build_read_property` hardcoded NPDU = 0x01 0x04
+# (version + expecting-reply, no destination specifier), which caused every
+# MSTP device behind a router to respond with "Object not found" — the
+# router processed the packet as if it were addressed to the router itself
+# rather than forwarded across the MSTP link. (Credit: OldAutomator on
+# r/BuildingAutomation for the sniff analysis that located this.)
+# ---------------------------------------------------------------------------
+
+def _encode_dadr(sadr: "str | int | bytes | None") -> bytes:
+    """Encode a destination address (DADR) into its wire bytes.
+
+    Accepts the shapes our `parse_iam` produces for `source_address`:
+        - None:            broadcast on the target network (DLEN will be 0)
+        - int:             single-byte MSTP MAC (0-255)
+        - decimal str:     "5" → single-byte MSTP MAC
+        - hex-colon str:   "C0:A8:01:0A:BA:C0" → raw bytes per octet
+        - bytes:           passed through
+    """
+    if sadr is None:
+        return b''
+    if isinstance(sadr, bytes):
+        return sadr
+    if isinstance(sadr, int):
+        return bytes([sadr & 0xFF])
+    if isinstance(sadr, str):
+        s = sadr.strip()
+        if not s:
+            return b''
+        if ':' in s:
+            return bytes(int(part, 16) for part in s.split(':'))
+        # Plain decimal MSTP MAC
+        try:
+            return bytes([int(s) & 0xFF])
+        except ValueError:
+            return b''
+    return b''
+
+
+def build_npdu(expecting_reply: bool = True,
+               dnet: Optional[int] = None,
+               dadr: "str | int | bytes | None" = None,
+               hop_count: int = 0xFF) -> bytes:
+    """Build an NPDU header.
+
+    Without `dnet`: a plain local NPDU (version + control byte).
+    With `dnet`: a routed NPDU (version + control + DNET + DLEN + DADR + hop).
+
+    When `dadr` is None and `dnet` is set, DLEN is 0 (broadcast on that
+    remote network). When `dadr` is supplied, DLEN is the encoded length
+    and DADR bytes follow — that's a unicast to a specific device on that
+    remote network, which is what's required for reading properties from
+    MSTP devices behind a router.
+    """
+    control = 0x04 if expecting_reply else 0x00
+    if dnet is None:
+        return bytes([0x01, control])
+
+    control |= 0x20  # destination specifier present
+    npdu = bytearray([0x01, control])
+    npdu += struct.pack('!H', dnet)
+    if dadr is None:
+        npdu += bytes([0x00])  # broadcast on that DNET
+    else:
+        dadr_bytes = _encode_dadr(dadr)
+        npdu += bytes([len(dadr_bytes)])
+        npdu += dadr_bytes
+    npdu += bytes([hop_count & 0xFF])
+    return bytes(npdu)
+
+
+# ---------------------------------------------------------------------------
 # Who-Is / I-Am / Who-Is-Router
 # ---------------------------------------------------------------------------
 
@@ -209,25 +283,24 @@ def build_whois(low: Optional[int] = None, high: Optional[int] = None,
                 dnet: Optional[int] = None) -> bytes:
     """Build a Who-Is BVLC packet (Original-Broadcast-NPDU).
 
-    If dnet is supplied, targets a specific BACnet network (for MSTP probing).
-    If low/high supplied, filters by device instance range.
+    If `dnet` is supplied, targets a specific remote BACnet network for
+    MSTP probing (broadcast on that network — DADR is not included).
+    If `low`/`high` supplied, filters responders by device instance range.
     """
     if dnet is not None:
-        # NPDU: version, control(has-dest=1, expects-reply=0, priority=0),
-        # DNET, DLEN=0 (broadcast), hop count
-        npdu = bytearray([0x01, 0x20])
-        npdu += struct.pack('!H', dnet)
-        npdu += bytes([0x00, 0xFF])
+        # Routed broadcast: dest-specifier set, DADR omitted (DLEN=0).
+        # expecting_reply=False because Who-Is is an Unconfirmed-Request.
+        npdu = build_npdu(expecting_reply=False, dnet=dnet)
     else:
-        # Global broadcast: DNET=0xFFFF, DLEN=0
-        npdu = bytearray([0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF])
+        # Global broadcast: DNET = 0xFFFF, no DADR.
+        npdu = build_npdu(expecting_reply=False, dnet=0xFFFF)
 
     apdu = bytearray([0x10, 0x08])  # Unconfirmed-Request, service 8 = Who-Is
     if low is not None and high is not None:
         apdu += encode_context_unsigned(0, low)
         apdu += encode_context_unsigned(1, high)
 
-    return build_bvlc(0x0B, bytes(npdu + apdu))  # 0x0B = Original-Broadcast-NPDU
+    return build_bvlc(0x0B, npdu + bytes(apdu))  # 0x0B = Original-Broadcast-NPDU
 
 
 def build_whois_router_to_network(dnet: Optional[int] = None) -> bytes:
@@ -462,14 +535,22 @@ def build_read_property(obj_type: int | str, obj_instance: int,
                         prop_id: int | str,
                         array_index: Optional[int] = None,
                         invoke_id: int = 0,
-                        max_apdu: int = 1476) -> bytes:
+                        max_apdu: int = 1476,
+                        dnet: Optional[int] = None,
+                        dadr: "str | int | bytes | None" = None) -> bytes:
     """Build a complete Confirmed-Request ReadProperty BVLC packet.
 
     max_apdu encoded per ASHRAE 135-5.2.1.4: 0=50, 1=128, 2=206, 3=480, 4=1024, 5=1476.
+
+    For MSTP devices behind a router, supply `dnet` (the MSTP network number
+    from the I-Am's SNET) and `dadr` (the MSTP MAC from SADR). The NPDU
+    then carries the destination specifier so the router forwards the
+    request across the MSTP link instead of trying to answer it itself.
+    Omit both for IP-direct devices.
     """
     max_apdu_code = {50: 0, 128: 1, 206: 2, 480: 3, 1024: 4}.get(max_apdu, 5)
 
-    npdu = b'\x01\x04'  # version + expecting-reply
+    npdu = build_npdu(expecting_reply=True, dnet=dnet, dadr=dadr)
 
     # Confirmed-Request APDU header: PDU type 0, flags=0, max segments/APDU, invoke-id
     apdu = bytearray([
@@ -670,14 +751,19 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
 def build_read_property_multiple(obj_type: int | str, obj_instance: int,
                                  prop_ids: list[int | str],
                                  invoke_id: int = 0,
-                                 max_apdu: int = 1476) -> bytes:
+                                 max_apdu: int = 1476,
+                                 dnet: Optional[int] = None,
+                                 dadr: "str | int | bytes | None" = None) -> bytes:
     """Build a ReadPropertyMultiple request for one object, multiple properties.
 
     This is a huge speedup vs ReadProperty: one round trip reads N properties.
+
+    For MSTP devices behind a router, supply `dnet` and `dadr` (same semantics
+    as `build_read_property`).
     """
     max_apdu_code = {50: 0, 128: 1, 206: 2, 480: 3, 1024: 4}.get(max_apdu, 5)
 
-    npdu = b'\x01\x04'
+    npdu = build_npdu(expecting_reply=True, dnet=dnet, dadr=dadr)
     apdu = bytearray([
         0x00,
         max_apdu_code & 0x0F,

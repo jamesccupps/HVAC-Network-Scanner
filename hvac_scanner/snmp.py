@@ -33,11 +33,15 @@ class SNMPScanner:
     def scan_network(self, network_cidr: str, community: bytes = b'public',
                      max_workers: int = 50, stop_event=None) -> list[dict[str, Any]]:
         self.devices = []
+        # v2.1.2: accept CIDR, single IPs, shorthand ranges, full-IP ranges, lists.
+        from .netrange import parse_targets, InvalidTargetSyntaxError
         try:
-            network = ipaddress.ip_network(network_cidr, strict=False)
-        except ValueError:
+            hosts = parse_targets(network_cidr)
+        except InvalidTargetSyntaxError as e:
+            self._log(f"Invalid target: {e}")
             return []
-        hosts = [str(h) for h in network.hosts()]
+        if not hosts:
+            return []
         self._log(f"Scanning {len(hosts)} hosts for SNMP...")
 
         def probe(ip: str) -> Optional[dict[str, Any]]:
