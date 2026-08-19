@@ -38,6 +38,37 @@ class ModbusScanner:
         except Exception:
             log.exception("log callback failed")
 
+    # -- framing ----------------------------------------------------------
+
+    @staticmethod
+    def _recv_exact(sock: socket.socket, n: int) -> bytes:
+        """Read exactly n bytes, or return what arrived before the stream ended."""
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                break
+            buf += chunk
+        return bytes(buf)
+
+    @classmethod
+    def _recv_frame(cls, sock: socket.socket) -> bytes:
+        """Read one complete Modbus TCP frame.
+
+        Every probe here used a single recv() and treated whatever came back
+        as the whole response. TCP does not promise that: a response split
+        across segments was parsed short, and a byte_count larger than the
+        first segment silently truncated the register list. The MBAP header
+        declares the length, so read the header then exactly that many bytes.
+        """
+        header = cls._recv_exact(sock, 7)          # txn(2) proto(2) len(2) unit(1)
+        if len(header) < 7:
+            return header
+        length = struct.unpack('!H', header[4:6])[0]
+        if not 1 <= length <= 253:                 # per the Modbus TCP spec
+            return header
+        return header + cls._recv_exact(sock, length - 1)
+
     # -- per-host probing -----------------------------------------------
 
     def scan_host(self, ip: str, port: int = 502,
@@ -63,17 +94,38 @@ class ModbusScanner:
         return results
 
     def _try_device_id(self, ip: str, port: int, uid: int) -> Optional[dict[str, Any]]:
-        req = struct.pack('!HHHBBBB', 0x0001, 0x0000, 0x0005, uid, 0x2B, 0x0E, 0x01, 0x00)
+        # MBAP: txn(H) proto(H) len(H) unit(B) | PDU: fc(B) mei(B) devid(B) obj(B)
+        # len counts the unit byte plus the 4 PDU bytes = 5.
+        #
+        # This was '!HHHBBBB' — seven format characters for eight values, so
+        # struct.pack raised on every call. struct.error is not an OSError, so
+        # it escaped the handler below, propagated out of scan_host and
+        # scan_network, and aborted the whole Modbus pass at the engine's
+        # catch-all. Any host with 502 open killed Modbus scanning entirely.
+        req = struct.pack('!HHHBBBBB', 0x0001, 0x0000, 0x0005, uid,
+                          0x2B, 0x0E, 0x01, 0x00)
         try:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(req)
-                resp = sock.recv(1024)
+                sock.sendall(req)
+                resp = self._recv_frame(sock)
         except (socket.timeout, ConnectionRefusedError, OSError):
+            return None
+        except struct.error as e:
+            log.debug("device-id request encoding failed for %s:%d: %s", ip, port, e)
             return None
 
         if not resp or len(resp) < 9:
+            return None
+        # 0x2B echoed = the device answered the request. 0xAB (0x2B | 0x80) is
+        # an exception response: FC 43 / MEI 14 is optional and plenty of
+        # devices reject it. Those were still recorded here as
+        # detected_via='device_id' with every field 'Unknown', and the
+        # `continue` in scan_host then skipped the holding-register probe that
+        # would have identified how the device was really detected. Fall
+        # through instead so the caller labels it accurately.
+        if resp[7] != 0x2B:
             return None
         info = self._parse_device_id_response(resp)
         info.update({'ip': ip, 'port': port, 'unit_id': uid})
@@ -85,8 +137,8 @@ class ModbusScanner:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(req)
-                resp = sock.recv(1024)
+                sock.sendall(req)
+                resp = self._recv_frame(sock)
         except (socket.timeout, ConnectionRefusedError, OSError):
             return None
 
@@ -166,8 +218,8 @@ class ModbusScanner:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(req)
-                resp = sock.recv(4096)
+                sock.sendall(req)
+                resp = self._recv_frame(sock)
         except OSError as e:
             self._log(f"  Register read error: {e}")
             return results
@@ -193,8 +245,8 @@ class ModbusScanner:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(req)
-                resp = sock.recv(4096)
+                sock.sendall(req)
+                resp = self._recv_frame(sock)
         except OSError as e:
             self._log(f"  Coil read error: {e}")
             return results
