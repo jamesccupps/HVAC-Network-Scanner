@@ -123,6 +123,50 @@ all auto-broadcast to the enclosing `/24`. The scan log shows the chosen
 broadcast target so it's never magic. Power users can override via the
 `--broadcast` CLI flag or `ScanOptions.bacnet_broadcast`.
 
+## What's new in v2.5
+
+### v2.5.0 (2026-08-19)
+
+Three features that change what the tool is for: it stops being something you
+run when you suspect a problem and becomes something that tells you when one
+appeared.
+
+**Baseline comparison.** The scanner has written JSON since v2 and been
+schedulable since then, but nothing read it back.
+
+```bash
+# nightly: compare, alert only on change, roll the baseline forward
+python -m hvac_scanner.cli 10.0.0.0/24 \
+    --baseline last.json --save-baseline last.json \
+    --diff-output changes.txt --fail-on-change --quiet
+```
+
+Exit code 4 means something moved. BACnet devices are keyed on their device
+instance rather than their address, so a panel that changes IP is reported as
+an address change, not as a disappearance plus an unrelated arrival. Present
+values are excluded on purpose — a temperature differs on every scan and would
+bury the signal. A **COMPARE** button in the GUI runs the same comparison
+interactively.
+
+**Scan across subnets via a BBMD.** A Who-Is is a broadcast and broadcasts do
+not cross a router, so discovery only ever saw the scanner's own subnet — one
+run per building.
+
+```bash
+python -m hvac_scanner.cli 10.20.0.0/24 --bbmd 10.20.0.1
+```
+
+`--bbmd` registers as a Foreign Device and sends Who-Is as
+Distribute-Broadcast-To-Network, so one host discovers every subnet that BBMD
+and its peers serve. The lease renews automatically during long scans.
+
+**Live results in the GUI.** Device rows, points and registers now appear as
+each device finishes rather than all at once at the end. On a controller with
+thousands of points the old behaviour was a blank window for the whole scan
+followed by a freeze.
+
+See [CHANGELOG.md](CHANGELOG.md) for detail.
+
 ## What's new in v2.4
 
 ### v2.4.0 (2026-08-19)
@@ -388,19 +432,24 @@ hvac_scanner/
 ├── snmp.py            # Raw UDP SNMP sysDescr probe
 ├── fingerprint.py     # Cross-protocol model identification
 ├── engine.py          # ScanEngine orchestrator + result/export
+├── diff.py            # Baseline comparison (what changed since last scan)
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/                               # 395 tests, ~63% line coverage
+tests/                               # 470 tests
 ├── test_codec.py                    # BACnet packet encode/decode + parser regressions
 ├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
 ├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
 ├── test_snmp.py                     # SNMP BER encode/decode
 ├── test_rpm_batching.py             # Array-index RPM enumeration
 ├── test_point_batching.py           # Multi-object RPM point reads
+├── test_bbmd.py                     # Foreign Device registration
+├── test_diff.py                     # Baseline comparison
+├── test_streaming.py                # Live results during a scan
 ├── mock_device.py                   # UDP BACnet device for the tests
+├── mock_bbmd.py                     # UDP BBMD for the tests
 ├── test_services_probes.py          # CIP and S7 request wire formats
 ├── test_engine.py                   # Orchestration, sampling strategy, result shaping
 ├── test_device_profiles.py          # Vendor caps, scan depth, --max-objects override

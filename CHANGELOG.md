@@ -3,6 +3,80 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.0] — 2026-08-19
+
+Three features that between them change what the tool is for: it stops being
+something you run when you suspect a problem and becomes something that tells
+you when one appeared.
+
+### Added
+
+- **Baseline comparison.** The scanner has written JSON since v2 and been
+  schedulable since then, but nothing read the output back. A nightly scan
+  nobody reads is disk usage. New `hvac_scanner/diff.py` plus:
+
+  ```
+  --baseline PATH        compare against a previous export
+  --save-baseline PATH   write this scan for next time
+  --diff-output PATH     .json for JSON, anything else for text
+  --fail-on-change       exit 4 when the scan differs
+  ```
+
+  Exit 4 is the point for scheduled runs: the job alerts only when something
+  moved. The baseline is written even when changes were found, so an
+  unattended schedule rolls forward and reports each night's delta rather than
+  re-reporting the same drift forever.
+
+  BACnet devices are keyed on their device instance, not their address. The
+  instance is configured in the controller and survives a DHCP lease change,
+  so a panel that moves is reported as an address change rather than as a
+  disappearance plus an unrelated arrival. Reported fields are limited to ones
+  that mean something — name, model, vendor, firmware, application software,
+  address, object count. Present values are excluded deliberately: a
+  temperature differs on every scan and would bury the signal.
+
+  A **COMPARE** button in the GUI runs the same comparison interactively and
+  offers to save the report or promote the current scan to the new baseline.
+
+- **BBMD / Foreign Device registration.** A Who-Is is a broadcast and
+  broadcasts do not cross a router, so discovery only ever saw the subnet the
+  scanner sat on — one run per building. `--bbmd IP` registers as a Foreign
+  Device, sends Who-Is as Distribute-Broadcast-To-Network, and discovers every
+  subnet that BBMD and its peers serve from a single host. `--bbmd-ttl`
+  controls the lease, which is renewed automatically at two thirds elapsed:
+  a large site can take longer to scan than the TTL, and once it lapses the
+  BBMD stops forwarding and the scan would simply stop finding devices with
+  nothing to say why.
+
+  Registration failure aborts the BACnet pass rather than falling back to a
+  local broadcast, and a BBMD that stays silent counts as failure. Both for
+  the same reason: the user named a BBMD because the devices are not on this
+  subnet, so a quiet fallback would report an empty network and read as a
+  clean result.
+
+- **Live results in the GUI.** Device rows, points and Modbus registers are
+  drawn as each device finishes instead of all at once at the end, with a
+  status line counting what has landed. On a controller with thousands of
+  points the old behaviour was a blank window for the whole scan followed by a
+  freeze while every row inserted at once.
+
+### Fixed
+
+- `parse_iam` now skips the 6-byte originating address in a Forwarded-NPDU.
+  A BBMD relays broadcasts in that form, so without it every I-Am arriving
+  through a BBMD failed the NPDU version check and was silently dropped —
+  foreign-device registration would have appeared to work and found nothing.
+- Four em dashes removed from CLI help text. `--help` writes to a console
+  that is cp1252 on Windows, where a non-encodable character can raise
+  UnicodeEncodeError.
+
+### Tests
+
+- 395 to 470. New `tests/mock_bbmd.py` relays to mock devices as
+  Forwarded-NPDU so the skip above is exercised rather than assumed, and the
+  mock device gained a `patch_port` flag so a device sitting behind a BBMD
+  does not retarget the scanner at itself and bypass the thing under test.
+
 ## [2.4.0] — 2026-08-19
 
 Performance release. Deep scans were round-trip bound and strictly

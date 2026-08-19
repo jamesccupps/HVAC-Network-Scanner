@@ -24,8 +24,18 @@ is also on your PATH and is equivalent.
 |------|---------|-------------|
 | `--timeout SECONDS` | `5` | Per-operation timeout. BACnet-heavy devices may benefit from 8–10. |
 | `--rate-limit MS` | `0` | Minimum ms between BACnet packets to the same IP. Set to `50` for small field controllers (UC400, FEC, BASRT). |
-| `--max-objects N` | `500` | Cap on the number of BACnet objects enumerated per device during deep scan. |
-| `--no-rpm` | off | Disable `ReadPropertyMultiple`. Use if a specific device misbehaves with RPM requests. |
+| `--max-objects N` | unset | Hard ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Only ever lowers it. Omit to use the profile cap. |
+| `--scan-depth LEVEL` | `normal` | `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
+| `--broadcast IP` | auto | Override the computed Who-Is broadcast target. Rarely needed: the broadcast is derived from the target syntax automatically. |
+| `--no-rpm` | off | Disable `ReadPropertyMultiple`. Use if a specific device misbehaves with RPM requests. Costs roughly two orders of magnitude more round trips on a large controller. |
+
+### Large-network probing
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--whois-chunk SIZE` | `0` | Split Who-Is into instance ranges of this size instead of one global broadcast. On a busy multi-building segment a single global Who-Is makes every device answer at once; chunking spreads the replies out. `0` disables. |
+| `--whois-max-instance N` | `4194303` | Upper bound when chunking. Only used with `--whois-chunk`. |
+| `--whois-chunk-delay MS` | `50` | Pause between chunked broadcasts. |
 
 ### Protocol toggles
 
@@ -47,9 +57,36 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 |------|-------------|
 | `--json PATH` | Write structured results to a JSON file. |
 | `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). |
+| `--export-classification PATH` | Write a plain-text report of how each BACnet device was classified: which profile matched, the cap applied, and the observed object count. Contains no point values. Intended for submitting a device profile when you scan hardware the project has not seen. |
 | `--print FORMAT` | Stdout: `summary` (default), `table`, `json`, `none`. |
 | `--quiet` / `-q` | Suppress progress log on stderr. |
 | `--verbose` / `-v` | Enable DEBUG logging. |
+
+### Baseline comparison
+
+| Flag | Description |
+|------|-------------|
+| `--baseline PATH` | Compare this scan against a previous JSON export. |
+| `--save-baseline PATH` | Write this scan for the next comparison. Written even when changes were found, so a schedule rolls forward. |
+| `--diff-output PATH` | Write the comparison to a file; `.json` for JSON, anything else for text. Defaults to stdout. |
+| `--fail-on-change` | Exit 4 when the scan differs from the baseline. |
+
+BACnet devices are matched on their device instance rather than their address,
+so a controller that moves IP is reported as an address change rather than as
+one device disappearing and an unrelated one appearing. Present values are not
+compared — they differ on every scan and would bury the signal.
+
+### Cross-subnet discovery
+
+| Flag | Description |
+|------|-------------|
+| `--bbmd IP` | Register as a Foreign Device with this BBMD and send Who-Is through it. Discovers subnets the scanner cannot broadcast to. |
+| `--bbmd-ttl SECONDS` | Registration lease, default 60. Renewed automatically during long scans. |
+
+Without `--bbmd`, discovery only sees the scanner's own subnet: a Who-Is is a
+broadcast and broadcasts do not cross a router. If registration fails the
+BACnet pass is skipped rather than quietly falling back to a local broadcast,
+which would report an empty network and look like a clean result.
 
 ### Exit codes
 
@@ -59,6 +96,7 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 | 1 | Invalid arguments |
 | 2 | Interrupted via Ctrl-C / SIGINT |
 | 3 | Internal error (see log) |
+| 4 | Scan completed but differed from the baseline (`--fail-on-change` only) |
 
 ## Examples
 
@@ -95,6 +133,37 @@ python -m hvac_scanner.cli 192.168.5.0/24 \
     --json /var/log/bas-scan-$(date +%Y%m%d).json \
     --quiet
 ```
+
+### Nightly change monitoring
+
+The case the baseline flags exist for: run unattended, stay silent when
+nothing moved, and produce a report when something did.
+
+```bash
+python -m hvac_scanner.cli 10.0.0.0/24 \
+    --baseline C:\\BAS\\baseline.json \
+    --save-baseline C:\\BAS\\baseline.json \
+    --diff-output C:\\BAS\\changes.txt \
+    --fail-on-change --quiet --print none
+```
+
+Exit code 4 means the network differs from last night. In Task Scheduler, set
+the action's "Restart on failure" off and use the exit code to drive whatever
+alerting you already have; `changes.txt` holds the detail. Because
+`--save-baseline` writes the same path it compared against, each run reports
+that night's delta rather than repeating the same drift forever.
+
+The first run has no baseline to compare against; create one with a plain
+`--save-baseline` and no `--baseline`.
+
+### Scanning several buildings from one host
+
+```bash
+python -m hvac_scanner.cli 10.20.0.0/24 --bbmd 10.20.0.1 --rate-limit 50
+```
+
+The target list still bounds which devices are deep-scanned; `--bbmd` only
+changes how the Who-Is gets there.
 
 ### Piping table output
 
