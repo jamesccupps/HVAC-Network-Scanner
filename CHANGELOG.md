@@ -3,34 +3,6 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.6.1] — 2026-08-19
-
-### Fixed
-
-- **A test asserted openssl's behaviour rather than the parser's.**
-  `test_utf8_subject_survives` generated a fixture with a non-ASCII `-subj`
-  and asserted the common name round-tripped. Ubuntu's openssl reads those
-  bytes as Latin-1, so it wrote `GebÃ¤ude-Nord` into the certificate; the
-  parser decoded exactly what was there and the assertion failed. The parser
-  was correct — the test was measuring the local openssl CLI's charset
-  handling, which differs by distribution and major version.
-
-  Windows CI never caught it because openssl is not on those runners' PATH,
-  so the whole openssl-dependent group skipped there.
-
-  String-type coverage now builds the DER directly, where the encoding under
-  test is the intended one: PrintableString, UTF8String, BMPString and
-  IA5String, plus issuer/subject separation and UTCTime. Those run on every
-  platform rather than only where openssl happens to exist.
-
-- Fixture generation now skips with openssl's own message instead of raising,
-  so a future environment difference reports what went wrong rather than
-  failing an unrelated-looking assertion. The stdlib cross-check skips if
-  `ssl._ssl._test_decode_cert` is unavailable, since that is a CPython
-  implementation detail.
-
-No change to `hvac_scanner/` — this is entirely test-side.
-
 ## [2.6.0] — 2026-08-19
 
 ### Added
@@ -76,11 +48,22 @@ No change to `hvac_scanner/` — this is entirely test-side.
 
 ### Tests
 
-- 470 to 496. Certificate fixtures are generated with `openssl` where it is
-  available and skipped where it is not, so the certificates under test are
-  real rather than bytes that only prove the parser agrees with itself. The
-  parser is also checked against Python's own decoder, which it matches on
-  subject, issuer and expiry.
+- 470 to 502. The parser is checked against Python's own decoder, which it
+  matches on subject, issuer and expiry, and against certificates generated
+  with `openssl` where it is available.
+
+- String-type coverage builds the DER directly rather than going through
+  `openssl req -subj`: PrintableString, UTF8String, BMPString and IA5String,
+  plus issuer/subject separation and UTCTime. openssl's handling of a
+  non-ASCII `-subj` differs by distribution — Ubuntu's reads the bytes as
+  Latin-1 and writes mojibake into the certificate — so a test asserting a
+  round trip through it was measuring the local CLI rather than the parser.
+  Building the DER puts the encoding under test under our control, and those
+  cases now run on every platform instead of only where openssl exists.
+
+- Fixture generation skips with openssl's own message rather than raising, so
+  an environment difference reports what went wrong instead of surfacing as an
+  unrelated-looking assertion.
 
 ## [2.5.0] — 2026-08-19
 
