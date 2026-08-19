@@ -45,7 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Targets to scan: CIDR (192.168.1.0/24), single host, "
                         "range (10.0.0.2-100), or a mix")
     # Alternate spelling. It shares `dest` with the positional, so argparse
-    # applies it second and the positional's value is discarded — passing both
+    # applies it second and the positional's value is discarded - passing both
     # used to silently scan only the flag's networks. Collected separately and
     # merged in main() instead.
     p.add_argument("--networks", dest="networks_flag", nargs="+", default=None,
@@ -85,6 +85,15 @@ def _build_parser() -> argparse.ArgumentParser:
                         "with --whois-chunk.")
     d.add_argument("--whois-chunk-delay", type=int, default=50, metavar="MS",
                    help="Sleep between chunked Who-Is broadcasts (default: 50ms)")
+    d.add_argument("--bbmd", metavar="IP",
+                   help="Register as a Foreign Device with this BBMD and send "
+                        "Who-Is through it. Discovers devices on subnets the "
+                        "scanner cannot broadcast to - one host can then scan "
+                        "several buildings. Without this, discovery only sees "
+                        "the local subnet.")
+    d.add_argument("--bbmd-ttl", type=int, default=60, metavar="SECONDS",
+                   help="Foreign Device registration lease (default: 60). "
+                        "Renewed automatically during long scans.")
 
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
@@ -246,10 +255,12 @@ def main(argv: list[str] | None = None) -> int:
         whois_max_instance=args.whois_max_instance,
         whois_chunk_delay_ms=args.whois_chunk_delay,
         bacnet_broadcast=args.broadcast,
+        bbmd=args.bbmd,
+        bbmd_ttl=args.bbmd_ttl,
         scan_depth=args.scan_depth,
     )
 
-    # Progress callback — streams log lines to stderr unless quiet
+    # Progress callback - streams log lines to stderr unless quiet
     def cb(msg: str) -> None:
         if not args.quiet:
             print(msg, file=sys.stderr, flush=True)
@@ -257,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     stop_event = threading.Event()
 
     def _sigint(_signum, _frame):
-        print("\n[interrupt — stopping after current step]", file=sys.stderr)
+        print("\n[interrupt - stopping after current step]", file=sys.stderr)
         stop_event.set()
 
     signal.signal(signal.SIGINT, _sigint)

@@ -30,7 +30,7 @@ def _cs(text):
 class MockBACnetDevice:
     def __init__(self, instance=1234, n_objects=200, vendor_id=2,
                  model='Tracer SC+', max_apdu=1476, rpm_mode='full',
-                 host='127.0.0.1'):
+                 host='127.0.0.1', patch_port=True):
         self.instance = instance
         self.vendor_id = vendor_id
         self.model = model
@@ -69,6 +69,11 @@ class MockBACnetDevice:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind((host, 0))
         self.port = self._sock.getsockname()[1]
+        # Whether entering this device retargets the scanner at it. A device
+        # sitting behind a mock BBMD must NOT: the scanner has to keep talking
+        # to the BBMD, which relays. Two mocks both grabbing the global would
+        # silently make the innermost `with` win.
+        self.patch_port = patch_port
         self._stop = False
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
@@ -80,13 +85,15 @@ class MockBACnetDevice:
         # ephemeral port so it never fights a real BACnet service for 47808.
         import hvac_scanner.bacnet as _b
         self._saved_port = _b.BACNET_PORT
-        _b.BACNET_PORT = self.port
+        if self.patch_port:
+            _b.BACNET_PORT = self.port
         self._thread.start()
         return self
 
     def __exit__(self, *a):
         import hvac_scanner.bacnet as _b
-        _b.BACNET_PORT = self._saved_port
+        if self.patch_port:
+            _b.BACNET_PORT = self._saved_port
         self._stop = True
         self._sock.close()
 
@@ -129,6 +136,23 @@ class MockBACnetDevice:
         return self._point_prop(otype, oinst, prop)
 
     # -- server ------------------------------------------------------------
+
+    def handle_forwarded(self, data, reply_to):
+        """Answer a Forwarded-NPDU relayed by a BBMD.
+
+        The originating device's 6-byte B/IP address sits between the BVLC
+        header and the NPDU, so the Who-Is APDU is 6 bytes further in than in a
+        direct broadcast. The reply goes straight to the scanner rather than
+        back through the BBMD, which is how a real deployment behaves.
+        """
+        self.exchanges += 1
+        if len(data) >= 18 and data[16] == 0x10 and data[17] == 0x08:
+            oid = struct.pack('!I', (8 << 22) | self.instance)
+            iam = (bytes([0x10, 0x00, 0xC4]) + oid
+                   + bytes([0x22, (self.max_apdu >> 8) & 0xFF, self.max_apdu & 0xFF])
+                   + bytes([0x91, 0x03])
+                   + bytes([0x21, self.vendor_id]))
+            self._sock.sendto(_bvlc(bytes([0x01, 0x00]) + iam, 0x0B), reply_to)
 
     def _serve(self):
         while not self._stop:

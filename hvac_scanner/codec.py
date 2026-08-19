@@ -226,6 +226,44 @@ def resolve_property_id(prop: int | str) -> int:
         return 85  # presentValue
 
 
+# BVLL function codes (ASHRAE 135 Annex J.2)
+BVLC_RESULT = 0x00
+BVLC_WRITE_BDT = 0x01
+BVLC_READ_BDT = 0x02
+BVLC_READ_BDT_ACK = 0x03
+BVLC_FORWARDED_NPDU = 0x04
+BVLC_REGISTER_FOREIGN_DEVICE = 0x05
+BVLC_READ_FDT = 0x06
+BVLC_READ_FDT_ACK = 0x07
+BVLC_DELETE_FDT_ENTRY = 0x08
+BVLC_DISTRIBUTE_BROADCAST_TO_NETWORK = 0x09
+BVLC_ORIGINAL_UNICAST_NPDU = 0x0A
+BVLC_ORIGINAL_BROADCAST_NPDU = 0x0B
+
+# BVLC-Result codes (Annex J.2.1.1)
+BVLC_RESULT_SUCCESS = 0x0000
+BVLC_RESULT_WRITE_BDT_NAK = 0x0010
+BVLC_RESULT_READ_BDT_NAK = 0x0020
+BVLC_RESULT_REGISTER_FOREIGN_DEVICE_NAK = 0x0030
+BVLC_RESULT_READ_FDT_NAK = 0x0040
+BVLC_RESULT_DELETE_FDT_NAK = 0x0050
+BVLC_RESULT_DISTRIBUTE_BROADCAST_NAK = 0x0060
+
+_BVLC_RESULT_NAMES = {
+    BVLC_RESULT_SUCCESS: "success",
+    BVLC_RESULT_WRITE_BDT_NAK: "Write-Broadcast-Distribution-Table NAK",
+    BVLC_RESULT_READ_BDT_NAK: "Read-Broadcast-Distribution-Table NAK",
+    BVLC_RESULT_REGISTER_FOREIGN_DEVICE_NAK: "Register-Foreign-Device NAK",
+    BVLC_RESULT_READ_FDT_NAK: "Read-Foreign-Device-Table NAK",
+    BVLC_RESULT_DELETE_FDT_NAK: "Delete-Foreign-Device-Table-Entry NAK",
+    BVLC_RESULT_DISTRIBUTE_BROADCAST_NAK: "Distribute-Broadcast-To-Network NAK",
+}
+
+
+def bvlc_result_name(code: int) -> str:
+    return _BVLC_RESULT_NAMES.get(code, f"unknown BVLC result 0x{code:04X}")
+
+
 def build_bvlc(function: int, payload: bytes) -> bytes:
     """Wrap an NPDU payload in a BVLC header."""
     total_len = 4 + len(payload)
@@ -343,12 +381,84 @@ def build_whois_router_to_network(dnet: Optional[int] = None) -> bytes:
     return build_bvlc(0x0B, npdu)
 
 
+# ---------------------------------------------------------------------------
+# BBMD / Foreign Device registration
+#
+# A Who-Is is a broadcast, and broadcasts do not cross a router. That confines
+# discovery to the subnet the scanner sits on, which is a real limitation for
+# anyone responsible for more than one building: you end up running the tool
+# once per site.
+#
+# BACnet's answer is the BBMD. Registering as a Foreign Device with one puts
+# the scanner in that BBMD's Foreign Device Table for a TTL; broadcasts the
+# scanner then sends as Distribute-Broadcast-To-Network are re-broadcast by
+# the BBMD onto its own subnet and forwarded to its peer BBMDs, and the I-Am
+# replies come back to the scanner as ordinary unicast.
+#
+# Registration is read-only in the sense that matters here: it adds a
+# time-limited entry to the BBMD's FDT and changes no device configuration.
+# It does expire, so long scans need to re-register before the TTL lapses.
+# ---------------------------------------------------------------------------
+
+def build_register_foreign_device(ttl_seconds: int = 60) -> bytes:
+    """Build a Register-Foreign-Device request (Annex J.2.6).
+
+    The BBMD holds the registration for `ttl_seconds` plus a 30-second grace
+    period. Re-register before it lapses or the BBMD stops forwarding.
+    """
+    ttl = max(1, min(0xFFFF, int(ttl_seconds)))
+    return struct.pack('!BBHH', BACNET_BVLC_TYPE,
+                       BVLC_REGISTER_FOREIGN_DEVICE, 6, ttl)
+
+
+def build_whois_distribute(low: Optional[int] = None,
+                           high: Optional[int] = None) -> bytes:
+    """Build a Who-Is wrapped in Distribute-Broadcast-To-Network (Annex J.2.10).
+
+    Sent unicast to a BBMD we are registered with; the BBMD re-broadcasts it
+    locally and forwards it to its peers. Same APDU as an ordinary Who-Is —
+    only the BVLC function differs.
+    """
+    npdu = build_npdu(expecting_reply=False, dnet=0xFFFF)
+    apdu = bytearray([0x10, 0x08])  # Unconfirmed-Request, service 8 = Who-Is
+    if low is not None and high is not None:
+        apdu += encode_context_unsigned(0, low)
+        apdu += encode_context_unsigned(1, high)
+    return build_bvlc(BVLC_DISTRIBUTE_BROADCAST_TO_NETWORK, npdu + bytes(apdu))
+
+
+def parse_bvlc_result(data: bytes) -> Optional[int]:
+    """Return the result code from a BVLC-Result packet, or None.
+
+    None means "not a BVLC-Result" — a BBMD that answers a registration with
+    silence is indistinguishable from one that is not there, and both are
+    handled the same way by the caller.
+    """
+    if len(data) < 6 or data[0] != BACNET_BVLC_TYPE:
+        return None
+    if data[1] != BVLC_RESULT:
+        return None
+    try:
+        return struct.unpack('!H', data[4:6])[0]
+    except struct.error:
+        return None
+
+
 def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
     """Parse a received I-Am packet. Returns None if it isn't one."""
     try:
         if len(data) < 4 or data[0] != BACNET_BVLC_TYPE:
             return None
         idx = 4  # skip BVLC header
+
+        # Forwarded-NPDU (Annex J.2.5) inserts the originating device's
+        # 6-byte B/IP address between the BVLC header and the NPDU. A BBMD
+        # relays broadcasts in this form, so without skipping it every I-Am
+        # that arrives through a BBMD fails the NPDU version check below and
+        # is silently dropped — which would make foreign-device registration
+        # look like it had done nothing.
+        if data[1] == BVLC_FORWARDED_NPDU:
+            idx += 6
 
         # NPDU
         if idx + 2 > len(data) or data[idx] != 0x01:
