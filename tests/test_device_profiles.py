@@ -37,7 +37,7 @@ class TestExactMatch:
 
 
 class TestVendorSubstringMatch:
-    """Regression: site field test showed a Trane SC+ reports its own
+    """Regression: field testing showed a Trane SC+ reports its own
     vendor_name property as 'Trane' (short form) via ReadProperty, while
     the ASHRAE vendor registry records it as 'The Trane Company'. Our
     classifier must match either one to the same profile."""
@@ -134,36 +134,36 @@ class TestSiteRegression:
     """Verify the specific Trane SC+ scenario that triggered this feature."""
 
     def test_sc_plus_with_3000_objects_doesnt_truncate(self):
-        """Real SC+ at site has ~3000 objects. Cap must accommodate."""
+        """The verified SC+ has ~3000 objects. Cap must accommodate."""
         prof, _ = classify_device("The Trane Company", "Tracer SC+", 3000)
         assert prof.object_cap >= 3000, (
             f"SC+ cap {prof.object_cap} is below observed 3000 objects"
         )
 
     def test_symbio_with_90_objects_reads_all(self):
-        """Symbio 400-500 at site has ~90 objects. Cap should be >= 100."""
+        """The verified Symbio 400-500 has ~90 objects. Cap should be >= 100."""
         prof, _ = classify_device("The Trane Company", "Symbio 400-500", 90)
         assert prof.object_cap >= 100
 
 
 class TestSiemensSiteRegression:
-    """Verify Siemens profiles match the objects observed at site."""
+    """Verify Siemens profiles match the objects observed in the field."""
 
     def test_dxr2_e10pl_1(self):
-        """Site DXR2.E10PL-1 (ROOM_101): 164 objects observed."""
+        """DXR2.E10PL-1 (room controller): 164 objects observed."""
         prof, explanation = classify_device("Siemens Schweiz", "DXR2.E10PL-1", 164)
         assert prof.object_cap >= 164, f"DXR2 cap {prof.object_cap} < observed 164"
         assert prof.object_cap <= 1000, "DXR2 should not be supervisory-class"
         assert "siemens" in prof.class_label.lower() or "dxr2" in prof.class_label.lower()
 
     def test_dxr2_e18_1(self):
-        """Site DXR2.E18-1 (ROOM_103_HP): 135 objects observed."""
+        """DXR2.E18-1 (heat-pump variant): 135 objects observed."""
         prof, _ = classify_device("Siemens Schweiz", "DXR2.E18-1", 135)
         assert prof.object_cap >= 135
         assert prof.object_cap <= 1000
 
     def test_dxr2_e12p_1(self):
-        """Site DXR2.E12P-1 (ROOM_102): 181 objects observed."""
+        """DXR2.E12P-1 (P-series variant): 181 objects observed."""
         prof, _ = classify_device("Siemens Schweiz", "DXR2.E12P-1", 181)
         assert prof.object_cap >= 181
         assert prof.object_cap <= 1000
@@ -177,12 +177,12 @@ class TestSiemensSiteRegression:
         assert "heuristic" not in explanation.lower() or prof.object_cap >= 500
 
     def test_pxc_field_panel(self):
-        """Site PXCC000001: Siemens BACnet Field Panel, 449 objects observed."""
+        """Siemens BACnet Field Panel (Compact), 449 objects observed."""
         prof, _ = classify_device("Siemens Schweiz", "Siemens BACnet Field Panel", 449)
         assert prof.object_cap >= 449
 
     def test_pxme_modular_panel(self):
-        """Site PXCM000002 (HV-1 PXME Modular): 1960 objects observed.
+        """Siemens BACnet Field Panel (PXME Modular): 1960 objects observed.
         Regression: ensure cap handles real PXME Modular sizes without
         silent truncation. If this fails because cap dropped below 2000,
         a silent truncation bug was reintroduced."""
@@ -204,7 +204,7 @@ class TestSiemensSiteRegression:
 
 
 class TestSupervisorDevices:
-    """Verified at site 2026-04-20: supervisors present BACnet/IP but
+    """Field-verified 2026-04-20: supervisors present BACnet/IP but
     don't expose aggregated points via objectList. Cap is small on
     purpose — reflects what the device actually returns."""
 
