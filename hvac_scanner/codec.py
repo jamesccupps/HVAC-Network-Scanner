@@ -92,8 +92,24 @@ def _read_tag(data: bytes, idx: int) -> tuple[int, int, int, int, int]:
         tag_num = data[idx]
         idx += 1
 
-    # Opening/closing tag — no value, caller decides what to do
+    # Opening/closing tag — no value, caller decides what to do.
+    # Only context tags carry these; for an application tag a L/V/T of 6 or 7
+    # would be a plain length, but the standard requires lengths above 4 to
+    # use the extended form, so 6/7 never appear on an application tag.
     if length in (6, 7):
+        return tag_num, tag_class, length, idx, idx
+
+    # Application-tagged Boolean (ASHRAE 135 20.2.3): the value lives in the
+    # Length/Value/Type field and there are NO contents octets. Treating the
+    # field as a length made a TRUE (0x11) swallow the following byte —
+    # usually the closing tag of the enclosing construct. In a single-value
+    # ReadProperty-ACK that was harmless luck (the stolen byte was the closing
+    # tag and the loop ended anyway), but inside a ReadPropertyMultiple ACK it
+    # ate the closing tag and every subsequent property of that object was
+    # parsed as more values of the boolean one:
+    #     {81: [True, '55', None, 21.5]}   instead of   {81: True, 85: 21.5}
+    # Report the value via `length` but consume nothing.
+    if tag_class == 0 and tag_num == 1:
         return tag_num, tag_class, length, idx, idx
 
     # Extended length
@@ -690,8 +706,8 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
 
     if tag_num == 0:  # Null
         return None, vend
-    if tag_num == 1:  # Boolean (value in length field for app-tagged)
-        return bool(length), vend
+    if tag_num == 1:  # Boolean — value is in the length field, no content octets
+        return bool(length), vend  # vend == vstart here; see _read_tag
     if tag_num == 2:  # Unsigned
         return int.from_bytes(value_bytes, 'big'), vend
     if tag_num == 3:  # Signed
