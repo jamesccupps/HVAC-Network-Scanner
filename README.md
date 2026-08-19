@@ -123,6 +123,35 @@ all auto-broadcast to the enclosing `/24`. The scan log shows the chosen
 broadcast target so it's never magic. Power users can override via the
 `--broadcast` CLI flag or `ScanOptions.bacnet_broadcast`.
 
+## What's new in v2.4
+
+### v2.4.0 (2026-08-19)
+
+Performance release. Deep scans were round-trip bound and strictly
+serialized — a 1,000-object controller cost 5,836 exchanges, a 5,476-object
+supervisory controller close to 11,000, each one waiting on the last. Both
+halves are now batched, and a full deep scan of that 1,000-object controller
+takes **61 exchanges instead of 5,836**.
+
+- **objectList enumeration batches by array index.** `BACnetPropertyReference`
+  carries an optional `propertyArrayIndex`, so one request asks for
+  `objectList[1..N]` rather than one request per index. 1,002 exchanges to 10.
+- **Point properties batch across objects.** ReadPropertyMultiple takes a list
+  of objects; the scanner was sending one request each. Now a single exchange
+  reads four properties from a dozen points, with each object keeping its own
+  property list so binary points still are not asked for units.
+- **Adaptive batch sizing.** Response size cannot be predicted from the
+  request — names and descriptions are free-form — so the window starts at 8,
+  grows on success, halves on failure, and floors at the old per-object
+  behaviour. Tracked per device.
+- **Fallbacks verified identical.** A controller that rejects RPM, or supports
+  RPM but not array indices, still returns exactly the same data; it just
+  costs more exchanges. `--no-rpm` forces the serial path.
+- **A real mock BACnet device in the test suite** (`tests/mock_device.py`),
+  which is what caught a key-naming bug in this work before release.
+
+See [CHANGELOG.md](CHANGELOG.md) for detail.
+
 ## What's new in v2.3
 
 ### v2.3.0 (2026-08-19)
@@ -364,11 +393,14 @@ hvac_scanner/
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/                               # 357 tests, ~60% line coverage
+tests/                               # 395 tests, ~63% line coverage
 ├── test_codec.py                    # BACnet packet encode/decode + parser regressions
 ├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
 ├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
 ├── test_snmp.py                     # SNMP BER encode/decode
+├── test_rpm_batching.py             # Array-index RPM enumeration
+├── test_point_batching.py           # Multi-object RPM point reads
+├── mock_device.py                   # UDP BACnet device for the tests
 ├── test_services_probes.py          # CIP and S7 request wire formats
 ├── test_engine.py                   # Orchestration, sampling strategy, result shaping
 ├── test_device_profiles.py          # Vendor caps, scan depth, --max-objects override

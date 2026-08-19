@@ -61,18 +61,32 @@ class MockBACnetDevice:
             28: _cs('mock device'), 98: bytes([0x21, 0x01]),
             139: bytes([0x21, 0x0F]),
         }
+        # Bind an ephemeral port, not 47808. Hardcoding the BACnet port makes
+        # the suite fail on any machine already running a BACnet tool — which
+        # is most machines this project gets developed on — and risks flakiness
+        # wherever the port is briefly held. Callers point the client at
+        # `self.port`.
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind((host, 47808))
+        self._sock.bind((host, 0))
+        self.port = self._sock.getsockname()[1]
         self._stop = False
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
     # -- lifecycle ---------------------------------------------------------
 
     def __enter__(self):
+        # Point the client's destination at this mock for the duration. The
+        # scanner sends to hvac_scanner.bacnet.BACNET_PORT; the mock is on an
+        # ephemeral port so it never fights a real BACnet service for 47808.
+        import hvac_scanner.bacnet as _b
+        self._saved_port = _b.BACNET_PORT
+        _b.BACNET_PORT = self.port
         self._thread.start()
         return self
 
     def __exit__(self, *a):
+        import hvac_scanner.bacnet as _b
+        _b.BACNET_PORT = self._saved_port
         self._stop = True
         self._sock.close()
 

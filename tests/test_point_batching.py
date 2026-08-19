@@ -20,6 +20,8 @@ from hvac_scanner.constants import PROP_IDS
 
 from .mock_device import MockBACnetDevice
 
+
+
 POINT_PROPS = ['objectName', 'presentValue', 'units', 'description']
 
 

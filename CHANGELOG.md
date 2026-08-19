@@ -3,6 +3,87 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.4.0] — 2026-08-19
+
+Performance release. Deep scans were round-trip bound and strictly
+serialized: a 1,000-object controller cost 5,836 exchanges, and a 5,476-object
+supervisory controller close to 11,000, every one of them waiting on the
+previous. Both halves of that are now batched.
+
+### Changed — deep scans are roughly two orders of magnitude cheaper
+
+Measured against a mock controller with 1,000 objects, full deep scan. All
+four paths return byte-identical results (1,000 points, 1,000 names, 1,000
+values, 820 units — units only on the types that have them):
+
+| device behaviour | exchanges |
+|---|---|
+| rejects ReadPropertyMultiple | 5,836 |
+| supports RPM, run with `--no-rpm` | 4,830 |
+| RPM without `propertyArrayIndex` | 1,053 |
+| full RPM support | **61** |
+
+- **objectList enumeration is batched by array index.**
+  `BACnetPropertyReference` is
+  `{[0] propertyIdentifier, [1] propertyArrayIndex OPTIONAL}`, so one request
+  can ask for `objectList[1..N]` instead of one request per index. Batch size
+  is bounded at both ends — the request must fit the device's
+  `maxAPDULengthAccepted` and the response must fit the APDU we advertise
+  back — and capped at 100 so a single bad batch stays cheap. Enumerating
+  1,000 objects goes from 1,002 exchanges to 10.
+
+- **Per-point property reads are batched across objects.**
+  ReadPropertyMultiple takes a list of ReadAccessSpecifications, but the
+  scanner issued one request per object. Now a single exchange reads four
+  properties from a dozen objects, each object still carrying its own
+  property list so binary points are not asked for units alongside analog
+  ones.
+
+  Batch size here is adaptive rather than computed: response size cannot be
+  derived from the request, because object names and descriptions are
+  free-form strings, so a batch that fits one controller overflows the next
+  and a device that cannot segment simply Aborts. Starts at 8, grows by one
+  per success to a cap of 24, halves on failure, floors at 1 — which is the
+  old per-object behaviour. Tracked per device.
+
+- **Fallbacks are per device and bounded.** A controller that rejects RPM
+  outright, or implements RPM but not `propertyArrayIndex`, drops to the
+  serial path after two failed batches and is not re-probed. `--no-rpm` still
+  forces the serial path outright. Every fallback path was verified to return
+  results identical to the batched path.
+
+The two mechanisms are independent: a device supporting RPM but not
+`propertyArrayIndex` still gets the point-read speedup (5,836 to 1,053).
+
+### Fixed
+
+- **Batched property results came back under the wrong key names.** The
+  number-to-name map was built by inverting `PROP_IDS`, which carries
+  hyphenated aliases alongside the camelCase names — `object-name` and
+  `objectName` both map to 77 — so the inversion returned whichever came
+  last. Every property arrived under a key the engine does not recognise,
+  silently blanking names and values. Names are now resolved from what the
+  caller actually requested. Found by the new mock device before release.
+
+### Added
+
+- **`tests/mock_device.py`** — a real UDP BACnet device for the test suite.
+  Answers Who-Is, ReadProperty and ReadPropertyMultiple including
+  multi-object and array-index requests, counts the exchanges it served, and
+  can emulate the three RPM behaviours seen in the field: full support, RPM
+  without `propertyArrayIndex`, and outright rejection.
+
+  This is the fixture the project was missing. Two protocol scans shipped
+  broken in v2.2.0 because nothing exercised the wire; assertions on exchange
+  count and end-to-end data are worth more here than stubbed clients. It
+  binds an ephemeral port and retargets the client for its own lifetime, so
+  the suite passes on machines already running a BACnet service on 47808.
+
+### Tests
+
+- 357 to 395 tests, line coverage 60% to 63%. `bacnet.py` 37% to 64%,
+  `codec.py` 72% to 75%.
+
 ## [2.3.0] — 2026-08-19
 
 Audit release. A full read-through of the codebase against the wire formats
