@@ -29,6 +29,19 @@ class InvalidTargetSyntaxError(ValueError):
     """Raised when a target spec is not parseable as CIDR, range, or host."""
 
 
+# Upper bound on how many hosts one token may expand to.
+#
+# The range forms have always been guarded, but the CIDR form was not, so
+# 10.0.0.1-10.5.0.1 was refused while the larger 10.0.0.0/8 was accepted and
+# expanded to 16.7M host strings (~875 MB), which the engine then copied into
+# an allow-list set and the service scanner multiplied by 25 ports. Both forms
+# now share this limit so they cannot drift apart again.
+#
+# 65536 admits a /16 (65534 hosts), which is already a long scan but a
+# legitimate one. Anything larger is a typo far more often than an intent.
+MAX_HOSTS_PER_TOKEN = 1 << 16
+
+
 _RE_IP = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 _RE_SHORT_RANGE = re.compile(r"^(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})-(\d{1,3})$")
 _RE_FULL_RANGE = re.compile(
@@ -51,6 +64,13 @@ def _parse_token(token: str) -> list[str]:
         # For /32 we want to include the one host; hosts() returns empty for /32
         if net.prefixlen == 32:
             return [str(net.network_address)]
+        if net.num_addresses > MAX_HOSTS_PER_TOKEN:
+            raise InvalidTargetSyntaxError(
+                f"CIDR {token!r} covers {net.num_addresses:,} addresses, more "
+                f"than the {MAX_HOSTS_PER_TOKEN:,}-host limit; narrow it "
+                f"(a /16 is the widest accepted) or pass several smaller "
+                f"targets"
+            )
         return [str(h) for h in net.hosts()]
 
     # Full IP range: 10.0.0.2-10.0.0.100
@@ -67,10 +87,10 @@ def _parse_token(token: str) -> list[str]:
                 f"range end {end_s} is less than start {start_s} in {token!r}"
             )
         # Cap to something sane so a typo'd /0-ish range can't OOM us.
-        max_span = 1 << 16  # 65536 hosts
-        if int(end) - int(start) + 1 > max_span:
+        if int(end) - int(start) + 1 > MAX_HOSTS_PER_TOKEN:
             raise InvalidTargetSyntaxError(
-                f"range {token!r} spans more than {max_span} hosts; refusing"
+                f"range {token!r} spans more than {MAX_HOSTS_PER_TOKEN:,} "
+                f"hosts; refusing"
             )
         return [str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)]
 

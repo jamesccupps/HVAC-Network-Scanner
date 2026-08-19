@@ -303,6 +303,20 @@ class ScanEngine:
             self._log("No networks specified")
             return self.result
 
+        # Reject unparseable targets before any packet goes out.
+        #
+        # _allowed_ips_for_targets() swallows parse failures and returns None
+        # when nothing parsed, and None means "unbounded — do not filter". So a
+        # target the parser rejects used to degrade into deep-scanning every
+        # device that answered the Who-Is, which is the opposite of what the
+        # user asked for. Fail loudly and scan nothing instead.
+        bad = self._invalid_targets()
+        if bad:
+            for target, reason in bad:
+                self._log(f"  [!] Invalid target {target!r}: {reason}")
+            self._log("Nothing scanned — fix the target list and re-run.")
+            return self._finish(start)
+
         # v2.1.1: MSTP scanning piggybacks on the BACnet client. If the user
         # asked for MSTP without BACnet, they'd get no results and no error.
         # Warn and gracefully enable BACnet discovery to honor their intent.
@@ -363,6 +377,17 @@ class ScanEngine:
         return self.result
 
     # -- BACnet ---------------------------------------------------------
+
+    def _invalid_targets(self) -> list[tuple[str, str]]:
+        """Return [(target, reason)] for every target spec that will not parse."""
+        from .netrange import parse_targets, InvalidTargetSyntaxError
+        bad: list[tuple[str, str]] = []
+        for network in self.opts.networks:
+            try:
+                parse_targets(network)
+            except InvalidTargetSyntaxError as e:
+                bad.append((network, str(e)))
+        return bad
 
     def _allowed_ips_for_targets(self) -> "set[str] | None":
         """Return the union of IPs across all user target specs.
