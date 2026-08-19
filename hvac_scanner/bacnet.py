@@ -381,15 +381,39 @@ class BACnetClient:
 
         `stop_fn`, if given, is called after each read; returning True
         aborts enumeration (plumbing for the STOP button).
+
+        Entries that time out or fail to parse are skipped, so the returned
+        list is NOT positionally aligned with `indices`. Callers that need to
+        know which array index each entry came from must use
+        `read_object_list_entries_indexed` instead — pairing this list back
+        against `indices` by position silently misattributes every entry after
+        the first failed read.
         """
-        out: list[tuple[str, int]] = []
+        return [entry for _idx, entry in self.read_object_list_entries_indexed(
+            ip, instance, indices, dnet=dnet, dadr=dadr, stop_fn=stop_fn)]
+
+    def read_object_list_entries_indexed(
+            self, ip: str, instance: int,
+            indices: list[int],
+            dnet: Optional[int] = None,
+            dadr: "str | int | bytes | None" = None,
+            stop_fn=None) -> list[tuple[int, tuple[str, int]]]:
+        """As `read_object_list_entries`, but pairs each entry with the array
+        index it was actually read from.
+
+        Reads that time out or return an unparseable value are omitted, so the
+        result is shorter than `indices` whenever the device drops a request.
+        Returning the index alongside the entry is what lets callers stay
+        aligned across those gaps.
+        """
+        out: list[tuple[int, tuple[str, int]]] = []
         for i in indices:
             if stop_fn and stop_fn():
                 break
             result = self.read_property(ip, 'Device', instance, 'objectList',
                                         array_index=i, dnet=dnet, dadr=dadr)
             if isinstance(result, tuple) and len(result) == 2:
-                out.append(result)
+                out.append((i, result))
         return out
 
     def read_object_list(self, ip: str, instance: int,

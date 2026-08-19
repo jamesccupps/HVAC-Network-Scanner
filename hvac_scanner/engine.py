@@ -789,7 +789,7 @@ class ScanEngine:
         self._log(f"    Probing full object type layout "
                   f"({total_count} entries)...")
         all_indices = list(range(1, total_count + 1))
-        full_map = client.read_object_list_entries(
+        full_map = client.read_object_list_entries_indexed(
             ip, instance, all_indices, dnet=dnet, dadr=dadr,
             stop_fn=self._stopped,
         )
@@ -797,9 +797,22 @@ class ScanEngine:
             return []
 
         # Bucket by type, preserving array-index order within each type.
+        #
+        # This used to zip(all_indices, entries) against the non-indexed reader,
+        # which drops failed reads: one timeout mid-enumeration shifted every
+        # later pairing by one, so indices were attributed to the wrong object
+        # type for the rest of the device. Only the sampling distribution was
+        # affected (the chosen indices are re-read afterwards, so object
+        # identity was still correct), but on a flaky link the "representative
+        # mix across types" guarantee quietly stopped holding.
         by_type: dict[str, list[int]] = defaultdict(list)
-        for idx, (obj_type, _inst) in zip(all_indices, full_map):
+        for idx, (obj_type, _inst) in full_map:
             by_type[str(obj_type)].append(idx)
+
+        if len(full_map) < total_count:
+            self._log(f"    [!] {total_count - len(full_map)} objectList "
+                      f"entr(ies) did not read back; sampling from the "
+                      f"{len(full_map)} that did.")
 
         type_counts = {t: len(v) for t, v in by_type.items()}
         self._log(f"    Object types found: "
@@ -811,8 +824,12 @@ class ScanEngine:
         # gets at least a few samples.
         chosen: list[int] = []
         per_type_quota: dict[str, int] = {}
+        # Shares are over what actually mapped, not the device's reported
+        # count — otherwise dropped reads make every share undershoot and the
+        # quotas silently allocate less than `cap`.
+        mapped_total = sum(len(v) for v in by_type.values()) or 1
         for t, idxs in by_type.items():
-            share = len(idxs) / total_count
+            share = len(idxs) / mapped_total
             quota = max(5, int(cap * share))  # at least 5 per type if available
             per_type_quota[t] = min(quota, len(idxs))
 
