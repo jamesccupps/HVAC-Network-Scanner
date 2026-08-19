@@ -146,5 +146,21 @@ def parse_targets(raw: str | Iterable[str]) -> list[str]:
 
 
 def iter_parse_targets(raw: str | Iterable[str]) -> Iterator[str]:
-    """Streaming variant for very large target sets."""
-    yield from parse_targets(raw)
+    """Yield target IPs one at a time, without building the full list first.
+
+    Previously this delegated to parse_targets() and yielded from the result,
+    so it materialized everything before producing the first item — the exact
+    thing a caller reaching for the streaming variant is trying to avoid.
+    Deduplication still needs a set of what has been seen, but the IP list
+    itself is never held whole.
+    """
+    if isinstance(raw, str):
+        tokens: Iterable[str] = [t for t in re.split(r"[,\s]+", raw) if t]
+    else:
+        tokens = raw
+    seen: set[str] = set()
+    for token in tokens:
+        for ip in _parse_token(token):
+            if ip not in seen:
+                seen.add(ip)
+                yield ip

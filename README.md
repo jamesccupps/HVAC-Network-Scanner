@@ -207,7 +207,7 @@ broadcast target so it's never magic. Power users can override via the
   BLN over IP, not BACnet/IP. These panels are not reachable with
   this tool regardless of IP connectivity — only Siemens Desigo CC
   can talk to them.
-- **+72 tests** (243 total): range parser, auto-broadcast heuristic,
+- **+72 tests** (346 total): range parser, auto-broadcast heuristic,
   target filtering, vendor profiles, broadcast consolidation,
   deduplication.
 
