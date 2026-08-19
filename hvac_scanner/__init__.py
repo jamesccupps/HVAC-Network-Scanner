@@ -4,7 +4,7 @@ HVAC Network Scanner — BACnet/IP, BACnet MSTP, Modbus TCP, HVAC services, SNMP
 Zero third-party dependencies (uses only the Python standard library).
 """
 
-__version__ = "2.6.0"
+__version__ = "2.6.1"
 __author__ = "James Cupps"
 __license__ = "MIT"
 

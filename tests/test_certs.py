@@ -31,13 +31,23 @@ needs_openssl = pytest.mark.skipif(not openssl, reason="openssl not available")
 
 
 def _make_cert(subject, days=365, extra=()):
-    """Generate a self-signed certificate and return its DER bytes."""
+    """Generate a self-signed certificate and return its DER bytes.
+
+    A fixture that will not build is an environment problem, not a defect in
+    the parser, so this skips with openssl's own message rather than failing.
+    openssl's CLI differs across distributions and major versions — notably in
+    how `-subj` handles anything outside ASCII — and a parser test should not
+    be reporting on that.
+    """
     tmp = Path(tempfile.mkdtemp())
     key, crt = tmp / 'k.pem', tmp / 'c.pem'
     cmd = [openssl, 'req', '-x509', '-newkey', 'rsa:2048',
            '-keyout', str(key), '-out', str(crt), '-days', str(days),
            '-nodes', '-subj', subject, *extra]
-    subprocess.run(cmd, capture_output=True, check=True)
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or not crt.exists():
+        pytest.skip("openssl could not generate a fixture for %r: %s"
+                    % (subject, proc.stderr.decode('utf-8', 'replace')[-300:]))
     return ssl.PEM_cert_to_DER_cert(crt.read_text())
 
 
@@ -83,13 +93,81 @@ class TestRealCertificates:
         assert 'self-signed' in text
         assert 'expires in' in text
 
-    def test_utf8_subject_survives(self):
-        c = parse_der_certificate(_make_cert('/CN=Gebäude-Nord'))
-        assert c.subject_cn == 'Gebäude-Nord'
+    def test_hyphenated_and_spaced_subjects_survive(self):
+        c = parse_der_certificate(_make_cert('/CN=AHU-1 Supply Fan/O=Test BAS Ltd'))
+        assert c.subject_cn == 'AHU-1 Supply Fan'
+        assert c.subject_o == 'Test BAS Ltd'
 
     def test_to_dict_is_json_safe(self):
         import json
         json.dumps(parse_der_certificate(_make_cert('/CN=Panel')).to_dict())
+
+
+# -- string encodings -------------------------------------------------------
+
+def _der(tag, content):
+    if len(content) < 0x80:
+        return bytes([tag, len(content)]) + content
+    n = (len(content).bit_length() + 7) // 8
+    return bytes([tag, 0x80 | n]) + len(content).to_bytes(n, 'big') + content
+
+
+def _name_with_cn(tag, encoded_cn):
+    """Build an X.501 Name whose commonName uses the given string type."""
+    atv = _der(0x30, _der(0x06, bytes([0x55, 0x04, 0x03])) + _der(tag, encoded_cn))
+    return _der(0x30, _der(0x31, atv))
+
+
+def _minimal_cert(subject_name, issuer_name=None):
+    """A certificate with just enough structure to exercise Name parsing."""
+    issuer_name = issuer_name if issuer_name is not None else subject_name
+    validity = _der(0x30,
+                    _der(0x17, b'260101000000Z') + _der(0x17, b'270101000000Z'))
+    tbs = _der(0x30,
+               _der(0xA0, _der(0x02, b'\x02'))       # version v3
+               + _der(0x02, b'\x01\x23')            # serial
+               + _der(0x30, _der(0x06, bytes([0x2A])))  # sig alg
+               + issuer_name + validity + subject_name)
+    return _der(0x30, tbs + _der(0x30, b'') + _der(0x03, b'\x00'))
+
+
+class TestStringEncodings:
+    """Certificates in the field use several ASN.1 string types for the same
+    field. These build the DER directly so the encoding under test is the one
+    intended, rather than whatever the local openssl chose."""
+
+    def test_printable_string(self):
+        cert = parse_der_certificate(
+            _minimal_cert(_name_with_cn(0x13, b'PXC-Compact')))
+        assert cert.subject_cn == 'PXC-Compact'
+
+    def test_utf8_string(self):
+        cert = parse_der_certificate(
+            _minimal_cert(_name_with_cn(0x0C, 'Gebäude-Nord'.encode('utf-8'))))
+        assert cert.subject_cn == 'Gebäude-Nord'
+
+    def test_bmp_string(self):
+        cert = parse_der_certificate(
+            _minimal_cert(_name_with_cn(0x1E, 'Panel-1'.encode('utf-16-be'))))
+        assert cert.subject_cn == 'Panel-1'
+
+    def test_ia5_string(self):
+        cert = parse_der_certificate(
+            _minimal_cert(_name_with_cn(0x16, b'panel.example')))
+        assert cert.subject_cn == 'panel.example'
+
+    def test_issuer_and_subject_are_distinguished(self):
+        cert = parse_der_certificate(_minimal_cert(
+            subject_name=_name_with_cn(0x13, b'Panel'),
+            issuer_name=_name_with_cn(0x13, b'Site CA')))
+        assert cert.subject_cn == 'Panel'
+        assert cert.issuer_cn == 'Site CA'
+        assert cert.self_signed is False
+
+    def test_validity_from_utctime(self):
+        cert = parse_der_certificate(_minimal_cert(_name_with_cn(0x13, b'P')))
+        assert cert.not_before.year == 2026
+        assert cert.not_after.year == 2027
 
 
 # -- agreement with the standard library ------------------------------------
@@ -98,6 +176,8 @@ class TestRealCertificates:
 def test_agrees_with_the_stdlib_decoder():
     """The parser has to match Python's own decoder, not merely be
     self-consistent."""
+    if not hasattr(ssl, '_ssl') or not hasattr(ssl._ssl, '_test_decode_cert'):
+        pytest.skip("ssl._ssl._test_decode_cert is not available on this build")
     der = _make_cert('/CN=Reference/O=TestOrg')
     tmp = Path(tempfile.mkdtemp()) / 'c.pem'
     tmp.write_text(ssl.DER_cert_to_PEM_cert(der))
