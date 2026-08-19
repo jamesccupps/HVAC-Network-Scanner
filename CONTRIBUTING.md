@@ -12,6 +12,42 @@ This document covers:
 4. How to submit a general pull request
 
 
+## 0. Getting set up
+
+```bash
+git clone https://github.com/jamesccupps/HVAC-Network-Scanner.git
+cd HVAC-Network-Scanner
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+Target Python is **3.10+**. CI runs 3.10, 3.11, 3.12 and 3.13 on both Ubuntu
+and Windows.
+
+Running tests:
+
+```bash
+pytest                                   # full suite
+pytest tests/test_codec.py -v            # one module
+pytest --cov=hvac_scanner --cov-report=html
+```
+
+Tests live under `tests/` and follow `test_<module>.py`. The codec tests use
+hand-constructed byte fixtures — no live network, no mocking. That is
+deliberate: the reason the codec is a pure-function module is so the parser
+can be exercised against real packet bytes.
+
+A note on where bugs have actually come from: the pure-function modules were
+well covered and largely correct, while the socket-facing ones were not
+covered at all, and that is exactly where two protocol scans were found
+broken in v2.3.0. If you touch `bacnet.py`, `modbus.py`, `services.py` or
+`snmp.py`, a test that exercises the wire format is worth more than one that
+exercises the Python around it.
+
+
 ## 1. How the scanner handles unknown vendors
 
 The scanner has two classification paths for figuring out how to scan a
@@ -116,11 +152,13 @@ For code or doc changes:
 
 1. Fork, branch, commit with a descriptive message.
 2. Run the full test suite: `python -m pytest`. **All tests must pass.**
-3. If you're adding new functionality, add tests for it. The test
-   suite currently covers codec behavior, per-object-type property
+3. If you're adding new functionality, add tests for it. The suite
+   currently covers codec behavior, per-object-type property
    filtering, MSTP routing, target filtering and deduplication,
-   vendor profile lookup, auto-broadcast heuristics, and the netrange
-   parser.
+   vendor profile lookup, auto-broadcast heuristics, the netrange
+   parser, SNMP and Modbus and CIP wire formats, GUI option
+   plumbing, and a guard against site-identifying data reaching the
+   public tree.
 4. For device profile PRs specifically: add the profile entry to
    `hvac_scanner/device_profiles.py` and a regression test to
    `tests/test_device_profiles.py` asserting the observed object
@@ -136,7 +174,41 @@ For code or doc changes:
 - Match the existing code style (descriptive variable names, comments
   explaining *why* not *what*, f-strings over `.format()`).
 - Logging goes through `log = logging.getLogger(__name__)` — don't
-  sprinkle `print()` calls.
+  sprinkle `print()` calls. User-facing progress goes through the
+  scan callback, not stdout.
+- Wrap every socket in `contextlib.closing(...)` or a try/finally. No
+  exceptions to this one.
+- No bare `except:`. Catch specific types and log at DEBUG. Note that
+  `struct.error` is **not** an `OSError` — a socket handler will not
+  catch it, which is how a malformed `struct.pack` format took down the
+  whole Modbus scan pass until v2.3.0.
+- Type-annotate new public APIs. Internal helpers are fine without.
+
+
+## 5. Adding protocol support
+
+See `docs/ARCHITECTURE.md` for the module template. The short version:
+
+- New scanner module under `hvac_scanner/`
+- `scan_network()` entry point taking `callback` and `stop_event`
+- A scan pass in `ScanEngine` that calls it
+- CLI flag and GUI checkbox
+- Tests for the parser logic, built from captured bytes
+
+
+## Responsible disclosure
+
+If you find a protocol-level vulnerability affecting building-automation
+systems — an authentication bypass, or default credentials not already
+published in vendor documentation — please email the maintainer directly
+rather than opening a public issue. GitHub issues are fine for everything
+else.
+
+
+## Licensing
+
+By submitting a PR you agree your contribution is licensed under the
+project's MIT license.
 
 
 ## Things I won't accept

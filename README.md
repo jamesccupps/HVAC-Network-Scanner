@@ -364,13 +364,24 @@ hvac_scanner/
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/
-├── test_codec.py                    # Packet encode/decode + parser-bug regressions
-├── test_bacnet_client.py            # Socket / invoke-id contamination scenarios
+tests/                               # 357 tests, ~60% line coverage
+├── test_codec.py                    # BACnet packet encode/decode + parser regressions
+├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
+├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
+├── test_snmp.py                     # SNMP BER encode/decode
+├── test_services_probes.py          # CIP and S7 request wire formats
+├── test_engine.py                   # Orchestration, sampling strategy, result shaping
+├── test_device_profiles.py          # Vendor caps, scan depth, --max-objects override
+├── test_fingerprint.py              # Model ID, vendor registry agreement, credentials
+├── test_netrange.py                 # Target syntax, host limits, lazy iteration
+├── test_target_filtering.py         # I-Am filtering and deduplication
+├── test_mstp_routing.py             # DNET/DADR routing across BACnet routers
+├── test_auto_broadcast.py           # Broadcast address heuristic
+├── test_property_per_type.py        # Per-object-type property selection
 ├── test_validate_point_property.py  # Per-property type validation
-├── test_engine.py                   # Orchestration and result shaping
-├── test_fingerprint.py              # Model identification
-├── test_modbus.py                   # Modbus framing and parsing
+├── test_classification_report.py    # Classification report export
+├── test_gui_options.py              # GUI controls reach ScanOptions (skips headless)
+├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
 ```
 
@@ -383,7 +394,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Pull requests welcome. See [CONTRIBUTING.md](docs/CONTRIBUTING.md).
+Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contact
 
