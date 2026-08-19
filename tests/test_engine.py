@@ -326,9 +326,10 @@ def _engine():
 
 
 def test_interleave_maps_indices_to_the_right_types_with_no_drops():
+    # cap > total/2 keeps this on the precise full-map path.
     layout = _contiguous_layout()
     client = _FlakyObjectListClient(layout)
-    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12)
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 30)
     for i in chosen:
         assert i in layout
     types = {layout[i][0] for i in chosen}
@@ -339,7 +340,7 @@ def test_interleave_stays_aligned_when_reads_drop_out():
     """A timeout at index 5 must not shift every later index into another type."""
     layout = _contiguous_layout()
     client = _FlakyObjectListClient(layout, drop=[5, 6, 7])
-    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12)
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 30)
     assert set(chosen).isdisjoint({5, 6, 7}), "returned an index that never read back"
     # Every chosen index must still belong to the type it was bucketed under.
     types = {layout[i][0] for i in chosen}
@@ -351,11 +352,101 @@ def test_interleave_stays_aligned_when_reads_drop_out():
 def test_interleave_still_covers_minority_types_after_drops():
     layout = _contiguous_layout()
     client = _FlakyObjectListClient(layout, drop=range(1, 15))
-    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 20)
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 30)
     assert set(chosen).isdisjoint(set(range(1, 15)))
     assert all(i in layout for i in chosen)
 
 
 def test_interleave_returns_empty_when_nothing_reads_back():
     client = _FlakyObjectListClient(_contiguous_layout(), drop=range(1, 41))
-    assert _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12) == []
+    assert _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 30) == []
+
+
+# ---------------------------------------------------------------------------
+# "Quick" depth reduced the cap to 5% but _interleave_indices still walked the
+# entire objectList before sampling, so a 5,476-object controller cost 5,476
+# enumeration round trips to sample 250 points — four and a half minutes at a
+# 50 ms rate limit, for what is advertised as rapid site recon. Deep sampling
+# now strides instead, which costs `cap` reads and, because devices lay types
+# out in contiguous runs, still lands in every run in proportion to its size.
+# ---------------------------------------------------------------------------
+
+def _sc_plus_layout():
+    """Realistic supervisory layout: contiguous type blocks, AI-dominated."""
+    blocks = [('Analog Input', 3200), ('Analog Output', 420),
+              ('Analog Value', 900), ('Binary Input', 480),
+              ('Binary Output', 300), ('Binary Value', 120),
+              ('Multi-State Input', 40), ('Multi-State Value', 16)]
+    layout, i = {}, 1
+    for name, count in blocks:
+        for n in range(count):
+            layout[i] = (name, n)
+            i += 1
+    return layout, blocks
+
+
+def test_stride_sample_returns_the_requested_count():
+    eng = _engine()
+    assert len(eng._stride_sample_indices(5476, 400)) == 400
+    assert len(eng._stride_sample_indices(1000, 100)) == 100
+
+
+def test_stride_sample_stays_in_range_and_is_unique():
+    idx = _engine()._stride_sample_indices(5476, 400)
+    assert idx == sorted(set(idx))
+    assert min(idx) >= 1 and max(idx) <= 5476
+
+
+def test_stride_sample_degenerate_inputs():
+    eng = _engine()
+    assert eng._stride_sample_indices(0, 10) == []
+    assert eng._stride_sample_indices(10, 0) == []
+    assert eng._stride_sample_indices(10, 99) == list(range(1, 11))
+
+
+def test_stride_sample_covers_every_object_type():
+    layout, blocks = _sc_plus_layout()
+    total = len(layout)
+    chosen = _engine()._stride_sample_indices(total, 400)
+    seen = {layout[i][0] for i in chosen}
+    assert seen == {name for name, _ in blocks}, f"missed {set(b[0] for b in blocks) - seen}"
+
+
+def test_stride_sample_is_proportional_to_type_size():
+    layout, blocks = _sc_plus_layout()
+    total = len(layout)
+    chosen = _engine()._stride_sample_indices(total, 400)
+    for name, count in blocks:
+        device_share = count / total
+        sample_share = sum(1 for i in chosen if layout[i][0] == name) / len(chosen)
+        assert abs(sample_share - device_share) < 0.02, (
+            f"{name}: device {device_share:.1%} vs sample {sample_share:.1%}"
+        )
+
+
+def test_deep_sampling_does_not_probe_the_full_object_list():
+    """The regression: Quick used to read every entry before sampling."""
+    layout, _ = _sc_plus_layout()
+    client = _FlakyObjectListClient(layout)
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, len(layout), 250)
+    assert client.reads == 0, f"probed {client.reads} entries for a 250-object sample"
+    assert len(chosen) == 250
+
+
+def test_mild_truncation_still_uses_the_precise_type_map():
+    """When the cap is close to the count, the full map is worth its cost."""
+    layout, _ = _sc_plus_layout()
+    client = _FlakyObjectListClient(layout)
+    total = len(layout)
+    _engine()._interleave_indices(client, '10.0.0.5', 1, total, int(total * 0.8))
+    assert client.reads == total
+
+
+def test_trane_supervisory_cap_clears_the_largest_documented_scan():
+    """Profile policy: a real-world scan of this class must never hit the cap."""
+    from hvac_scanner.device_profiles import classify_device
+    for count in (3000, 4403, 5476):
+        profile, _ = classify_device('The Trane Company', 'Tracer SC+', count)
+        assert count <= profile.object_cap, (
+            f"{count} objects exceeds cap {profile.object_cap}"
+        )

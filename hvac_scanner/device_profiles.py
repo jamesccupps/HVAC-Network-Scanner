@@ -79,15 +79,21 @@ DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
     # ------------------------------------------------------------------
     # Tracer SC+ is a supervisory controller that aggregates LonTalk
     # downstream devices (~100 VAVs + AHUs in the verified case) and exposes
-    # them as mapped BACnet objects. Observed ~3000+ objects in practice.
-    # Cap of 5000 gives meaningful headroom for larger sites.
+    # them as mapped BACnet objects.
+    #
+    # Cap raised 5000 -> 8000. The module's own policy is "set high enough
+    # that real-world scans of this device class never hit it", but the
+    # largest documented scan of this exact device was 5,476 objects, above
+    # the 5000 cap — so the flagship verified device tripped the sampling
+    # path and dropped 476 objects. 8000 clears the observed maximum with
+    # roughly 45% headroom.
     ("the trane company", "tracer sc+"): DeviceProfile(
-        object_cap=5000,
+        object_cap=8000,
         class_label="Trane supervisory (SC+)",
         verified_at="field-verified 2026-04-20",
     ),
     ("the trane company", "tracer sc"): DeviceProfile(
-        object_cap=5000,
+        object_cap=8000,
         class_label="Trane supervisory (SC)",
         verified_at="field-verified 2026-04-20",
     ),
@@ -219,7 +225,7 @@ _VENDOR_MODEL_PREFIX_RULES = [
         verified_at="field-verified 2026-04-20 (prefix rule)",
     )),
     ("the trane company", "tracer sc", DeviceProfile(
-        object_cap=5000,
+        object_cap=8000,
         class_label="Trane supervisory (Tracer family)",
         verified_at="field-verified 2026-04-20 (prefix rule)",
     )),

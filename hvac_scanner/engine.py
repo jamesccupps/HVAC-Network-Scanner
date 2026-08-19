@@ -767,22 +767,59 @@ class ScanEngine:
                     self.result.devices.append(dev)
                     self.result.counts['mstp'] += 1
 
+    def _stride_sample_indices(self, total_count: int, cap: int) -> list[int]:
+        """Evenly spaced indices across the whole objectList, no reads needed.
+
+        Object types occupy contiguous runs of the array on the controllers
+        this matters for, so an even stride hits every run in proportion to
+        its length — the same "representative mix" the full-map path buys,
+        without paying `total_count` round trips to find out where the runs
+        are. Used when the cap is small relative to the device, where that
+        probe would dominate the scan.
+        """
+        if cap <= 0 or total_count <= 0:
+            return []
+        if cap >= total_count:
+            return list(range(1, total_count + 1))
+        step = total_count / cap
+        chosen = sorted({min(total_count, int(i * step) + 1) for i in range(cap)})
+        self._log(f"    Sampling {len(chosen)} of {total_count} objects by "
+                  f"stride (every ~{step:.0f}th) — no full-layout probe needed.")
+        return chosen
+
     def _interleave_indices(self, client, ip: str, instance: int,
                             total_count: int, cap: int,
                             dnet=None, dadr=None) -> list[int]:
-        """When a device has more objects than our cap, read the full
-        object-type layout and return a type-interleaved sample of indices.
+        """When a device has more objects than our cap, return a sample of
+        array indices spread across object types rather than the first `cap`.
 
-        This prevents the "all Analog Inputs, no Binaries" failure mode
-        on Tracer SC+ and similar devices that enumerate by-type in array
-        order. We pay the cost of reading `total_count` objectList entries
-        (each is small, just an object identifier), then intelligently
-        pick which ones to deep-read for per-point properties.
+        This prevents the "all Analog Inputs, no Binaries" failure mode on
+        Tracer SC+ and similar devices that enumerate by-type in array order.
 
-        Returns the chosen indices (1-based) in roughly evenly-distributed
-        round-robin order across object types.
+        Two strategies, picked by how aggressive the sampling is:
+
+        * Mild truncation (cap is at least half the object count) — read the
+          full type layout and interleave precisely. The map costs at most
+          2x what we were going to read anyway, and it guarantees minority
+          types get sampled even if they hold only a handful of objects.
+
+        * Deep sampling (`total_count` > 2x cap) — stride across the array
+          instead. Devices lay object types out in contiguous blocks, so an
+          even stride lands in every block in proportion to its size, and it
+          costs `cap` reads instead of `total_count + cap`.
+
+          The second path exists because "Quick" depth was not quick: it
+          reduced the cap to 5% but still walked the entire objectList first,
+          so a 5,476-object controller cost 5,476 enumeration round trips to
+          sample 250 points. At a 50 ms rate limit that is four and a half
+          minutes for what is advertised as a rapid site-recon mode.
+
+        Returns the chosen indices (1-based).
         """
         from collections import defaultdict
+
+        if total_count > cap * 2:
+            return self._stride_sample_indices(total_count, cap)
 
         # Fetch the full type/instance map. Each read is small; what's
         # expensive is the per-point property reads later.
