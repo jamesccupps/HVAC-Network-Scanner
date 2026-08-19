@@ -45,6 +45,21 @@ class IAmDevice:
 
 
 @dataclass
+class RpmEntry:
+    """One property result inside a ReadPropertyMultiple-ACK.
+
+    `array_index` is None unless the request asked for a specific element of
+    an array property. It is what keeps objectList[1] distinct from
+    objectList[2] when a single response carries a whole batch.
+    """
+    obj_type: Optional[int]
+    obj_instance: Optional[int]
+    prop_id: int
+    array_index: Optional[int]
+    value: Any
+
+
+@dataclass
 class ReadPropertyResult:
     """Decoded ReadProperty ACK."""
     obj_type: int
@@ -764,8 +779,13 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
 # ReadPropertyMultiple
 # ---------------------------------------------------------------------------
 
+def encode_context_array_index(tag: int, index: int) -> bytes:
+    """Encode a propertyArrayIndex as a context-tagged unsigned."""
+    return encode_context_unsigned(tag, index)
+
+
 def build_read_property_multiple(obj_type: int | str, obj_instance: int,
-                                 prop_ids: list[int | str],
+                                 prop_ids: "list[int | str | tuple[int | str, int]]",
                                  invoke_id: int = 0,
                                  max_apdu: int = 1476,
                                  dnet: Optional[int] = None,
@@ -773,6 +793,14 @@ def build_read_property_multiple(obj_type: int | str, obj_instance: int,
     """Build a ReadPropertyMultiple request for one object, multiple properties.
 
     This is a huge speedup vs ReadProperty: one round trip reads N properties.
+
+    Each entry in `prop_ids` is either a property (name or number), or a
+    ``(property, array_index)`` tuple. BACnetPropertyReference is
+    ``{[0] propertyIdentifier, [1] propertyArrayIndex OPTIONAL}``, so one
+    request can ask for many indices of the same array property — for example
+    ``objectList[1..130]``. That turns object enumeration from one round trip
+    per array index into one per batch, which is the difference between ~5,500
+    exchanges and ~45 on a large supervisory controller.
 
     For MSTP devices behind a router, supply `dnet` and `dadr` (same semantics
     as `build_read_property`).
@@ -794,13 +822,20 @@ def build_read_property_multiple(obj_type: int | str, obj_instance: int,
     # Opening tag 1 (list of property references)
     apdu += bytes([0x1E])
 
-    for prop_id in prop_ids:
+    for entry in prop_ids:
+        if isinstance(entry, tuple):
+            prop_id, array_index = entry
+        else:
+            prop_id, array_index = entry, None
         pval = resolve_property_id(prop_id)
         # Context tag 0 = property identifier (within listOfPropertyReferences)
         if pval < 0x100:
             apdu += bytes([0x09, pval])
         else:
             apdu += bytes([0x0A, (pval >> 8) & 0xFF, pval & 0xFF])
+        # Context tag 1 = property array index (optional)
+        if array_index is not None:
+            apdu += encode_context_array_index(1, array_index)
 
     # Closing tag 1
     apdu += bytes([0x1F])
@@ -808,21 +843,28 @@ def build_read_property_multiple(obj_type: int | str, obj_instance: int,
     return build_bvlc(0x0A, npdu + bytes(apdu))
 
 
-def parse_read_property_multiple_ack(data: bytes,
-                                     prop_ids: list[int | str]) -> dict[int, Any]:
-    """Parse a ReadPropertyMultiple-ACK. Returns {prop_id: value}.
+def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
+    """Parse a ReadPropertyMultiple-ACK into its full structure.
 
-    Missing or error-returned properties are omitted from the dict.
-    prop_ids is the request order — used to correlate when the ACK omits
-    property identifiers that match the request.
+    Returns one RpmEntry per property result, preserving the object it came
+    from and its propertyArrayIndex. The dict-returning
+    `parse_read_property_multiple_ack` is a wrapper over this.
+
+    Keeping the array index matters as soon as a request asks for several
+    indices of the same array property — objectList[1], objectList[2], ... all
+    come back as property 76, so a dict keyed on property id alone would
+    collapse the whole batch into one entry.
+
+    Results carrying a propertyAccessError are omitted, same as before.
     """
+    out: "list[RpmEntry]" = []
     try:
         if len(data) < 4 or data[0] != BACNET_BVLC_TYPE:
-            return {}
+            return out
         idx = 4
 
         if idx + 2 > len(data) or data[idx] != 0x01:
-            return {}
+            return out
         npdu_ctrl = data[idx + 1]
         idx += 2
 
@@ -838,26 +880,31 @@ def parse_read_property_multiple_ack(data: bytes,
             idx += 1
 
         if idx >= len(data):
-            return {}
+            return out
 
         if (data[idx] >> 4) != 3:  # not complex-ack
-            return {}
+            return out
 
         idx += 1  # pdu type
         idx += 1  # invoke id
         service = data[idx]
         idx += 1
         if service != 0x0E:
-            return {}
+            return out
 
-        results: dict[int, Any] = {}
-
-        # listOfReadAccessResults: repeating [object-id, opening-tag-1, results, closing-tag-1]
+        # listOfReadAccessResults: repeating
+        # [object-id, opening-tag-1, results, closing-tag-1]
         while idx < len(data):
             # Context tag 0 = object identifier
             if (data[idx] & 0xF8) != 0x08:
                 break
-            idx = _skip_tag(data, idx)
+            _, _, olen, ovstart, ovend = _read_tag(data, idx)
+            obj_type = obj_instance = None
+            if olen == 4:
+                raw = struct.unpack('!I', data[ovstart:ovend])[0]
+                obj_type = (raw >> 22) & 0x3FF
+                obj_instance = raw & 0x3FFFFF
+            idx = ovend
 
             # Opening tag 1
             if idx >= len(data) or data[idx] != 0x1E:
@@ -873,11 +920,16 @@ def parse_read_property_multiple_ack(data: bytes,
                 prop_id = int.from_bytes(data[pvstart:pvend], 'big')
                 idx = pvend
 
-                # Optional context tag 3 = array index
+                # Optional context tag 3 = property array index. Captured
+                # rather than skipped: it is what distinguishes objectList[7]
+                # from objectList[8] when both arrive in one response.
+                array_index = None
                 if idx < len(data) and (data[idx] & 0xF8) == 0x38:
-                    idx = _skip_tag(data, idx)
+                    _, _, _alen, avstart, avend = _read_tag(data, idx)
+                    array_index = int.from_bytes(data[avstart:avend], 'big')
+                    idx = avend
 
-                # Either opening tag 4 (propertyValue) or opening tag 5 (propertyAccessError)
+                # Either opening tag 4 (propertyValue) or 5 (propertyAccessError)
                 if idx >= len(data):
                     break
 
@@ -890,9 +942,14 @@ def parse_read_property_multiple_ack(data: bytes,
                     if idx < len(data) and data[idx] == 0x4F:
                         idx += 1  # closing tag 4
                     if values:
-                        results[prop_id] = values[0] if len(values) == 1 else values
+                        out.append(RpmEntry(
+                            obj_type=obj_type,
+                            obj_instance=obj_instance,
+                            prop_id=prop_id,
+                            array_index=array_index,
+                            value=values[0] if len(values) == 1 else values,
+                        ))
                 elif data[idx] == 0x5E:  # Opening tag 5 (access error)
-                    # Skip error class + error code then closing
                     idx += 1
                     while idx < len(data) and data[idx] != 0x5F:
                         idx = _skip_tag(data, idx)
@@ -908,8 +965,23 @@ def parse_read_property_multiple_ack(data: bytes,
             else:
                 break
 
-        return results
+        return out
     except BACnetParseError:
-        return {}
+        return out
     except (IndexError, struct.error):
-        return {}
+        return out
+
+
+def parse_read_property_multiple_ack(data: bytes,
+                                     prop_ids: list[int | str]) -> dict[int, Any]:
+    """Parse a ReadPropertyMultiple-ACK. Returns {prop_id: value}.
+
+    Missing or error-returned properties are omitted from the dict.
+    prop_ids is the request order — used to correlate when the ACK omits
+    property identifiers that match the request.
+
+    Note this shape cannot represent several indices of the same array
+    property; use `parse_read_property_multiple_ack_full` when the request
+    carried propertyArrayIndex values.
+    """
+    return {e.prop_id: e.value for e in parse_read_property_multiple_ack_full(data)}

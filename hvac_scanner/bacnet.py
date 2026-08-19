@@ -36,6 +36,20 @@ log = logging.getLogger(__name__)
 # not trying at all is a permanently blank column.
 _PARTIAL_FILL_GIVE_UP = 3
 
+# Batched objectList enumeration via ReadPropertyMultiple.
+#
+# BACnetPropertyReference carries an optional propertyArrayIndex, so one RPM
+# request can ask for objectList[1..N]. That collapses object enumeration from
+# one round trip per index into one per batch. Sizing is bounded at both ends:
+# the REQUEST must fit the device's maxAPDULengthAccepted, and the RESPONSE
+# must fit the max APDU we advertise back to it.
+_RPM_ELEMENT_REQUEST_BYTES = 8    # ctx0 propId + ctx1 arrayIndex, worst case
+_RPM_ELEMENT_RESPONSE_BYTES = 13  # ctx2 propId + ctx3 index + tags + objId
+_RPM_FRAMING_OVERHEAD = 60        # BVLC + NPDU + APDU header + objId + tags
+_RPM_MAX_BATCH = 100              # keeps the blast radius of one bad batch small
+_RPM_OUR_MAX_APDU = 1476          # what build_read_property_multiple advertises
+_RPM_BATCH_GIVE_UP = 2            # failed batches before falling back entirely
+
 
 class BACnetClient:
     """Single long-lived socket for all BACnet traffic from this scanner.
@@ -385,7 +399,9 @@ class BACnetClient:
                                  indices: list[int],
                                  dnet: Optional[int] = None,
                                  dadr: "str | int | bytes | None" = None,
-                                 stop_fn=None) -> list[tuple[str, int]]:
+                                 stop_fn=None,
+                                 max_apdu: Optional[int] = None,
+                                 prefer_multiple: bool = True) -> list[tuple[str, int]]:
         """Read specified array indices from `objectList`. Caller decides
         which indices (enables interleaving by object type, see engine).
 
@@ -400,14 +416,17 @@ class BACnetClient:
         the first failed read.
         """
         return [entry for _idx, entry in self.read_object_list_entries_indexed(
-            ip, instance, indices, dnet=dnet, dadr=dadr, stop_fn=stop_fn)]
+            ip, instance, indices, dnet=dnet, dadr=dadr, stop_fn=stop_fn,
+            max_apdu=max_apdu, prefer_multiple=prefer_multiple)]
 
     def read_object_list_entries_indexed(
             self, ip: str, instance: int,
             indices: list[int],
             dnet: Optional[int] = None,
             dadr: "str | int | bytes | None" = None,
-            stop_fn=None) -> list[tuple[int, tuple[str, int]]]:
+            stop_fn=None,
+            max_apdu: Optional[int] = None,
+            prefer_multiple: bool = True) -> list[tuple[int, tuple[str, int]]]:
         """As `read_object_list_entries`, but pairs each entry with the array
         index it was actually read from.
 
@@ -415,7 +434,88 @@ class BACnetClient:
         result is shorter than `indices` whenever the device drops a request.
         Returning the index alongside the entry is what lets callers stay
         aligned across those gaps.
+
+        With `prefer_multiple`, indices are batched into ReadPropertyMultiple
+        requests carrying propertyArrayIndex — one round trip per ~100 objects
+        instead of per object. A device that will not answer batched requests
+        falls back to one read per index after `_RPM_BATCH_GIVE_UP` failures,
+        so the slow path stays available without being the default.
         """
+        if not prefer_multiple or len(indices) < 2:
+            return self._object_list_one_by_one(ip, instance, indices,
+                                                dnet, dadr, stop_fn)
+
+        out: list[tuple[int, tuple[str, int]]] = []
+        batch_size = self._object_list_batch_size(max_apdu)
+        failures = 0
+        pos = 0
+        while pos < len(indices):
+            if stop_fn and stop_fn():
+                break
+            batch = indices[pos:pos + batch_size]
+            got = self._object_list_rpm_batch(ip, instance, batch, dnet, dadr)
+            if got is None:
+                failures += 1
+                out.extend(self._object_list_one_by_one(
+                    ip, instance, batch, dnet, dadr, stop_fn))
+                if failures >= _RPM_BATCH_GIVE_UP:
+                    self._log("    %s does not answer batched objectList reads; "
+                              "falling back to one read per index" % ip)
+                    out.extend(self._object_list_one_by_one(
+                        ip, instance, indices[pos + batch_size:],
+                        dnet, dadr, stop_fn))
+                    break
+            else:
+                out.extend(got)
+            pos += batch_size
+        return out
+
+    @staticmethod
+    def _object_list_batch_size(device_max_apdu: Optional[int]) -> int:
+        """How many array indices fit in one exchange, bounded at both ends."""
+        # Unknown device APDU: assume the smallest common size rather than
+        # guessing high and having the request rejected outright.
+        dev = device_max_apdu if device_max_apdu else 480
+        by_request = (dev - _RPM_FRAMING_OVERHEAD) // _RPM_ELEMENT_REQUEST_BYTES
+        by_response = ((_RPM_OUR_MAX_APDU - _RPM_FRAMING_OVERHEAD)
+                       // _RPM_ELEMENT_RESPONSE_BYTES)
+        return max(1, min(by_request, by_response, _RPM_MAX_BATCH))
+
+    def _object_list_rpm_batch(self, ip: str, instance: int, batch: list[int],
+                               dnet=None, dadr=None):
+        """Read one batch of objectList indices in a single RPM exchange.
+
+        Returns the entries that came back, or None if the device did not
+        answer the batched form at all — which the caller treats as a signal to
+        fall back, not as an empty object list.
+        """
+        self._throttle(ip)
+        invoke_id = self._next_invoke_id()
+        pkt = codec.build_read_property_multiple(
+            'Device', instance, [('objectList', i) for i in batch],
+            invoke_id=invoke_id, dnet=dnet, dadr=dadr,
+        )
+        with self._lock:
+            entries = self._request_response(
+                ip, pkt, invoke_id,
+                parser=codec.parse_read_property_multiple_ack_full,
+            )
+        if not entries:
+            return None
+        out: list[tuple[int, tuple[str, int]]] = []
+        for e in entries:
+            if e.array_index is None or e.prop_id != PROP_IDS['objectList']:
+                continue
+            if isinstance(e.value, tuple) and len(e.value) == 2:
+                out.append((e.array_index, e.value))
+        # A response that parsed but yielded nothing usable is still a failure
+        # of the batched form, not an empty object list.
+        return out or None
+
+    def _object_list_one_by_one(self, ip: str, instance: int,
+                                indices: list[int],
+                                dnet=None, dadr=None, stop_fn=None
+                                ) -> list[tuple[int, tuple[str, int]]]:
         out: list[tuple[int, tuple[str, int]]] = []
         for i in indices:
             if stop_fn and stop_fn():

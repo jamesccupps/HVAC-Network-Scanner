@@ -292,7 +292,8 @@ class _FlakyObjectListClient:
         self.reads = 0
 
     def read_object_list_entries_indexed(self, ip, instance, indices,
-                                         dnet=None, dadr=None, stop_fn=None):
+                                         dnet=None, dadr=None, stop_fn=None,
+                                         max_apdu=None, prefer_multiple=True):
         out = []
         for i in indices:
             self.reads += 1
@@ -303,9 +304,11 @@ class _FlakyObjectListClient:
         return out
 
     def read_object_list_entries(self, ip, instance, indices,
-                                 dnet=None, dadr=None, stop_fn=None):
+                                 dnet=None, dadr=None, stop_fn=None,
+                                 max_apdu=None, prefer_multiple=True):
         return [e for _i, e in self.read_object_list_entries_indexed(
-            ip, instance, indices, dnet, dadr, stop_fn)]
+            ip, instance, indices, dnet, dadr, stop_fn,
+            max_apdu, prefer_multiple)]
 
 
 def _contiguous_layout():
