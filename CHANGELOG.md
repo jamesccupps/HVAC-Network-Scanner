@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.1] — 2026-08-19
+
+### Fixed
+
+- **A test asserted openssl's behaviour rather than the parser's.**
+  `test_utf8_subject_survives` generated a fixture with a non-ASCII `-subj`
+  and asserted the common name round-tripped. Ubuntu's openssl reads those
+  bytes as Latin-1, so it wrote `GebÃ¤ude-Nord` into the certificate; the
+  parser decoded exactly what was there and the assertion failed. The parser
+  was correct — the test was measuring the local openssl CLI's charset
+  handling, which differs by distribution and major version.
+
+  Windows CI never caught it because openssl is not on those runners' PATH,
+  so the whole openssl-dependent group skipped there.
+
+  String-type coverage now builds the DER directly, where the encoding under
+  test is the intended one: PrintableString, UTF8String, BMPString and
+  IA5String, plus issuer/subject separation and UTCTime. Those run on every
+  platform rather than only where openssl happens to exist.
+
+- Fixture generation now skips with openssl's own message instead of raising,
+  so a future environment difference reports what went wrong rather than
+  failing an unrelated-looking assertion. The stdlib cross-check skips if
+  `ssl._ssl._test_decode_cert` is unavailable, since that is a CPython
+  implementation detail.
+
+No change to `hvac_scanner/` — this is entirely test-side.
+
 ## [2.6.0] — 2026-08-19
 
 ### Added

@@ -476,7 +476,7 @@ hvac_scanner/
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/                               # 496 tests
+tests/                               # 502 tests
 ├── test_codec.py                    # BACnet packet encode/decode + parser regressions
 ├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
 ├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
