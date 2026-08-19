@@ -269,3 +269,93 @@ def test_bug_unique_ip_count_not_summed():
     # Just run _finish and count unique IPs in the devices list ourselves
     unique_ips = {d.get('ip') for d in engine.result.devices if d.get('ip')}
     assert len(unique_ips) == 2  # 10.0.0.121 and 10.0.0.1, not 5
+
+
+# ---------------------------------------------------------------------------
+# _interleave_indices used to pair array indices against entries by position:
+#     zip(all_indices, client.read_object_list_entries(...))
+# read_object_list_entries omits reads that time out or fail to parse, so a
+# single dropped entry shifted every later pairing by one and the rest of the
+# device's indices were attributed to the wrong object type. Object identity
+# survived (the chosen indices get re-read afterwards) but the "representative
+# mix across AI/AO/BI/BO/..." guarantee quietly stopped holding — which was
+# the entire reason the interleaving exists.
+# ---------------------------------------------------------------------------
+
+class _FlakyObjectListClient:
+    """Client stub whose objectList reads drop a configurable set of indices."""
+
+    def __init__(self, layout, drop=()):
+        # layout: {array_index: (type_name, obj_instance)}
+        self.layout = layout
+        self.drop = set(drop)
+        self.reads = 0
+
+    def read_object_list_entries_indexed(self, ip, instance, indices,
+                                         dnet=None, dadr=None, stop_fn=None):
+        out = []
+        for i in indices:
+            self.reads += 1
+            if i in self.drop:
+                continue
+            if i in self.layout:
+                out.append((i, self.layout[i]))
+        return out
+
+    def read_object_list_entries(self, ip, instance, indices,
+                                 dnet=None, dadr=None, stop_fn=None):
+        return [e for _i, e in self.read_object_list_entries_indexed(
+            ip, instance, indices, dnet, dadr, stop_fn)]
+
+
+def _contiguous_layout():
+    """40 objects laid out in contiguous type blocks, as real devices do."""
+    layout = {}
+    idx = 1
+    for type_name, count in (('Analog Input', 20), ('Binary Input', 10),
+                             ('Analog Value', 6), ('Multi-State Value', 4)):
+        for n in range(count):
+            layout[idx] = (type_name, n)
+            idx += 1
+    return layout
+
+
+def _engine():
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    return ScanEngine(ScanOptions(networks=['10.0.0.0/24']))
+
+
+def test_interleave_maps_indices_to_the_right_types_with_no_drops():
+    layout = _contiguous_layout()
+    client = _FlakyObjectListClient(layout)
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12)
+    for i in chosen:
+        assert i in layout
+    types = {layout[i][0] for i in chosen}
+    assert len(types) >= 3, f"sample covered only {types}"
+
+
+def test_interleave_stays_aligned_when_reads_drop_out():
+    """A timeout at index 5 must not shift every later index into another type."""
+    layout = _contiguous_layout()
+    client = _FlakyObjectListClient(layout, drop=[5, 6, 7])
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12)
+    assert set(chosen).isdisjoint({5, 6, 7}), "returned an index that never read back"
+    # Every chosen index must still belong to the type it was bucketed under.
+    types = {layout[i][0] for i in chosen}
+    assert 'Binary Input' in types or 'Analog Value' in types, (
+        "sampling collapsed onto one type after the dropped reads"
+    )
+
+
+def test_interleave_still_covers_minority_types_after_drops():
+    layout = _contiguous_layout()
+    client = _FlakyObjectListClient(layout, drop=range(1, 15))
+    chosen = _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 20)
+    assert set(chosen).isdisjoint(set(range(1, 15)))
+    assert all(i in layout for i in chosen)
+
+
+def test_interleave_returns_empty_when_nothing_reads_back():
+    client = _FlakyObjectListClient(_contiguous_layout(), drop=range(1, 41))
+    assert _engine()._interleave_indices(client, '10.0.0.5', 1, 40, 12) == []
