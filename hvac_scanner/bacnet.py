@@ -87,6 +87,9 @@ class BACnetClient:
         # (ip, device_instance) -> current point-read batch size. Adaptive:
         # see _POINT_BATCH_INITIAL.
         self._point_batch: dict[tuple[str, int], int] = {}
+        # (bbmd_ip, ttl) once registered as a Foreign Device, else None.
+        self._bbmd: Optional[tuple[str, int]] = None
+        self._bbmd_registered_at: float = 0.0
 
     # -- Lifecycle --------------------------------------------------------
 
@@ -178,6 +181,96 @@ class BACnetClient:
             self._log(f"  Who-Is send error: {e}")
             return []
 
+        return self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+
+    # -- BBMD / foreign device -------------------------------------------
+
+    def register_foreign_device(self, bbmd_ip: str, ttl: int = 60) -> bool:
+        """Register with a BBMD so broadcasts reach beyond the local subnet.
+
+        A Who-Is is a broadcast and broadcasts do not cross a router, so
+        discovery is normally confined to the scanner's own subnet. Registering
+        as a Foreign Device adds a time-limited entry to the BBMD's Foreign
+        Device Table; Distribute-Broadcast-To-Network then reaches that BBMD's
+        subnet and its peers, and replies come back as ordinary unicast.
+
+        Returns True on an explicit success result. A BBMD that stays silent is
+        treated as a failure — the alternative is a scan that quietly finds
+        nothing and looks like an empty network.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+
+        pkt = codec.build_register_foreign_device(ttl)
+        try:
+            self._sock.sendto(pkt, (bbmd_ip, BACNET_PORT))
+        except OSError as e:
+            self._log(f"  BBMD registration send failed: {e}")
+            return False
+
+        deadline = time.time() + self.timeout
+        old_timeout = self._sock.gettimeout()
+        try:
+            while time.time() < deadline:
+                self._sock.settimeout(max(0.1, deadline - time.time()))
+                try:
+                    data, addr = self._sock.recvfrom(4096)
+                except socket.timeout:
+                    break
+                if addr[0] != bbmd_ip:
+                    continue
+                code = codec.parse_bvlc_result(data)
+                if code is None:
+                    continue
+                if code == codec.BVLC_RESULT_SUCCESS:
+                    self._bbmd = (bbmd_ip, ttl)
+                    self._bbmd_registered_at = time.monotonic()
+                    self._log(f"  Registered with BBMD {bbmd_ip} (TTL {ttl}s)")
+                    return True
+                self._log(f"  BBMD {bbmd_ip} refused registration: "
+                          f"{codec.bvlc_result_name(code)}")
+                return False
+        finally:
+            self._sock.settimeout(old_timeout)
+
+        self._log(f"  BBMD {bbmd_ip} did not answer the registration request")
+        return False
+
+    def _reregister_if_stale(self) -> None:
+        """Re-register before the BBMD's TTL lapses.
+
+        A large site can take longer to scan than the TTL, and once the entry
+        expires the BBMD stops forwarding — the scan would simply stop finding
+        devices partway through, with nothing to say why.
+        """
+        if not self._bbmd:
+            return
+        bbmd_ip, ttl = self._bbmd
+        # Renew at two thirds of the TTL; the spec grants a 30s grace period
+        # on top, so this is comfortably early without being chatty.
+        if time.monotonic() - self._bbmd_registered_at < ttl * 2 / 3:
+            return
+        self._log(f"  Renewing BBMD registration with {bbmd_ip}")
+        self.register_foreign_device(bbmd_ip, ttl)
+
+    def discover_who_is_via_bbmd(self, low: Optional[int] = None,
+                                 high: Optional[int] = None,
+                                 extra_wait: float = 0.0) -> list[dict[str, Any]]:
+        """Who-Is through the registered BBMD instead of a local broadcast."""
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        if not self._bbmd:
+            raise RuntimeError("not registered with a BBMD")
+
+        self._reregister_if_stale()
+        bbmd_ip, _ttl = self._bbmd
+        pkt = codec.build_whois_distribute(low=low, high=high)
+        try:
+            self._sock.sendto(pkt, (bbmd_ip, BACNET_PORT))
+            self._log(f"  -> Who-Is distributed via BBMD {bbmd_ip}")
+        except OSError as e:
+            self._log(f"  BBMD Who-Is send error: {e}")
+            return []
         return self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
 
     def discover_routers(self, target_ip: str = "255.255.255.255") -> tuple[list[dict], list[int]]:

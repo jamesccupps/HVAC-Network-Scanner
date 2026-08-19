@@ -99,6 +99,12 @@ class ScanOptions:
     # or 255.255.255.255 for limited broadcast) to override the per-CIDR
     # broadcast calculation. Blank/None = auto-compute (old behavior).
     bacnet_broadcast: Optional[str] = None
+    # BBMD to register with as a Foreign Device. A Who-Is is a broadcast and
+    # broadcasts do not cross a router, so without this, discovery only ever
+    # sees the scanner's own subnet — one run per building. With it, one host
+    # discovers every subnet the BBMD and its peers serve.
+    bbmd: Optional[str] = None
+    bbmd_ttl: int = 60
 
 
 @dataclass
@@ -512,6 +518,21 @@ class ScanEngine:
             # deep-scanning everything that answered.
             allowed_ips = self._allowed_ips_for_targets()
 
+            # Foreign Device registration, if asked for. Failure is fatal to
+            # the BACnet pass rather than silently falling back to a local
+            # broadcast: the user named a BBMD because the devices are not on
+            # this subnet, so a local sweep would report an empty network and
+            # look like a clean result.
+            if self.opts.bbmd:
+                if not client.register_foreign_device(self.opts.bbmd,
+                                                      self.opts.bbmd_ttl):
+                    self._log(f"  [!] Could not register with BBMD "
+                              f"{self.opts.bbmd}. Check the address, that UDP "
+                              f"47808 is reachable, and that the device is "
+                              f"configured to accept foreign device "
+                              f"registrations. Skipping BACnet discovery.")
+                    return
+
             # v2.1.2: consolidate broadcasts by unique destination. When the
             # user provides comma-separated targets on the same subnet
             # (e.g. "10.0.0.245, 10.0.0.201, 10.0.0.230, 10.0.0.176"), all
@@ -642,8 +663,11 @@ class ScanEngine:
         consecutive empty chunks (avoids scanning the full 4M instance space
         on a small network).
         """
+        via_bbmd = bool(self.opts.bbmd)
         chunk = self.opts.whois_chunk_size
         if chunk <= 0:
+            if via_bbmd:
+                return client.discover_who_is_via_bbmd()
             return client.discover_who_is(target_ip=bcast)
 
         # Chunked discovery
@@ -655,7 +679,10 @@ class ScanEngine:
         low = 0
         while low <= self.opts.whois_max_instance and not self._stopped():
             high = min(low + chunk - 1, self.opts.whois_max_instance)
-            batch = client.discover_who_is(target_ip=bcast, low=low, high=high)
+            if via_bbmd:
+                batch = client.discover_who_is_via_bbmd(low=low, high=high)
+            else:
+                batch = client.discover_who_is(target_ip=bcast, low=low, high=high)
             new_in_batch = 0
             for dev in batch:
                 key = (dev['ip'], dev.get('instance'))
