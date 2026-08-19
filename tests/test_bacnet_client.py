@@ -167,3 +167,110 @@ def test_rpm_survives_unsolicited_traffic_from_target():
     ])
     result = client.read_property_multiple('10.0.0.21', 'Analog Input', 29, [85])
     assert result == {85: 55.5}
+
+
+# ---------------------------------------------------------------------------
+# Partial ReadPropertyMultiple results.
+#
+# A partial RPM result has two causes: the device genuinely lacks the property,
+# or its RPM implementation is incomplete while single-property reads work.
+# The old code took any non-empty RPM result as final, so the second case left
+# permanently blank Name/Units columns. Filling blindly is not the answer
+# either — that is a round trip per missing property per object, thousands of
+# wasted exchanges on a supervisory controller whose answer never changes. The
+# client fills gaps individually but gives up per (device, property) after
+# _PARTIAL_FILL_GIVE_UP consecutive failures.
+# ---------------------------------------------------------------------------
+
+from hvac_scanner.bacnet import _PARTIAL_FILL_GIVE_UP
+
+
+class _ScriptedClient(bacnet.BACnetClient):
+    """Client whose RPM and ReadProperty results are supplied by the test."""
+
+    def __init__(self, rpm_result, single_results):
+        super().__init__(timeout=0.1)
+        self._rpm_result = rpm_result
+        self._single_results = single_results      # {prop_name: value or None}
+        self.single_reads: list[tuple[str, str]] = []
+
+    def read_property_multiple(self, ip, obj_type, obj_instance, prop_ids,
+                               dnet=None, dadr=None):
+        return dict(self._rpm_result)
+
+    def read_property(self, ip, obj_type, obj_instance, prop_id,
+                      array_index=None, dnet=None, dadr=None):
+        self.single_reads.append((ip, prop_id))
+        return self._single_results.get(prop_id)
+
+
+def test_partial_rpm_gaps_are_filled_individually():
+    """The recoverable case: RPM omits objectName but ReadProperty has it."""
+    client = _ScriptedClient(
+        rpm_result={85: 72.5},                      # presentValue only
+        single_results={'objectName': 'AHU-1 SAT', 'units': 64,
+                        'description': 'supply air temp'},
+    )
+    out = client.read_point_properties('10.0.0.21', 'Analog Input', 1)
+    assert out['presentValue'] == 72.5
+    assert out['objectName'] == 'AHU-1 SAT'
+    assert out['units'] == 64
+    assert out['description'] == 'supply air temp'
+
+
+def test_partial_fill_does_not_re_read_what_rpm_already_returned():
+    client = _ScriptedClient(
+        rpm_result={85: 72.5, 77: 'AHU-1 SAT'},
+        single_results={'units': 64, 'description': 'd'},
+    )
+    client.read_point_properties('10.0.0.21', 'Analog Input', 1)
+    asked = {prop for _ip, prop in client.single_reads}
+    assert 'presentValue' not in asked
+    assert 'objectName' not in asked
+
+
+def test_partial_fill_gives_up_after_repeated_refusals():
+    """A device that simply lacks the property costs a bounded number of reads."""
+    client = _ScriptedClient(rpm_result={85: 72.5}, single_results={})  # all refuse
+    for instance in range(25):
+        client.read_point_properties('10.0.0.21', 'Analog Input', instance)
+    per_prop = {}
+    for _ip, prop in client.single_reads:
+        per_prop[prop] = per_prop.get(prop, 0) + 1
+    for prop, count in per_prop.items():
+        assert count == _PARTIAL_FILL_GIVE_UP, f"{prop} retried {count} times"
+
+
+def test_give_up_is_tracked_per_device_not_globally():
+    """One uncooperative controller must not suppress fills on another."""
+    client = _ScriptedClient(rpm_result={85: 1.0}, single_results={})
+    for i in range(10):
+        client.read_point_properties('10.0.0.21', 'Analog Input', i)
+    before = len(client.single_reads)
+    client._single_results = {'objectName': 'VAV-3 DAT'}
+    out = client.read_point_properties('10.0.0.99', 'Analog Input', 0)
+    assert len(client.single_reads) > before
+    assert out['objectName'] == 'VAV-3 DAT'
+
+
+def test_a_success_resets_the_failure_counter():
+    """Intermittent failures must not permanently disable a property."""
+    client = _ScriptedClient(rpm_result={85: 1.0}, single_results={})
+    client.read_point_properties('10.0.0.21', 'Analog Input', 0)
+    assert client._partial_fill_failures[('10.0.0.21', 'objectName')] == 1
+    client._single_results = {'objectName': 'recovered'}
+    out = client.read_point_properties('10.0.0.21', 'Analog Input', 1)
+    assert out['objectName'] == 'recovered'
+    assert ('10.0.0.21', 'objectName') not in client._partial_fill_failures
+
+
+def test_empty_rpm_still_retries_every_property():
+    """Unchanged behavior for devices that reject RPM outright."""
+    client = _ScriptedClient(
+        rpm_result={},
+        single_results={'presentValue': 68.0, 'objectName': 'RM-101 TEMP',
+                        'units': 64, 'description': 'room temp'},
+    )
+    out = client.read_point_properties('10.0.0.21', 'Analog Input', 1)
+    assert out['presentValue'] == 68.0
+    assert out['objectName'] == 'RM-101 TEMP'
