@@ -3,6 +3,57 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.0] — 2026-08-19
+
+### Added
+
+- **TLS certificate capture on HTTPS probes.** The services scan already
+  opened a TLS connection to every 443/8443 it found and threw the
+  certificate away. BAS controllers put the product line, and often the panel
+  name, in the subject CN, and the expiry date is operational information the
+  system owner wants regardless of fingerprinting.
+
+  New `hvac_scanner/certs.py` parses subject and issuer CN and organisation,
+  the validity window and the serial straight from the DER. Hand-rolled on
+  purpose: DER is BER, the same encoding the BACnet codec and SNMP probe
+  already decode, and an ASN.1 dependency would cost the zero-dependency
+  property for four fields. Certificate verification stays off — self-signed
+  is the norm on this gear — which is why `getpeercert()` cannot be used and
+  the DER is decoded directly.
+
+  Surfaced as a `tls` object in the JSON, a **TLS Certificate** column in the
+  CSV, and a scan-log warning when a certificate is expired or inside 30 days.
+  Self-signed is called out explicitly so the reader knows the CN is
+  self-asserted. The summary also feeds the vendor fingerprint regexes.
+
+  Malformed certificates yield nothing rather than raising. A scanner must not
+  fall over because one device presents a broken certificate, and this gear
+  presents plenty.
+
+- **Windows GUI executable.** `packaging/hvac_scanner.spec` builds a single
+  ~14 MB `HVACNetworkScanner.exe` with PyInstaller. The package is stdlib-only
+  precisely so it can run on a Windows box without a Python install; this is
+  what makes that true for a field tech who is not going to install Python on
+  a client's engineering workstation.
+
+  ```bash
+  pip install -e ".[build]"
+  pyinstaller packaging/hvac_scanner.spec --noconfirm
+  ```
+
+  CI builds it on tags and on demand and uploads it as an artifact, after
+  starting it to confirm the bundle resolves its imports — which is the
+  failure mode a spec file actually has. PyInstaller is a build dependency
+  only and never appears at runtime.
+
+### Tests
+
+- 470 to 496. Certificate fixtures are generated with `openssl` where it is
+  available and skipped where it is not, so the certificates under test are
+  real rather than bytes that only prove the parser agrees with itself. The
+  parser is also checked against Python's own decoder, which it matches on
+  subject, issuer and expiry.
+
 ## [2.5.0] — 2026-08-19
 
 Three features that between them change what the tool is for: it stops being

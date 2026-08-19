@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, develop]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -68,3 +69,51 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  windows-exe:
+    name: Build Windows GUI executable
+    runs-on: windows-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[build]"
+
+      - name: Build
+        run: python -m PyInstaller packaging/hvac_scanner.spec --noconfirm
+
+      - name: Smoke test the executable
+        shell: pwsh
+        run: |
+          # No display on a runner, so the GUI cannot be driven. Starting it
+          # and confirming it stays up proves the bundle resolves its imports,
+          # which is the failure mode a spec file actually has.
+          $p = Start-Process -FilePath dist\HVACNetworkScanner.exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) {
+            Write-Error "executable exited immediately (code $($p.ExitCode))"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "executable started and stayed running"
+
+      - name: Report size
+        shell: pwsh
+        run: |
+          $f = Get-Item dist\HVACNetworkScanner.exe
+          Write-Host ("HVACNetworkScanner.exe: {0:N1} MB" -f ($f.Length / 1MB))
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HVACNetworkScanner-windows-exe
+          path: dist/HVACNetworkScanner.exe
+          retention-days: 30

@@ -87,6 +87,25 @@ python -m hvac_scanner.cli --help
 
 Requires Python 3.10 or newer. No extra packages.
 
+### Standalone executable
+
+For a Windows machine without Python — an engineering workstation you would
+rather not install anything on — grab `HVACNetworkScanner.exe` from the
+[latest release](https://github.com/jamesccupps/HVAC-Network-Scanner/releases).
+One file, no installer, no runtime.
+
+To build it yourself:
+
+```bash
+pip install -e ".[build]"
+pyinstaller packaging/hvac_scanner.spec --noconfirm
+# -> dist/HVACNetworkScanner.exe
+```
+
+PyInstaller is a build dependency only; the package itself stays
+dependency-free at runtime. The executable ships the GUI — the CLI remains
+available from a normal Python install.
+
 ## Using the GUI
 
 ```bash
@@ -122,6 +141,22 @@ whatever you type — narrow CIDRs (e.g. `/26`), ranges, and single hosts
 all auto-broadcast to the enclosing `/24`. The scan log shows the chosen
 broadcast target so it's never magic. Power users can override via the
 `--broadcast` CLI flag or `ScanOptions.bacnet_broadcast`.
+
+## What's new in v2.6
+
+### v2.6.0 (2026-08-19)
+
+- **TLS certificates are captured on HTTPS probes.** The scan already
+  established TLS to every 443/8443 and discarded the certificate. BAS
+  controllers put the product line and often the panel name in the subject CN,
+  and the expiry date is worth knowing on its own. Reported in the JSON, as a
+  CSV column, and as a scan-log warning when a certificate is expired or
+  inside 30 days. Self-signed is flagged, since that is the norm here and it
+  means the CN is self-asserted.
+- **A Windows executable.** One ~14 MB `HVACNetworkScanner.exe`, no Python
+  install required — see [Standalone executable](#standalone-executable).
+
+See [CHANGELOG.md](CHANGELOG.md) for detail.
 
 ## What's new in v2.5
 
@@ -431,14 +466,17 @@ hvac_scanner/
 ├── services.py        # TCP port scan + protocol-specific probes
 ├── snmp.py            # Raw UDP SNMP sysDescr probe
 ├── fingerprint.py     # Cross-protocol model identification
+├── device_profiles.py # Per-vendor enumeration caps + scan-depth presets
+├── netrange.py        # Target syntax: CIDR, ranges, host lists
 ├── engine.py          # ScanEngine orchestrator + result/export
+├── certs.py           # Minimal X.509 parsing for HTTPS probes
 ├── diff.py            # Baseline comparison (what changed since last scan)
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/                               # 470 tests
+tests/                               # 496 tests
 ├── test_codec.py                    # BACnet packet encode/decode + parser regressions
 ├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
 ├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
@@ -446,6 +484,7 @@ tests/                               # 470 tests
 ├── test_rpm_batching.py             # Array-index RPM enumeration
 ├── test_point_batching.py           # Multi-object RPM point reads
 ├── test_bbmd.py                     # Foreign Device registration
+├── test_certs.py                    # X.509 parsing, expiry, malformed input
 ├── test_diff.py                     # Baseline comparison
 ├── test_streaming.py                # Live results during a scan
 ├── mock_device.py                   # UDP BACnet device for the tests
