@@ -536,3 +536,77 @@ class TestExtractInvokeId:
         apdu = bytes([0x30, 0x77, 0x0C, 0x0C, 0x02, 0x00, 0x00, 0x08])
         pkt = codec.build_bvlc(0x0A, npdu + apdu)
         assert codec._extract_invoke_id(pkt) == 0x77
+
+
+# ---------------------------------------------------------------------------
+# Application-tagged Boolean (ASHRAE 135 20.2.3)
+#
+# The value lives in the tag's Length/Value/Type field and there are NO
+# contents octets. The parser treated that field as a length, so a TRUE (0x11)
+# consumed the following byte. In a single-value ReadProperty-ACK the stolen
+# byte was the closing tag and the loop ended anyway, so it looked correct. In
+# a ReadPropertyMultiple ACK it ate the closing tag and every later property of
+# that object was absorbed into the boolean's value list:
+#     {81: [True, '55', None, 21.5]}   instead of   {81: True, 85: 21.5}
+# ---------------------------------------------------------------------------
+
+class TestApplicationBoolean:
+
+    @staticmethod
+    def _rp_ack(bool_byte: int) -> bytes:
+        oid = struct.pack('!I', (5 << 22) | 1)
+        return codec.build_bvlc(0x0A, b'\x01\x00' + bytes([0x30, 0x05, 0x0C, 0x0C])
+                                + oid + bytes([0x19, 81, 0x3E, bool_byte, 0x3F]))
+
+    @staticmethod
+    def _rpm_ack(bool_byte: int) -> bytes:
+        oid = struct.pack('!I', (5 << 22) | 1)
+        apdu = (bytes([0x30, 0x06, 0x0E, 0x0C]) + oid + bytes([0x1E])
+                + bytes([0x29, 81, 0x4E, bool_byte, 0x4F])
+                + bytes([0x29, 85, 0x4E, 0x44]) + struct.pack('!f', 21.5)
+                + bytes([0x4F]) + bytes([0x1F]))
+        return codec.build_bvlc(0x0A, b'\x01\x00' + apdu)
+
+    def test_read_tag_consumes_no_content_octets(self):
+        # 0x11 = application tag 1 (Boolean), value TRUE
+        tag_num, tag_class, length, vstart, vend = codec._read_tag(bytes([0x11, 0xAA]), 0)
+        assert (tag_num, tag_class, length) == (1, 0, 1)
+        assert vend == vstart == 1, "a Boolean must not consume the next byte"
+
+    def test_read_tag_false_consumes_nothing_either(self):
+        _, _, length, vstart, vend = codec._read_tag(bytes([0x10, 0xAA]), 0)
+        assert length == 0
+        assert vend == vstart == 1
+
+    def test_context_tag_1_still_uses_its_length(self):
+        """Only APPLICATION tag 1 is Boolean; context tag 1 is a normal length."""
+        _, tag_class, length, vstart, vend = codec._read_tag(bytes([0x19, 0x55]), 0)
+        assert tag_class == 1
+        assert length == 1
+        assert vend == vstart + 1
+
+    def test_readproperty_ack_true(self):
+        assert codec.parse_read_property_ack(self._rp_ack(0x11)) is True
+
+    def test_readproperty_ack_false(self):
+        assert codec.parse_read_property_ack(self._rp_ack(0x10)) is False
+
+    def test_rpm_ack_true_does_not_swallow_the_next_property(self):
+        assert codec.parse_read_property_multiple_ack(self._rpm_ack(0x11), [81, 85]) \
+            == {81: True, 85: 21.5}
+
+    def test_rpm_ack_false_does_not_swallow_the_next_property(self):
+        assert codec.parse_read_property_multiple_ack(self._rpm_ack(0x10), [81, 85]) \
+            == {81: False, 85: 21.5}
+
+    def test_boolean_between_two_reals_in_one_property_value(self):
+        """A constructed value with a Boolean in the middle stays aligned."""
+        oid = struct.pack('!I', (5 << 22) | 1)
+        apdu = (bytes([0x30, 0x07, 0x0E, 0x0C]) + oid + bytes([0x1E])
+                + bytes([0x29, 85, 0x4E, 0x44]) + struct.pack('!f', 1.5)
+                + bytes([0x11])
+                + bytes([0x44]) + struct.pack('!f', 2.5) + bytes([0x4F])
+                + bytes([0x1F]))
+        got = codec.parse_read_property_multiple_ack(
+            codec.build_bvlc(0x0A, b'\x01\x00' + apdu), [85])
+        assert got == {85: [1.5, True, 2.5]}
