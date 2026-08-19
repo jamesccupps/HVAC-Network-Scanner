@@ -784,6 +784,56 @@ def encode_context_array_index(tag: int, index: int) -> bytes:
     return encode_context_unsigned(tag, index)
 
 
+def build_read_property_multiple_objects(
+        specs: "list[tuple[int | str, int, list[int | str | tuple[int | str, int]]]]",
+        invoke_id: int = 0,
+        max_apdu: int = 1476,
+        dnet: Optional[int] = None,
+        dadr: "str | int | bytes | None" = None) -> bytes:
+    """Build a ReadPropertyMultiple for SEVERAL objects in one request.
+
+    `specs` is a list of ``(obj_type, obj_instance, property_references)``.
+    The service takes a list of ReadAccessSpecifications, so one exchange can
+    read four properties from fifteen objects instead of taking fifteen
+    exchanges to do the same thing. Each object carries its own property list,
+    so analog points can ask for `units` in the same request where binary
+    points do not.
+
+    Response size is the binding constraint and it is not predictable from the
+    request — object names and descriptions are free-form strings. Callers
+    should size batches adaptively and fall back on failure rather than trying
+    to compute a safe batch size up front.
+    """
+    max_apdu_code = {50: 0, 128: 1, 206: 2, 480: 3, 1024: 4}.get(max_apdu, 5)
+    npdu = build_npdu(expecting_reply=True, dnet=dnet, dadr=dadr)
+    apdu = bytearray([
+        0x00,
+        max_apdu_code & 0x0F,
+        invoke_id & 0xFF,
+        0x0E,  # Service choice 14 = ReadPropertyMultiple
+    ])
+    for obj_type, obj_instance, prop_refs in specs:
+        # Context tag 0 = object identifier
+        apdu += bytes([0x0C]) + encode_object_id(obj_type, obj_instance)
+        # Opening tag 1 = list of property references
+        apdu += bytes([0x1E])
+        for entry in prop_refs:
+            if isinstance(entry, tuple):
+                prop_id, array_index = entry
+            else:
+                prop_id, array_index = entry, None
+            pval = resolve_property_id(prop_id)
+            if pval < 0x100:
+                apdu += bytes([0x09, pval])
+            else:
+                apdu += bytes([0x0A, (pval >> 8) & 0xFF, pval & 0xFF])
+            if array_index is not None:
+                apdu += encode_context_array_index(1, array_index)
+        # Closing tag 1
+        apdu += bytes([0x1F])
+    return build_bvlc(0x0A, npdu + bytes(apdu))
+
+
 def build_read_property_multiple(obj_type: int | str, obj_instance: int,
                                  prop_ids: "list[int | str | tuple[int | str, int]]",
                                  invoke_id: int = 0,

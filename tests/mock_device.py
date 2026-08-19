@@ -39,6 +39,7 @@ class MockBACnetDevice:
         self.exchanges = 0            # request packets served
         self.rpm_batches = 0          # array-index RPM requests served
         self.single_reads = 0         # plain ReadProperty requests served
+        self.multi_object_batches = 0  # RPM requests carrying >1 object
 
         # Contiguous type blocks, the way real controllers enumerate
         self.objects = []
@@ -173,46 +174,71 @@ class MockBACnetDevice:
         if self.rpm_mode == 'reject':
             self._error(inv, 0x0E, addr)
             return
-        raw = struct.unpack('!I', data[11:15])[0]
-        otype, oinst = (raw >> 22) & 0x3FF, raw & 0x3FFFFF
-        idx = 15
-        if idx >= len(data) or data[idx] != 0x1E:
-            self._error(inv, 0x0E, addr)
-            return
-        idx += 1
-        refs = []
-        while idx < len(data) and data[idx] != 0x1F:
-            tag = data[idx]
-            if (tag & 0xF8) == 0x08:                       # ctx0 propertyIdentifier
+
+        # listOfReadAccessSpecifications — a request may carry MANY objects,
+        # each with its own property list. A mock that only parsed the first
+        # one would make batched reads look broken when they are not.
+        # BVLC(4) + NPDU(2) + APDU header(4) = 10, where ctx tag 0x0C begins.
+        idx = 10
+        specs = []
+        while idx < len(data):
+            if data[idx] != 0x0C:
+                break
+            raw = struct.unpack('!I', data[idx + 1:idx + 5])[0]
+            otype, oinst = (raw >> 22) & 0x3FF, raw & 0x3FFFFF
+            idx += 5
+            if idx >= len(data) or data[idx] != 0x1E:
+                break
+            idx += 1
+            refs = []
+            while idx < len(data) and data[idx] != 0x1F:
+                tag = data[idx]
+                if (tag & 0xF8) != 0x08:              # ctx0 propertyIdentifier
+                    break
                 n = tag & 0x07
                 prop = int.from_bytes(data[idx + 1:idx + 1 + n], 'big')
                 idx += 1 + n
                 ai = None
-                if idx < len(data) and (data[idx] & 0xF8) == 0x18:   # ctx1 arrayIndex
+                # ctx1 propertyArrayIndex. The length nibble must be excluded
+                # from 6/7: closing tag 1 is 0x1F, which also satisfies
+                # `& 0xF8 == 0x18` and would otherwise be read as an 7-byte
+                # array index, swallowing the next object in the list.
+                if (idx < len(data) and (data[idx] & 0xF8) == 0x18
+                        and (data[idx] & 0x07) not in (6, 7)):
                     m = data[idx] & 0x07
                     ai = int.from_bytes(data[idx + 1:idx + 1 + m], 'big')
                     idx += 1 + m
                 refs.append((prop, ai))
-            else:
-                break
-        if self.rpm_mode == 'no_arrays' and any(ai is not None for _p, ai in refs):
+            if idx < len(data) and data[idx] == 0x1F:
+                idx += 1
+            specs.append((otype, oinst, refs))
+
+        if not specs:
             self._error(inv, 0x0E, addr)
             return
-        if any(ai is not None for _p, ai in refs):
+
+        has_arrays = any(ai is not None for _o, _i, refs in specs for _p, ai in refs)
+        if self.rpm_mode == 'no_arrays' and has_arrays:
+            self._error(inv, 0x0E, addr)
+            return
+        if has_arrays:
             self.rpm_batches += 1
+        if len(specs) > 1:
+            self.multi_object_batches += 1
 
         body = bytearray()
-        body += bytes([0x0C]) + codec.encode_object_id(otype, oinst)
-        body += bytes([0x1E])
-        for prop, ai in refs:
-            val = self._prop_value(otype, oinst, prop, ai)
-            body += codec.encode_context_unsigned(2, prop)
-            if ai is not None:
-                body += codec.encode_context_unsigned(3, ai)
-            if val is None:
-                body += bytes([0x5E, 0x91, 0x02, 0x91, 0x20, 0x5F])   # access error
-            else:
-                body += bytes([0x4E]) + val + bytes([0x4F])
-        body += bytes([0x1F])
+        for otype, oinst, refs in specs:
+            body += bytes([0x0C]) + codec.encode_object_id(otype, oinst)
+            body += bytes([0x1E])
+            for prop, ai in refs:
+                val = self._prop_value(otype, oinst, prop, ai)
+                body += codec.encode_context_unsigned(2, prop)
+                if ai is not None:
+                    body += codec.encode_context_unsigned(3, ai)
+                if val is None:
+                    body += bytes([0x5E, 0x91, 0x02, 0x91, 0x20, 0x5F])  # access error
+                else:
+                    body += bytes([0x4E]) + val + bytes([0x4F])
+            body += bytes([0x1F])
         ack = bytes([0x30, inv, 0x0E]) + bytes(body)
         self._sock.sendto(_bvlc(b'\x01\x00' + ack), addr)

@@ -1032,29 +1032,36 @@ class ScanEngine:
             'Event Log', 'Structured View', 'Program',
         }
 
-        for obj_type, obj_inst in obj_list:
+        # v2.1.1: choose properties that actually exist for this object type.
+        # Previously asked units/presentValue on every object, flooding the log
+        # with "unknown property" errors from binary/calendar/etc. and wasting
+        # 2-3x the scan time.
+        wanted = [
+            (obj_type, obj_inst,
+             POINT_PROPERTIES_BY_TYPE.get(str(obj_type), DEFAULT_POINT_PROPERTIES))
+            for obj_type, obj_inst in obj_list
+            if str(obj_type) not in _NON_POINT_TYPES
+        ]
+
+        # One RPM exchange covers several objects, so a 1000-point controller
+        # costs tens of exchanges rather than a thousand. The client sizes the
+        # batch adaptively and falls back per object where a device will not
+        # answer the batched form.
+        try:
+            read_back = client.read_points_batched(
+                ip, instance, wanted,
+                prefer_multiple=self.opts.use_rpm,
+                dnet=dnet, dadr=dadr,
+                stop_fn=self._stopped,
+            )
+        except Exception as e:
+            log.debug("batched point read %s failed: %s", ip, e)
+            read_back = [(t, i, {}) for t, i, _ in wanted]
+
+        for obj_type, obj_inst, raw in read_back:
             if self._stopped():
                 break
             obj_type_str = str(obj_type)
-            if obj_type_str in _NON_POINT_TYPES:
-                continue
-            try:
-                # v2.1.1: choose properties that actually exist for this
-                # object type. Previously asked units/presentValue on every
-                # object, flooding the log with "unknown property" errors
-                # from binary/calendar/etc. and wasting 2-3x the scan time.
-                prop_names = POINT_PROPERTIES_BY_TYPE.get(
-                    obj_type_str, DEFAULT_POINT_PROPERTIES)
-                raw = client.read_point_properties(
-                    ip, obj_type, obj_inst,
-                    prop_names=prop_names,
-                    prefer_multiple=self.opts.use_rpm,
-                    dnet=dnet, dadr=dadr,
-                )
-            except Exception as e:
-                log.debug("point props %s %s:%d failed: %s", ip, obj_type, obj_inst, e)
-                raw = {}
-
             point = {'type': obj_type_str, 'instance': int(obj_inst),
                      'name': '', 'present_value': '', 'units': '', 'description': ''}
             for key, val in raw.items():

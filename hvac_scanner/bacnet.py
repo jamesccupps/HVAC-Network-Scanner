@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from . import codec
 from .codec import IAmDevice, _extract_invoke_id
 from .constants import (
+    BACNET_OBJ_TYPES,
     BACNET_PORT,
     BACNET_VENDORS,
     DEFAULT_DEVICE_PROPERTIES,
@@ -50,6 +51,18 @@ _RPM_MAX_BATCH = 100              # keeps the blast radius of one bad batch smal
 _RPM_OUR_MAX_APDU = 1476          # what build_read_property_multiple advertises
 _RPM_BATCH_GIVE_UP = 2            # failed batches before falling back entirely
 
+# Batched per-point property reads.
+#
+# Response size here cannot be computed from the request: object names and
+# descriptions are free-form strings, so a batch that fits on one controller
+# overflows on the next. The batch size is therefore adaptive — start
+# conservative, grow on success, halve on failure — rather than derived from
+# maxAPDULengthAccepted. Devices that cannot segment simply Abort an oversized
+# response, which shows up as a failed batch and shrinks the window.
+_POINT_BATCH_INITIAL = 8
+_POINT_BATCH_MAX = 24
+_POINT_BATCH_MIN = 1
+
 
 class BACnetClient:
     """Single long-lived socket for all BACnet traffic from this scanner.
@@ -71,6 +84,9 @@ class BACnetClient:
         # stop retrying a property a device clearly will not answer. See
         # read_point_properties.
         self._partial_fill_failures: dict[tuple[str, str], int] = {}
+        # (ip, device_instance) -> current point-read batch size. Adaptive:
+        # see _POINT_BATCH_INITIAL.
+        self._point_batch: dict[tuple[str, int], int] = {}
 
     # -- Lifecycle --------------------------------------------------------
 
@@ -645,6 +661,118 @@ class BACnetClient:
             if validated is not None:
                 out[name] = validated
         return out
+
+
+    # -- batched point reads ----------------------------------------------
+
+    def read_points_batched(self, ip: str, instance: int,
+                            objects: "list[tuple[str, int, list[str]]]",
+                            prefer_multiple: bool = True,
+                            dnet: Optional[int] = None,
+                            dadr: "str | int | bytes | None" = None,
+                            stop_fn=None
+                            ) -> "list[tuple[str, int, dict[str, Any]]]":
+        """Read per-point properties for many objects, batching where possible.
+
+        `objects` is ``[(obj_type, obj_instance, property_names)]`` — each
+        object carries its own property list so a binary point is not asked
+        for units. Returns ``[(obj_type, obj_instance, validated_properties)]``
+        in the input order, with the same per-property type validation
+        `read_point_properties` applies.
+
+        Falls back to one exchange per object for anything a batch does not
+        answer, so a device with a partial or absent RPM implementation still
+        produces a complete result — just more slowly.
+        """
+        results: "dict[tuple[str, int], dict[str, Any]]" = {}
+        if not prefer_multiple:
+            for otype, oinst, props in objects:
+                if stop_fn and stop_fn():
+                    break
+                results[(str(otype), oinst)] = self.read_point_properties(
+                    ip, otype, oinst, prop_names=props,
+                    prefer_multiple=False, dnet=dnet, dadr=dadr)
+            return [(t, i, results.get((str(t), i), {})) for t, i, _ in objects]
+
+        key = (ip, instance)
+        pos = 0
+        while pos < len(objects):
+            if stop_fn and stop_fn():
+                break
+            size = self._point_batch.get(key, _POINT_BATCH_INITIAL)
+            batch = objects[pos:pos + size]
+            got = self._point_batch_once(ip, batch, dnet, dadr)
+            if got is None:
+                # Shrink and retry the same slice; at the floor, read singly.
+                if size > _POINT_BATCH_MIN:
+                    self._point_batch[key] = max(_POINT_BATCH_MIN, size // 2)
+                    continue
+                for otype, oinst, props in batch:
+                    if stop_fn and stop_fn():
+                        break
+                    results[(str(otype), oinst)] = self.read_point_properties(
+                        ip, otype, oinst, prop_names=props,
+                        prefer_multiple=False, dnet=dnet, dadr=dadr)
+            else:
+                results.update(got)
+                # Grow slowly while the device keeps up.
+                if len(batch) == size and size < _POINT_BATCH_MAX:
+                    self._point_batch[key] = size + 1
+            pos += len(batch)
+
+        return [(t, i, results.get((str(t), i), {})) for t, i, _ in objects]
+
+    def _point_batch_once(self, ip: str,
+                          batch: "list[tuple[str, int, list[str]]]",
+                          dnet=None, dadr=None
+                          ) -> "Optional[dict[tuple[str, int], dict[str, Any]]]":
+        """One batched RPM exchange. None means the device did not answer it."""
+        if not batch:
+            return {}
+        specs = [(otype, oinst, [p for p in props if p in PROP_IDS])
+                 for otype, oinst, props in batch]
+        self._throttle(ip)
+        invoke_id = self._next_invoke_id()
+        pkt = codec.build_read_property_multiple_objects(
+            specs, invoke_id=invoke_id, dnet=dnet, dadr=dadr)
+        with self._lock:
+            entries = self._request_response(
+                ip, pkt, invoke_id,
+                parser=codec.parse_read_property_multiple_ack_full,
+            )
+        if not entries:
+            return None
+
+        # Map numbers back to the names the CALLER asked for. PROP_IDS carries
+        # hyphenated aliases alongside the camelCase names ('object-name' and
+        # 'objectName' both map to 77), so inverting the whole dict returns
+        # whichever alias happens to be last — 'object-name', which the engine
+        # does not recognise, silently blanking every name and value.
+        num_to_name: dict[int, str] = {}
+        for _t, _i, props in batch:
+            for name in props:
+                num = PROP_IDS.get(name)
+                if num is not None:
+                    num_to_name[num] = name
+        raw: "dict[tuple[str, int], dict[int, Any]]" = {}
+        for e in entries:
+            if e.obj_type is None:
+                continue
+            type_name = BACNET_OBJ_TYPES.get(e.obj_type, f"type-{e.obj_type}")
+            raw.setdefault((type_name, e.obj_instance), {})[e.prop_id] = e.value
+
+        out: "dict[tuple[str, int], dict[str, Any]]" = {}
+        for (type_name, oinst), props in raw.items():
+            validated: dict[str, Any] = {}
+            for num, val in props.items():
+                name = num_to_name.get(num)
+                if name is None:
+                    continue
+                v = _validate_point_property(name, val)
+                if v is not None:
+                    validated[name] = v
+            out[(type_name, oinst)] = validated
+        return out or None
 
 
 # ---------------------------------------------------------------------------
