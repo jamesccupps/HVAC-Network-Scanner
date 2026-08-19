@@ -58,8 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Per-operation timeout in seconds (default: 5)")
     p.add_argument("--rate-limit", type=int, default=0, metavar="MS",
                    help="Minimum ms between BACnet packets to the same IP (0=off)")
-    p.add_argument("--max-objects", type=int, default=500,
-                   help="Max objects to enumerate per BACnet device (default: 500)")
+    p.add_argument("--max-objects", type=int, default=None, metavar="N",
+                   help="Hard ceiling on objects enumerated per BACnet device. "
+                        "Applied on top of the vendor-aware profile cap and "
+                        "only ever lowers it. Omit to use the profile cap "
+                        "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
 

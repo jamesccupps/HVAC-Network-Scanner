@@ -371,3 +371,29 @@ def apply_scan_depth(
         class_label=profile.class_label,
         verified_at=profile.verified_at,
     ), f"{preset['label']} — cap {adjusted_cap} (from {profile.object_cap})"
+
+
+def apply_max_objects_override(
+    profile: DeviceProfile,
+    max_objects: Optional[int] = None,
+) -> tuple[DeviceProfile, str]:
+    """Apply an explicit user ceiling (--max-objects) over a profile cap.
+
+    `None` means the user did not ask for an override, so the profile's own
+    cap stands. A value only ever lowers the cap — raising it past a verified
+    profile would defeat the point of having verified profiles, and the
+    heuristic path already sizes itself to the device.
+
+    Returns the (possibly adjusted) profile and an explanation string.
+    """
+    if max_objects is None:
+        return profile, ""
+    if max_objects <= 0:
+        return profile, ""
+    if max_objects >= profile.object_cap:
+        return profile, ""
+    return DeviceProfile(
+        object_cap=max_objects,
+        class_label=profile.class_label,
+        verified_at=profile.verified_at,
+    ), f"--max-objects override — cap {max_objects} (from {profile.object_cap})"
