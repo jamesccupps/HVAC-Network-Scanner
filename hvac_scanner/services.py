@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from typing import Any, Callable, Optional
 
+from .certs import parse_der_certificate
 from .constants import HTTP_FINGERPRINTS, HVAC_TCP_PORTS, PORT_TO_SERVICE
 
 log = logging.getLogger(__name__)
@@ -126,7 +127,8 @@ class HVACServiceScanner:
 
         # Regex-match fingerprints over combined text
         all_text = ' '.join(str(info.get(k, '')) for k in
-                            ('banner', 'title', 'server', 'product')).lower()
+                            ('banner', 'title', 'server', 'product',
+                             'tls_summary')).lower()
         for pattern, vendor in HTTP_FINGERPRINTS:
             if re.search(pattern, all_text):
                 info['vendor'] = vendor
@@ -138,6 +140,7 @@ class HVACServiceScanner:
 
     def _http_banner(self, ip: str, port: int, use_ssl: bool = False) -> dict:
         info: dict[str, Any] = {'server': '', 'title': '', 'banner': ''}
+        cert = None
         conn = None
         try:
             if use_ssl:
@@ -148,6 +151,20 @@ class HVACServiceScanner:
             else:
                 conn = http.client.HTTPConnection(ip, port, timeout=self.timeout)
             conn.request("GET", "/", headers={"User-Agent": "HVAC-Scanner/2.0"})
+
+            # Capture the certificate before reading the response. The probe
+            # already establishes TLS and threw this away; BAS controllers put
+            # the product line and often the panel name in the subject CN, and
+            # the expiry date is operational information the owner wants.
+            # Verification is off (self-signed is the norm on this gear), so
+            # the DER has to be decoded directly rather than via getpeercert().
+            if use_ssl and getattr(conn, 'sock', None) is not None:
+                try:
+                    der = conn.sock.getpeercert(binary_form=True)
+                    cert = parse_der_certificate(der)
+                except (AttributeError, ValueError, OSError) as e:
+                    log.debug("cert read %s:%d: %s", ip, port, e)
+
             resp = conn.getresponse()
             info['server'] = resp.getheader('Server', '')
             info['banner'] = f"HTTP/{resp.status} {resp.reason} | Server: {info['server']}"
@@ -171,6 +188,17 @@ class HVACServiceScanner:
                     conn.close()
                 except Exception:
                     pass
+
+        if cert is not None:
+            info['tls'] = cert.to_dict()
+            info['tls_summary'] = cert.summary()
+            days = cert.days_until_expiry()
+            if days is not None and days < 0:
+                self._log(f"  [!] {ip}:{port} TLS certificate expired "
+                          f"{-days} day(s) ago ({cert.subject_cn or 'no CN'})")
+            elif days is not None and days < 30:
+                self._log(f"  [!] {ip}:{port} TLS certificate expires in "
+                          f"{days} day(s) ({cert.subject_cn or 'no CN'})")
         return info
 
     def _probe_niagara_fox(self, ip: str, port: int) -> dict:

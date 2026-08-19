@@ -142,6 +142,7 @@ class ScanResult:
                 'MSTP Network', 'MSTP MAC',
                 'Max APDU', 'Segmentation', 'Vendor ID',
                 'Banner', 'Page Title',
+                'TLS Certificate',
             ])
             for dev in self.devices:
                 fp = dev.get('_fingerprint', {})
@@ -174,6 +175,7 @@ class ScanResult:
                     dev.get('vendor_id', ''),
                     dev.get('banner', ''),
                     dev.get('title', ''),
+                    dev.get('tls_summary', ''),
                 ])
 
     def write_classification_report(self, path: str) -> None:
