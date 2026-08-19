@@ -3,6 +3,162 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] — 2026-08-19
+
+Audit release. A full read-through of the codebase against the wire formats
+it implements, plus the first real test coverage of the socket-facing
+modules. Two of the findings meant a protocol scan had never worked at all.
+
+### Fixed — scanning was broken
+
+- **Modbus TCP scanning never worked in 2.2.0.** The device-identification
+  request was built with `struct.pack('!HHHBBBB', ...)` — seven format
+  characters for eight values — so it raised on every call. `struct.error` is
+  not an `OSError`, so it escaped the local handler, propagated out of
+  `scan_host` and `scan_network`, and hit the engine's catch-all as "Modbus
+  scan pass failed". Any host with port 502 open aborted the entire Modbus
+  pass before a single device was recorded.
+
+- **BACnet reads were dropped by ordinary broadcast traffic.** Packets
+  carrying no invoke-id — any Unconfirmed-Request, so I-Am, unconfirmed COV,
+  unconfirmed event notification — passed the reply filter, reached the
+  parser, and its `None` was returned as the read result. One unsolicited
+  broadcast from the device being polled ended the read with most of the
+  timeout unspent. On a segment with active COV subscriptions this silently
+  lost points.
+
+- **EtherNet/IP identity probe could never get a reply.** The CIP
+  ListIdentity request was 22 bytes where the ODVA encapsulation header is
+  24, misaligning every field after `length`. A conforming device sees a
+  truncated header and does not answer, so the probe only ever reported the
+  generic product string inferred from the open port.
+
+- **SNMP sysDescr over 127 bytes was corrupted.** The value length was read
+  as a single byte, which is only the BER short form. Long-form lengths were
+  misread, producing a garbage leading character and truncation at 129 bytes
+  — and starving the vendor-matching regexes. Cisco IOS descriptors run past
+  200 characters. The request builder had the mirror problem with long
+  community strings.
+
+- **Application-tagged Boolean consumed a byte it does not have.** Per ASHRAE
+  135 20.2.3 the value lives in the tag's Length/Value/Type field with zero
+  contents octets. Inside a ReadPropertyMultiple ACK the stolen byte was the
+  closing tag, so the boolean decoded wrong AND every subsequent property of
+  that object vanished into its value list.
+
+- **Modbus responses were parsed from a single `recv()`.** TCP makes no
+  promise that a response arrives in one segment; a split reply was parsed
+  short and a long register list silently truncated. Frames are now read by
+  the length the MBAP header declares.
+
+### Fixed — wrong results
+
+- **Two vendor-ID branches disagreed with the ASHRAE registry.** The v2.1.1
+  registry regeneration (34 entries to 593) desynced them: 485 is SCS, not
+  Contemporary Controls — an SCS device was labelled a BACnet router and
+  handed another vendor's default credentials — and neither 13 (Teletrol
+  Systems) nor 514 (t-mac Technologies) is Cimetrics, which is 14, so real
+  Cimetrics gear never matched its own branch. Siemens' other registered IDs
+  (9, 22, 313) are now recognised alongside 7.
+
+- **The default-credentials table was never read.** `DEFAULT_CREDS` held 22
+  vendor entries and nothing imported it; every credential the scanner
+  emitted came from a literal inside a vendor branch, so only Trane, Siemens,
+  JCI and Contemporary Controls ever produced one. Carrier i-Vu, Automated
+  Logic, Distech, Delta, KMC, Reliable, Carel, Belimo, Daikin, Schneider and
+  the rest got an empty column despite being advertised.
+
+- **Model identification ignored the device's own answer.** The fingerprinter
+  inferred a model from vendor ID, max-APDU and device instance while
+  `modelName` sat unused in the same dict, so the CSV export and the JSON/GUI
+  could name one device two different things. The instance heuristics were
+  also site conventions rather than protocol facts: a supervisory controller
+  numbered outside the expected range was reported as a unitary controller.
+
+- **Partial ReadPropertyMultiple results left blank columns.** Individual
+  retries only happened when RPM returned nothing at all, so a device with an
+  incomplete RPM path kept an empty Name column even though a single
+  ReadProperty would have answered. Gaps are now filled individually with a
+  per-device give-up after three consecutive refusals — nine wasted reads on
+  a controller that genuinely lacks the property, versus recovering the data
+  on one that does not.
+
+- **Object-type sampling lost its alignment on flaky links.** Array indices
+  were paired against entries by position, but failed reads are omitted, so
+  one timeout shifted every later pairing and the rest of the device's
+  indices were bucketed under the wrong object type.
+
+### Changed
+
+- **Quick scan depth is now quick.** It reduced the cap to 5% but still
+  walked the entire objectList before sampling — 5,726 reads to sample 250
+  points from a 5,476-object controller, roughly four and a half minutes at a
+  50 ms rate limit. Deep sampling now strides across the array instead: 400
+  reads for the same result, with all eight object types represented and
+  every type's share within 0.2% of its share of the device.
+
+- **Trane supervisory cap raised 5000 to 8000.** The module's own policy is
+  that a real-world scan of a profiled device class must never hit the cap,
+  but the largest documented scan of this device was 5,476 objects — so the
+  flagship verified profile tripped the sampling path and dropped 476
+  objects.
+
+- **CIDR targets are bounded at 65,536 hosts**, matching the limit the range
+  syntax always had. `10.0.0.1-10.5.0.1` was refused while the larger
+  `10.0.0.0/8` was accepted and expanded to 16.7M host strings (~875 MB),
+  which the engine copied into an allow-list and the service scanner
+  multiplied by 25 ports. A /16 is still accepted.
+
+- **Unparseable targets now abort the scan** instead of degrading into "no
+  filter", which meant deep-scanning every device that answered — the
+  opposite of the target list the user typed.
+
+- **`--max-objects` does something.** It was parsed, stored and never read.
+  It is now a ceiling over the vendor-aware profile cap and defaults to
+  unset; wiring its old default of 500 straight through would have re-imposed
+  the flat cap v2.1.2 removed.
+
+- **`--networks` no longer discards the positional argument.** It shared
+  `dest` with the positional, so `hvac-scanner A --networks B` silently
+  scanned only B. The two are merged in order.
+
+- **Modbus devices that reject FC 43 / MEI 14** are no longer recorded as
+  `detected_via='device_id'` with every field "Unknown"; the probe falls
+  through so the holding-register path labels them accurately.
+
+### Added
+
+- **Rate limiting is reachable from the GUI.** `rate_limit_ms` has been on
+  `ScanOptions` and the CLI since v2 but the GUI never set it, so every GUI
+  scan ran unthrottled at field controllers — the load the README warns can
+  lock them up. Added as a "Rate (ms)" field, defaulting to 0.
+- Numeric GUI fields fall back to their default with a log line instead of
+  raising; a typo'd timeout used to dump a traceback instead of scanning.
+- `iter_parse_targets` is genuinely lazy rather than materialising the whole
+  list first.
+
+### Security / hygiene
+
+- **Site-identifying data removed from the tree.** Real panel names, room
+  controller names, equipment tags, a controller serial, and site references
+  appeared alongside vendor, model, firmware revision and object count for
+  each device — together a partial asset inventory of a named building.
+  Technical substance is unchanged; only the identifying strings are
+  generalised. `tests/test_no_site_data.py` scans for them so the next set of
+  pasted field notes is caught by CI.
+
+### Tests
+
+- **249 to 357 tests, line coverage 42% to 60%.** The new coverage is
+  concentrated where the bugs were: snmp 17% to 54%, modbus 23% to 49%,
+  services 13% to 32%, gui 0% to 49%, cli 0% to 34%. New suites for SNMP, the
+  service probes, GUI options, and the site-data guard — `snmp.py` and
+  `services.py` previously had none, which is why two protocol scans could be
+  broken without anything failing.
+- Four existing tests asserted buggy behaviour and now assert the correct
+  behaviour: the 485 mis-identification, the `--max-objects` default, and two
+  Trane cases keyed on site-specific device instances.
+
 ## [2.2.0] — 2026-04-20
 
 ### Added

@@ -123,6 +123,62 @@ all auto-broadcast to the enclosing `/24`. The scan log shows the chosen
 broadcast target so it's never magic. Power users can override via the
 `--broadcast` CLI flag or `ScanOptions.bacnet_broadcast`.
 
+## What's new in v2.3
+
+### v2.3.0 (2026-08-19)
+
+Audit release: a read-through of the whole codebase against the wire formats
+it implements, plus the first real test coverage of the socket-facing
+modules. Two findings meant a protocol scan had never worked.
+
+**Scans that were broken**
+
+- **Modbus TCP scanning never worked in v2.2.0.** The device-ID request had
+  a malformed `struct.pack` format that raised on every call; because
+  `struct.error` is not an `OSError` it escaped the local handler and aborted
+  the entire Modbus pass. Any host with port 502 open killed Modbus scanning.
+- **BACnet point reads were dropped by ordinary broadcast traffic.** An I-Am
+  or unconfirmed COV notification from the device being polled ended the read
+  early with most of the timeout unspent — so on a busy segment with COV
+  subscriptions, points went silently missing.
+- **The EtherNet/IP identity probe could never get a reply** — its CIP
+  encapsulation header was 22 bytes instead of the 24 the ODVA spec requires.
+- **SNMP `sysDescr` over 127 bytes came back corrupted and truncated.** BER
+  long-form lengths were read as short-form. Cisco IOS descriptors run past
+  200 characters.
+
+**Wrong results**
+
+- Two vendor-ID branches disagreed with the ASHRAE registry after the v2.1.1
+  regeneration: an SCS device was identified as a Contemporary Controls
+  router and handed that vendor's default credentials, and Cimetrics gear
+  never matched its own branch.
+- The 22-entry default-credentials table was never actually read — only four
+  vendors ever produced a credential despite the README advertising many more.
+- Model identification ignored the device's own `modelName` in favour of
+  heuristics keyed on device-instance numbers, which are a site convention,
+  not a protocol fact. A supervisory controller numbered outside the expected
+  range was reported as a unitary controller.
+
+**Faster and safer**
+
+- **Quick depth is actually quick.** It capped at 5% but still enumerated the
+  full objectList first — 5,726 reads to sample 250 points from a
+  5,476-object controller. Now 400 reads, with every object type represented
+  in proportion.
+- **Rate limiting is reachable from the GUI.** It had been CLI-only since v2,
+  so every GUI scan ran unthrottled at field controllers.
+- **Target lists are bounded.** `10.0.0.0/8` used to expand to 16.7M host
+  strings; CIDR now shares the 65,536-host limit the range syntax always had,
+  and an unparseable target aborts the scan instead of silently scanning
+  everything that answered.
+
+**Tests: 249 → 357, coverage 42% → 60%**, concentrated in the modules that
+had none — `snmp.py` and `services.py` previously had no tests at all, which
+is how two protocol scans stayed broken without anything failing.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## What's new in v2.2
 
 ### v2.2.0 (2026-04-20)
