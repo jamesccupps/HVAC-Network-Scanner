@@ -173,3 +173,62 @@ class TestOCCRegression:
         """User wants SC-1, SC-2, and the BASRT-B — nothing else."""
         hosts = parse_targets("10.0.0.19, 10.0.0.21, 10.0.0.192")
         assert hosts == ["10.0.0.19", "10.0.0.21", "10.0.0.192"]
+
+
+# ---------------------------------------------------------------------------
+# The range forms were capped at 65536 hosts from the start; the CIDR form was
+# not. So 10.0.0.1-10.5.0.1 was refused while the strictly larger 10.0.0.0/8
+# was accepted and expanded to 16.7M host strings (~875 MB), which the engine
+# then copied into an allow-list set and services.py multiplied by 25 ports.
+# Both forms now share MAX_HOSTS_PER_TOKEN.
+# ---------------------------------------------------------------------------
+
+from hvac_scanner.netrange import MAX_HOSTS_PER_TOKEN
+
+
+def test_slash_16_is_the_widest_accepted_cidr():
+    assert len(parse_targets("10.0.0.0/16")) == 65534
+
+
+def test_cidr_wider_than_the_limit_is_refused():
+    for token in ("10.0.0.0/15", "10.0.0.0/8", "0.0.0.0/0"):
+        with pytest.raises(InvalidTargetSyntaxError) as exc:
+            parse_targets(token)
+        assert "limit" in str(exc.value)
+
+
+def test_cidr_and_range_limits_agree():
+    """The two forms must refuse at the same size, not one at 65k and one never."""
+    span = MAX_HOSTS_PER_TOKEN + 1
+    with pytest.raises(InvalidTargetSyntaxError):
+        parse_targets(f"10.0.0.0-{'.'.join(str(b) for b in (10, (span >> 16) & 0xFF, (span >> 8) & 0xFF, span & 0xFF))}")
+    with pytest.raises(InvalidTargetSyntaxError):
+        parse_targets("10.0.0.0/15")
+
+
+def test_narrow_targets_still_work():
+    assert len(parse_targets("10.0.0.0/24")) == 254
+    assert len(parse_targets("10.0.0.0/30")) == 2
+    assert parse_targets("10.0.0.5/32") == ["10.0.0.5"]
+    assert len(parse_targets("10.0.0.2-100")) == 99
+
+
+def test_engine_refuses_to_scan_when_a_target_is_invalid():
+    """An unparseable target used to degrade into 'no filter' = scan everything."""
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    logs: list[str] = []
+    result = ScanEngine(ScanOptions(networks=["10.0.0.0/8"]),
+                        callback=logs.append).run()
+    assert result.devices == []
+    assert any("Invalid target" in line for line in logs)
+    assert any("Nothing scanned" in line for line in logs)
+
+
+def test_engine_reports_every_invalid_target_not_just_the_first():
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    logs: list[str] = []
+    ScanEngine(ScanOptions(networks=["10.0.0.0/8", "not-an-ip", "10.0.0.0/24"]),
+               callback=logs.append).run()
+    joined = "\n".join(logs)
+    assert "10.0.0.0/8" in joined
+    assert "not-an-ip" in joined
