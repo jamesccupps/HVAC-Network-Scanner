@@ -459,6 +459,11 @@ class BACnetClient:
         reorder values at the packet level), we DROP the bad value rather than
         let it leak into the wrong column downstream.
 
+        RPM is retried as individual ReadProperty requests only when it
+        returned nothing at all. A partial result is taken as-is: the device
+        answered and reported access errors for the rest, so re-asking would
+        cost a round trip per property per object to fail again.
+
         Pass `dnet`/`dadr` for MSTP devices behind a router.
         """
         prop_names = prop_names or DEFAULT_POINT_PROPERTIES
@@ -474,7 +479,15 @@ class BACnetClient:
                 log.debug("RPM point read failed on %s %s:%d: %s",
                           ip, obj_type, obj_instance, e)
 
-        # Fallback / fill missing props individually
+        # Fallback: only when RPM returned nothing at all.
+        #
+        # Deliberately all-or-nothing rather than per-property. A partial RPM
+        # result means the device answered but reported an access error for
+        # the missing properties, so re-asking each one with ReadProperty
+        # would fail again — at the cost of an extra round trip per property
+        # per object, which on a several-thousand-object supervisory
+        # controller is thousands of wasted exchanges. The docstring above
+        # used to promise per-property filling that this never did.
         if not raw:
             for name in prop_names:
                 val = self.read_property(ip, obj_type, obj_instance, name,

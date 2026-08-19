@@ -41,9 +41,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p.add_argument("networks", nargs="+",
-                   help="CIDR networks to scan (e.g. 192.168.1.0/24)")
-    p.add_argument("--networks", dest="networks", nargs="+", default=None,
-                   help=argparse.SUPPRESS)  # alternate spelling
+                   help="Targets to scan: CIDR (192.168.1.0/24), single host, "
+                        "range (10.0.0.2-100), or a mix")
+    # Alternate spelling. It shares `dest` with the positional, so argparse
+    # applies it second and the positional's value is discarded — passing both
+    # used to silently scan only the flag's networks. Collected separately and
+    # merged in main() instead.
+    p.add_argument("--networks", dest="networks_flag", nargs="+", default=None,
+                   help=argparse.SUPPRESS)
     p.add_argument("--broadcast", type=str, default=None, metavar="IP",
                    help="Override BACnet Who-Is broadcast target (e.g. "
                         "10.0.0.255 or 255.255.255.255). Needed when "
@@ -164,11 +169,19 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     _configure_logging(args.verbose, args.quiet)
 
+    # Merge the positional targets with the --networks alternate spelling,
+    # preserving order and dropping duplicates, rather than letting one
+    # silently replace the other.
+    networks = list(args.networks or [])
+    for n in (args.networks_flag or []):
+        if n not in networks:
+            networks.append(n)
+
     if args.bacnet_only:
         args.no_modbus = args.no_services = args.no_snmp = True
 
     opts = ScanOptions(
-        networks=list(args.networks),
+        networks=networks,
         timeout=args.timeout,
         scan_bacnet=not args.no_bacnet,
         scan_mstp=not args.no_mstp,
