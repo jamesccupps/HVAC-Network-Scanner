@@ -22,6 +22,8 @@ from hvac_scanner import codec
 from .mock_device import MockBACnetDevice
 
 
+
+
 @pytest.fixture
 def ephemeral_client(monkeypatch):
     """A client bound to an ephemeral port so it does not fight the mock for 47808."""
