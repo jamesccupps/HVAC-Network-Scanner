@@ -789,7 +789,8 @@ class ScanEngine:
 
     def _interleave_indices(self, client, ip: str, instance: int,
                             total_count: int, cap: int,
-                            dnet=None, dadr=None) -> list[int]:
+                            dnet=None, dadr=None,
+                            max_apdu=None) -> list[int]:
         """When a device has more objects than our cap, return a sample of
         array indices spread across object types rather than the first `cap`.
 
@@ -829,6 +830,7 @@ class ScanEngine:
         full_map = client.read_object_list_entries_indexed(
             ip, instance, all_indices, dnet=dnet, dadr=dadr,
             stop_fn=self._stopped,
+            max_apdu=max_apdu, prefer_multiple=self.opts.use_rpm,
         )
         if not full_map:
             return []
@@ -998,7 +1000,7 @@ class ScanEngine:
                 )
                 indices = self._interleave_indices(
                     client, ip, instance, total_count, profile.object_cap,
-                    dnet=dnet, dadr=dadr,
+                    dnet=dnet, dadr=dadr, max_apdu=dev.get('max_apdu'),
                 )
             else:
                 indices = list(range(1, total_count + 1))
@@ -1008,6 +1010,8 @@ class ScanEngine:
                     ip, instance, indices,
                     dnet=dnet, dadr=dadr,
                     stop_fn=self._stopped,
+                    max_apdu=dev.get('max_apdu'),
+                    prefer_multiple=self.opts.use_rpm,
                 )
                 self._log(f"    Object list has {total_count} entries; "
                           f"read {len(obj_list)}.")
