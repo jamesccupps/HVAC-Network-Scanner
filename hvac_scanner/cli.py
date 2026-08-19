@@ -13,6 +13,7 @@ Exit codes:
     1 - invalid arguments
     2 - scan interrupted
     3 - internal error
+    4 - scan completed and differed from the baseline (--fail-on-change)
 """
 
 from __future__ import annotations
@@ -104,6 +105,23 @@ def _build_parser() -> argparse.ArgumentParser:
     o.add_argument("--export-classification", metavar="PATH",
                    help="Write a classification report (v2.2). Useful for "
                         "submitting device profile contributions.")
+
+    b = p.add_argument_group("baseline comparison")
+    b.add_argument("--baseline", metavar="PATH",
+                   help="Compare this scan against a previous JSON export and "
+                        "report what changed: devices that appeared or stopped "
+                        "responding, and changes to model, firmware, address "
+                        "or object count.")
+    b.add_argument("--save-baseline", metavar="PATH",
+                   help="Write this scan's JSON to PATH for a later --baseline "
+                        "comparison. Written even when --baseline reports "
+                        "changes, so the next run compares against this one.")
+    b.add_argument("--diff-output", metavar="PATH",
+                   help="Write the comparison report to PATH (.json for JSON, "
+                        "anything else for text). Defaults to stdout.")
+    b.add_argument("--fail-on-change", action="store_true",
+                   help="Exit 4 when the scan differs from the baseline. For "
+                        "scheduled runs that should alert only on change.")
     o.add_argument("--print", choices=["summary", "table", "json", "none"],
                    default="summary", help="Stdout format (default: summary)")
     o.add_argument("--quiet", "-q", action="store_true",
@@ -163,6 +181,38 @@ def _print_table(result) -> None:
 def _print_json(result) -> None:
     import json as _json
     print(_json.dumps(result.to_dict(), indent=2, default=str))
+
+
+def _handle_baseline(args, result) -> bool:
+    """Compare against a baseline and/or save one. Returns True if changed.
+
+    Saving happens even when the comparison found changes, so an unattended
+    schedule rolls its baseline forward and reports each night's delta rather
+    than re-reporting the same drift forever.
+    """
+    from . import diff as diffmod
+
+    changed = False
+    if args.baseline:
+        baseline = diffmod.load_scan(args.baseline)
+        d = diffmod.diff_scans(baseline, result.to_dict())
+        changed = d.has_changes
+        if args.diff_output:
+            if args.diff_output.lower().endswith('.json'):
+                diffmod.write_json(d, args.diff_output)
+            else:
+                diffmod.write_text(d, args.diff_output)
+            if not args.quiet:
+                print(f"Wrote comparison: {args.diff_output}", file=sys.stderr)
+        else:
+            print(diffmod.format_text(d))
+
+    if args.save_baseline:
+        result.write_json(args.save_baseline)
+        if not args.quiet:
+            print(f"Wrote baseline: {args.save_baseline}", file=sys.stderr)
+
+    return changed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,6 +299,14 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 3
 
+    changed = False
+    if args.baseline or args.save_baseline:
+        try:
+            changed = _handle_baseline(args, result)
+        except (OSError, ValueError) as e:
+            print(f"ERROR: baseline comparison failed: {e}", file=sys.stderr)
+            return 3
+
     if args.print == "summary":
         _print_summary(result)
     elif args.print == "table":
@@ -259,7 +317,11 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(result)
     # "none" prints nothing to stdout
 
-    return 2 if stop_event.is_set() else 0
+    if stop_event.is_set():
+        return 2
+    if changed and args.fail_on_change:
+        return 4
+    return 0
 
 
 if __name__ == "__main__":
