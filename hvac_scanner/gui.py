@@ -141,6 +141,16 @@ class HVACNetworkScannerGUI:
         self.whois_chunk_entry.pack(side=tk.LEFT, padx=(4, 12))
         self.whois_chunk_entry.insert(0, "0")  # 0 = single broadcast (default)
 
+        # Per-IP inter-packet delay. This existed on ScanOptions and the CLI
+        # from v2 but was never exposed here, so every GUI scan ran at
+        # rate_limit_ms=0 — full speed at small field controllers, which is
+        # exactly the load the README warns can lock them up. The GUI is the
+        # primary interface, so the throttle belongs here.
+        ttk.Label(row1, text="Rate (ms):", style="Dim.TLabel").pack(side=tk.LEFT)
+        self.rate_limit_entry = ttk.Entry(row1, width=5, font=("Consolas", 10))
+        self.rate_limit_entry.pack(side=tk.LEFT, padx=(4, 12))
+        self.rate_limit_entry.insert(0, "0")  # 0 = no throttle (previous behavior)
+
         # v2.1.2: scan depth preset
         ttk.Label(row1, text="Depth:", style="Dim.TLabel").pack(side=tk.LEFT)
         self.scan_depth_var = tk.StringVar(value="normal")
@@ -490,14 +500,35 @@ class HVACNetworkScannerGUI:
         self.stop_event.set()
         self.log_message("Scan stop requested...")
 
+    def _read_number(self, entry, label: str, default, cast, minimum=None):
+        """Read a numeric entry field, falling back to `default` on junk input.
+
+        Previously the timeout field was parsed with a bare float(), so a typo
+        raised out of _run_scan and the user got a traceback in the log instead
+        of a scan. The chunk field was guarded and the timeout field was not.
+        """
+        raw = (entry.get() or "").strip()
+        if not raw:
+            return default
+        try:
+            value = cast(raw)
+        except (TypeError, ValueError):
+            self.log_message(f"  [!] {label} {raw!r} is not a number — using {default}")
+            return default
+        if minimum is not None and value < minimum:
+            self.log_message(f"  [!] {label} {value} is below {minimum} — using {default}")
+            return default
+        return value
+
     def _run_scan(self) -> None:
         try:
             networks = [n.strip() for n in self.network_entry.get().split(",") if n.strip()]
-            timeout = float(self.timeout_entry.get() or "5")
-            try:
-                chunk = int(self.whois_chunk_entry.get() or "0")
-            except ValueError:
-                chunk = 0
+            timeout = self._read_number(self.timeout_entry, "Timeout", 5.0, float,
+                                        minimum=0.1)
+            chunk = self._read_number(self.whois_chunk_entry, "Chunk", 0, int,
+                                      minimum=0)
+            rate_limit = self._read_number(self.rate_limit_entry, "Rate (ms)", 0,
+                                           int, minimum=0)
             opts = ScanOptions(
                 networks=networks,
                 timeout=timeout,
@@ -509,6 +540,7 @@ class HVACNetworkScannerGUI:
                 deep_scan=self.deep_scan.get(),
                 use_rpm=self.use_rpm.get(),
                 whois_chunk_size=chunk,
+                rate_limit_ms=rate_limit,
                 scan_depth=self.scan_depth_var.get(),
                 # v2.1.2: No explicit broadcast override from GUI — engine
                 # auto-computes the right broadcast target based on the
