@@ -30,6 +30,12 @@ from .constants import (
 
 log = logging.getLogger(__name__)
 
+# Consecutive failed individual reads of one property on one device before the
+# client stops trying to fill that property from RPM gaps. Low on purpose: the
+# cost of being wrong is three wasted round trips per device, and the cost of
+# not trying at all is a permanently blank column.
+_PARTIAL_FILL_GIVE_UP = 3
+
 
 class BACnetClient:
     """Single long-lived socket for all BACnet traffic from this scanner.
@@ -47,6 +53,10 @@ class BACnetClient:
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._bound_port: Optional[int] = None
+        # (ip, property_name) -> consecutive individual-read failures, used to
+        # stop retrying a property a device clearly will not answer. See
+        # read_point_properties.
+        self._partial_fill_failures: dict[tuple[str, str], int] = {}
 
     # -- Lifecycle --------------------------------------------------------
 
@@ -459,10 +469,25 @@ class BACnetClient:
         reorder values at the packet level), we DROP the bad value rather than
         let it leak into the wrong column downstream.
 
-        RPM is retried as individual ReadProperty requests only when it
-        returned nothing at all. A partial result is taken as-is: the device
-        answered and reported access errors for the rest, so re-asking would
-        cost a round trip per property per object to fail again.
+        When RPM returns nothing at all, every property is retried as an
+        individual ReadProperty.
+
+        When RPM returns a PARTIAL result, the missing properties are retried
+        individually too, but adaptively. A partial result has two causes: the
+        device genuinely does not have the property, or its RPM implementation
+        is incomplete while single-property reads work fine. The second case is
+        common enough to be worth recovering — it is the difference between a
+        populated Name column and a blank one — but retrying blindly would cost
+        a round trip per missing property per object, which on a
+        several-thousand-object supervisory controller is thousands of wasted
+        exchanges when the answer is always "no such property".
+
+        So the client remembers, per (ip, property), how many consecutive
+        individual reads came back empty and stops retrying that property for
+        that device after `_PARTIAL_FILL_GIVE_UP`. A device that simply lacks
+        `description` costs three extra reads in total rather than three per
+        object; a device with a flaky RPM path gets its data filled in. Any
+        success resets the counter.
 
         Pass `dnet`/`dadr` for MSTP devices behind a router.
         """
@@ -479,15 +504,7 @@ class BACnetClient:
                 log.debug("RPM point read failed on %s %s:%d: %s",
                           ip, obj_type, obj_instance, e)
 
-        # Fallback: only when RPM returned nothing at all.
-        #
-        # Deliberately all-or-nothing rather than per-property. A partial RPM
-        # result means the device answered but reported an access error for
-        # the missing properties, so re-asking each one with ReadProperty
-        # would fail again — at the cost of an extra round trip per property
-        # per object, which on a several-thousand-object supervisory
-        # controller is thousands of wasted exchanges. The docstring above
-        # used to promise per-property filling that this never did.
+        # RPM returned nothing at all: retry every property individually.
         if not raw:
             for name in prop_names:
                 val = self.read_property(ip, obj_type, obj_instance, name,
@@ -496,6 +513,27 @@ class BACnetClient:
                     num = PROP_IDS.get(name)
                     if num is not None:
                         raw[num] = val
+        else:
+            # RPM returned a partial result: fill the gaps individually, but
+            # give up on a property once this device has refused it repeatedly.
+            # See the docstring for why this is adaptive rather than blind.
+            for name in prop_names:
+                num = PROP_IDS.get(name)
+                if num is None or num in raw:
+                    continue
+                key = (ip, name)
+                if self._partial_fill_failures.get(key, 0) >= _PARTIAL_FILL_GIVE_UP:
+                    continue
+                val = self.read_property(ip, obj_type, obj_instance, name,
+                                         dnet=dnet, dadr=dadr)
+                if val is None:
+                    self._partial_fill_failures[key] =                         self._partial_fill_failures.get(key, 0) + 1
+                    if self._partial_fill_failures[key] == _PARTIAL_FILL_GIVE_UP:
+                        log.debug("%s does not answer %s individually either; "
+                                  "stopping per-object retries", ip, name)
+                else:
+                    self._partial_fill_failures.pop(key, None)
+                    raw[num] = val
 
         # Type-validate and remap to name keys
         out: dict[str, Any] = {}
