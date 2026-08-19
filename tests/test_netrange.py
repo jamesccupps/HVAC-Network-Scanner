@@ -232,3 +232,41 @@ def test_engine_reports_every_invalid_target_not_just_the_first():
     joined = "\n".join(logs)
     assert "10.0.0.0/8" in joined
     assert "not-an-ip" in joined
+
+
+# ---------------------------------------------------------------------------
+# iter_parse_targets was documented as the streaming variant but delegated to
+# parse_targets() and yielded from the result, so it built the whole list
+# before producing the first item.
+# ---------------------------------------------------------------------------
+
+import itertools
+
+from hvac_scanner.netrange import iter_parse_targets
+
+
+def test_iter_matches_the_eager_parser():
+    for spec in ("10.0.0.0/28", "10.0.0.2-10", "10.0.0.5", "10.0.0.0/30, 10.0.1.5"):
+        assert list(iter_parse_targets(spec)) == parse_targets(spec)
+
+
+def test_iter_yields_before_consuming_everything():
+    """Pull three items from a /16 without materializing 65k strings."""
+    gen = iter_parse_targets("10.0.0.0/16")
+    assert list(itertools.islice(gen, 3)) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    gen.close()
+
+
+def test_iter_deduplicates_across_tokens():
+    assert list(iter_parse_targets("10.0.0.5, 10.0.0.5, 10.0.0.6")) \
+        == ["10.0.0.5", "10.0.0.6"]
+
+
+def test_iter_accepts_an_iterable_of_tokens():
+    assert list(iter_parse_targets(["10.0.0.1", "10.0.0.2"])) \
+        == ["10.0.0.1", "10.0.0.2"]
+
+
+def test_iter_raises_on_a_bad_token():
+    with pytest.raises(InvalidTargetSyntaxError):
+        list(iter_parse_targets("10.0.0.0/8"))
