@@ -102,3 +102,68 @@ def test_accepts_first_matching_reply():
     result = client.read_property('10.0.0.21', 'Analog Input', 29, 'presentValue')
     assert result == 72.5
     assert client._sock.recvfrom.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression: unsolicited traffic from the TARGET device itself.
+#
+# The tests above all send stray packets from a different source IP, which the
+# `addr[0] != ip` check already caught. The uncovered case was a packet with no
+# invoke-id arriving from the very device being polled — an I-Am, unconfirmed
+# COV, or unconfirmed event notification, all of which a live controller emits
+# on its own schedule while we are bound to 47808. `_extract_invoke_id` returns
+# None for those, and the old condition (`got_id is not None and ...`) let them
+# fall through to the parser, which returned None and aborted the read with
+# most of the timeout still unspent. On a segment with active COV subscriptions
+# this silently dropped points.
+# ---------------------------------------------------------------------------
+
+def _make_unconfirmed_cov(instance: int) -> bytes:
+    """Unconfirmed COV notification (PDU type 1 — carries no invoke-id)."""
+    return codec.build_bvlc(0x0B, b'\x01\x00' + bytes([
+        0x10, 0x02,              # Unconfirmed-Request, service 2 = unconfirmedCOVNotification
+        0x09, 0x0C,              # ctx0 subscriber process id
+        0x1C, 0x02, 0x00, 0x00, 0x05,  # ctx1 initiating device
+        0x2C, 0x00, 0x00, 0x00, instance & 0xFF,  # ctx2 monitored object
+        0x39, 0x00,              # ctx3 time remaining
+    ]))
+
+
+def test_iam_from_target_device_does_not_abort_read():
+    """An I-Am from the polled device itself must be skipped, not end the wait."""
+    client = _mock_client([
+        (_make_iam(29), ('10.0.0.21', 47808)),          # SAME IP as the target
+        (_make_rp_ack(1, 72.5), ('10.0.0.21', 47808)),  # the real reply
+    ])
+    result = client.read_property('10.0.0.21', 'Analog Input', 29, 'presentValue')
+    assert result == 72.5
+    assert client._sock.recvfrom.call_count == 2
+
+
+def test_unconfirmed_cov_from_target_device_does_not_abort_read():
+    """Unconfirmed COV notifications are constant on a live BAS segment."""
+    client = _mock_client([
+        (_make_unconfirmed_cov(29), ('10.0.0.21', 47808)),
+        (_make_unconfirmed_cov(30), ('10.0.0.21', 47808)),
+        (_make_rp_ack(1, 68.25), ('10.0.0.21', 47808)),
+    ])
+    result = client.read_property('10.0.0.21', 'Analog Input', 29, 'presentValue')
+    assert result == 68.25
+    assert client._sock.recvfrom.call_count == 3
+
+
+def test_rpm_survives_unsolicited_traffic_from_target():
+    """Same protection must hold on the ReadPropertyMultiple path."""
+    rpm_ack = codec.build_bvlc(0x0A, b'\x01\x00' + bytes([
+        0x30, 0x01, 0x0E,
+        0x0C, 0x00, 0x00, 0x00, 0x08,
+        0x1E,
+        0x29, 0x55, 0x4E, 0x44, *struct.pack('!f', 55.5), 0x4F,
+        0x1F,
+    ]))
+    client = _mock_client([
+        (_make_iam(29), ('10.0.0.21', 47808)),
+        (rpm_ack, ('10.0.0.21', 47808)),
+    ])
+    result = client.read_property_multiple('10.0.0.21', 'Analog Input', 29, [85])
+    assert result == {85: 55.5}

@@ -290,9 +290,17 @@ class BACnetClient:
                     discarded += 1
                     continue
 
-                # Invoke ID must match what we sent
+                # Invoke ID must match what we sent. `None` means the packet
+                # carries no invoke-id at all — an Unconfirmed-Request such as
+                # an I-Am, an unconfirmed COV notification, or an unconfirmed
+                # event notification. The device we are polling emits those on
+                # its own schedule and we are bound to 47808, so they land here
+                # routinely on a live segment. They are never our reply: drop
+                # them and keep waiting out the timeout. Returning here (the
+                # pre-fix behavior) aborted the read on the first stray packet
+                # and silently lost the point.
                 got_id = _extract_invoke_id(data)
-                if got_id is not None and got_id != expected_invoke_id:
+                if got_id is None or got_id != expected_invoke_id:
                     discarded += 1
                     continue
 
