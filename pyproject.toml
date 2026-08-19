@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hvac-network-scanner"
-version = "2.5.0"
+version = "2.6.0"
 description = "Multi-protocol HVAC / building automation network scanner (BACnet/IP, MSTP, Modbus TCP, Niagara Fox, OPC UA, SNMP, and more)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,6 +31,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+# Build-only. Never imported at runtime, so the package stays
+# zero-dependency for anyone who installs it with pip.
+build = ["pyinstaller>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/jamesccupps/HVAC-Network-Scanner"
