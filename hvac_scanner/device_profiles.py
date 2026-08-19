@@ -9,7 +9,7 @@ aggregated LonTalk / MSTP downstream devices).
 
 Truncation is particularly bad on devices that enumerate by-type in array
 order, because the user ends up with 500 Analog Inputs and no Binaries /
-Multi-states / Analog Values. Found at OCC testing against a Tracer SC+.
+Multi-states / Analog Values. Found in field testing against a Tracer SC+.
 
 This module provides:
 - DeviceProfile dataclass describing per-device-class tuning.
@@ -75,49 +75,49 @@ SCAN_DEPTH_PRESETS = {
 
 DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
     # ------------------------------------------------------------------
-    # Trane — verified against OCC Portland, 2026-04-20
+    # Trane — field-verified 2026-04-20
     # ------------------------------------------------------------------
     # Tracer SC+ is a supervisory controller that aggregates LonTalk
-    # downstream devices (~100 VAVs + AHUs in OCC's case) and exposes
+    # downstream devices (~100 VAVs + AHUs in the verified case) and exposes
     # them as mapped BACnet objects. Observed ~3000+ objects in practice.
     # Cap of 5000 gives meaningful headroom for larger sites.
     ("the trane company", "tracer sc+"): DeviceProfile(
         object_cap=5000,
         class_label="Trane supervisory (SC+)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     ("the trane company", "tracer sc"): DeviceProfile(
         object_cap=5000,
         class_label="Trane supervisory (SC)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     # Symbio 400/500/700/800 series — MSTP field controllers, not supervisory.
-    # AC-4 at OCC enumerated ~90 objects across AI/AO/AV/BI/BO/BV/MSV.
+    # A field controller enumerated ~90 objects across AI/AO/AV/BI/BO/BV/MSV.
     # Cap 500 is safe.
     ("the trane company", "symbio 400-500"): DeviceProfile(
         object_cap=500,
         class_label="Trane field (Symbio)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     ("the trane company", "symbio 700-800"): DeviceProfile(
         object_cap=500,
         class_label="Trane field (Symbio)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     # UC400, UC600 — older Trane controllers. Similar profile to Symbio.
     ("the trane company", "uc400"): DeviceProfile(
         object_cap=500,
         class_label="Trane field (UC400)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     ("the trane company", "uc600"): DeviceProfile(
         object_cap=500,
         class_label="Trane field (UC600)",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
 
     # ------------------------------------------------------------------
-    # Siemens — verified against OCC Portland, 2026-04-20
+    # Siemens — field-verified 2026-04-20
     # ------------------------------------------------------------------
     # Vendor string per ASHRAE registry: "Siemens Schweiz AG" (Switzerland)
     # Real-world devices report it as "Siemens Schweiz" (short form) via
@@ -127,39 +127,39 @@ DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
     #
     # PXC Compact (EPXC firmware) / PXC Modular (PXME firmware) — field
     # panels. Both report modelName="Siemens BACnet Field Panel" on
-    # BACnet/IP regardless of internal hardware class. Verified at OCC:
-    #   - PXCC101000 (EPXC V3.5.2, Compact): 449 objects
-    #   - OCCPXCM103000 (PXME V3.5.2, Modular, HV-1): 1,960 objects
+    # BACnet/IP regardless of internal hardware class. Verified in the field:
+    #   - a Compact panel (EPXC V3.5.2): 449 objects
+    #   - a Modular panel (PXME V3.5.2): 1,960 objects
     # Modular panels host substantially larger programs than Compact.
     # Cap 5000 accommodates real-world PXME panels with headroom for
     # larger installations; heuristic fallback applies for outliers.
     ("siemens schweiz", "siemens bacnet field panel"): DeviceProfile(
         object_cap=5000,
         class_label="Siemens field panel (PXC)",
-        verified_at="OCC Portland 2026-04-20 (EPXC Compact 449 obj, PXME Modular 1960 obj verified; cap 5000 handles both with room)",
+        verified_at="field-verified 2026-04-20 (EPXC Compact 449 obj, PXME Modular 1960 obj verified; cap 5000 handles both with room)",
     ),
     # DXR2 room controllers (BACnet/IP). Small (100-200 objects). All
-    # OCC-verified at firmware v01.21 / protocol revision 15. Observed:
+    # field-verified at firmware v01.21 / protocol revision 15. Observed:
     #   DXR2.E10PL-1: 164 objects   (standard room controller)
     #   DXR2.E12P-1:  181 objects   (P-series variant)
     #   DXR2.E18-1:   135 objects   (heat pump variant)
     ("siemens schweiz", "dxr2.e10pl-1"): DeviceProfile(
         object_cap=500,
         class_label="Siemens DXR2 room controller",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     ("siemens schweiz", "dxr2.e18-1"): DeviceProfile(
         object_cap=500,
         class_label="Siemens DXR2 heat pump controller",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     ("siemens schweiz", "dxr2.e12p-1"): DeviceProfile(
         object_cap=500,
         class_label="Siemens DXR2 bath controller",
-        verified_at="OCC Portland 2026-04-20",
+        verified_at="field-verified 2026-04-20",
     ),
     # ------------------------------------------------------------------
-    # Supervisor workstations — verified at OCC 2026-04-20
+    # Supervisor workstations — field-verified 2026-04-20
     # ------------------------------------------------------------------
     # These devices are BACnet supervisors/workstations that present
     # themselves on BACnet/IP but do NOT expose their aggregated point
@@ -173,19 +173,19 @@ DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
     # the supervisor exists without trying to enumerate points that
     # aren't there.
 
-    # Desigo CC (Siemens supervisor) — OCC shows modelName="Desigo CC"
+    # Desigo CC (Siemens supervisor) — the verified unit reports modelName="Desigo CC"
     # with 2-object objectList.
     ("siemens schweiz", "desigo cc"): DeviceProfile(
         object_cap=100,
         class_label="Siemens Desigo CC supervisor",
-        verified_at="OCC Portland 2026-04-20 (2 objects in objectList)",
+        verified_at="field-verified 2026-04-20 (2 objects in objectList)",
     ),
-    # Desigo CC Insight (older branding / variant) — OCC shows
+    # Desigo CC Insight (older branding / variant) — the verified unit reports
     # modelName="Insight" with 1-object objectList.
     ("siemens schweiz", "insight"): DeviceProfile(
         object_cap=100,
         class_label="Siemens Desigo CC supervisor (Insight)",
-        verified_at="OCC Portland 2026-04-20 (1 object in objectList)",
+        verified_at="field-verified 2026-04-20 (1 object in objectList)",
     ),
     # Trane Tracer Ensemble (TES Workstation) — modelName="TES
     # Workstation", 1-object objectList. Notably rejects RPM and
@@ -194,7 +194,7 @@ DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
     ("the trane company", "tes workstation"): DeviceProfile(
         object_cap=100,
         class_label="Trane Tracer Ensemble workstation",
-        verified_at="OCC Portland 2026-04-20 (1 object in objectList; rejects RPM)",
+        verified_at="field-verified 2026-04-20 (1 object in objectList; rejects RPM)",
     ),
 
     # ------------------------------------------------------------------
@@ -216,32 +216,32 @@ _VENDOR_MODEL_PREFIX_RULES = [
     ("the trane company", "symbio",    DeviceProfile(
         object_cap=500,
         class_label="Trane field (Symbio family)",
-        verified_at="OCC Portland 2026-04-20 (prefix rule)",
+        verified_at="field-verified 2026-04-20 (prefix rule)",
     )),
     ("the trane company", "tracer sc", DeviceProfile(
         object_cap=5000,
         class_label="Trane supervisory (Tracer family)",
-        verified_at="OCC Portland 2026-04-20 (prefix rule)",
+        verified_at="field-verified 2026-04-20 (prefix rule)",
     )),
     # Siemens DXR2 family — any model starting with DXR2 is a room-level
-    # field controller. Observed range at OCC: 135-181 objects across
+    # field controller. Observed range in the field: 135-181 objects across
     # E10PL-1, E12P-1, E18-1 variants. Cap 500 gives headroom for future
     # variants without opening the door to supervisory-class devices.
     ("siemens schweiz", "dxr2",        DeviceProfile(
         object_cap=500,
         class_label="Siemens DXR2 family (room controller)",
-        verified_at="OCC Portland 2026-04-20 (prefix rule)",
+        verified_at="field-verified 2026-04-20 (prefix rule)",
     )),
     # Siemens PXC Compact / PXC Modular panels. The model string is
     # literally "Siemens BACnet Field Panel" regardless of whether the
     # underlying hardware is PXCC (Compact, EPXC firmware) or PXCM
-    # (Modular, PXME firmware). Observed at OCC:
-    #   - PXCC101000 (Compact): 449 objects
-    #   - OCCPXCM103000 (Modular, HV-1): 1,960 objects
+    # (Modular, PXME firmware). Observed in the field:
+    #   - a Compact panel: 449 objects
+    #   - a Modular panel: 1,960 objects
     ("siemens schweiz", "field panel", DeviceProfile(
         object_cap=5000,
         class_label="Siemens field panel (PXC)",
-        verified_at="OCC Portland 2026-04-20 (prefix rule)",
+        verified_at="field-verified 2026-04-20 (prefix rule)",
     )),
 ]
 

@@ -51,7 +51,7 @@ class TestClassificationReportBasics:
         r = ScanResult()
         r.devices = [_make_device(
             '10.0.0.19', 33333,
-            obj_name='SC-1 + E22J04614',
+            obj_name='SC-1 + SN00000000',
             model='Tracer SC+',
             vendor='The Trane Company',
             points=5474,
@@ -61,7 +61,7 @@ class TestClassificationReportBasics:
                 'object_count': 5517,
                 'profile_class': 'Trane supervisory (SC+)',
                 'profile_cap': 5000,
-                'profile_verified_at': 'OCC Portland 2026-04-20',
+                'profile_verified_at': 'field-verified 2026-04-20',
                 'explanation': 'known device [Trane supervisory (SC+)] — cap 5000',
                 'depth_note': None,
             },
@@ -76,7 +76,7 @@ class TestClassificationReportBasics:
             # Key details should all be present
             assert '10.0.0.19' in content
             assert '33333' in content
-            assert 'SC-1 + E22J04614' in content
+            assert 'SC-1 + SN00000000' in content
             assert 'Tracer SC+' in content
             assert 'The Trane Company' in content
             assert '5517' in content  # object count

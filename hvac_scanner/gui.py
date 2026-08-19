@@ -592,7 +592,7 @@ class HVACNetworkScannerGUI:
 
         # Points tab
         # v2.1.2: prefer the device's BACnet objectName (e.g. "SC-1 +
-        # E22J04614") over the generic "ip (instance)" label when
+        # SN00000000") over the generic "ip (instance)" label when
         # available. Falls back to IP+instance when name is missing.
         for dev in self.result.devices:
             ip = dev.get('ip', '?')

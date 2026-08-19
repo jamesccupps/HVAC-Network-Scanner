@@ -147,7 +147,7 @@ class ScanResult:
                 vendor = dev.get('vendor_name') or vendor_from_dev or dev.get('vendor', '')
                 desc = props.get('description') or fp.get('description', '')
                 # v2.1.2: expose device's BACnet objectName (e.g. "SC-1 +
-                # E22J04614"). It's what users recognize their devices by.
+                # SN00000000"). It's what users recognize their devices by.
                 obj_name = props.get('object_name', '')
                 writer.writerow([
                     dev.get('protocol', '?'),

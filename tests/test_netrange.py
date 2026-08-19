@@ -1,7 +1,7 @@
 """Tests for v2.1.2 target range parser.
 
 Previously the scanner only accepted CIDR. Users asked for "scan hosts 2-100"
-without computing CIDR in their head, and the OCC test revealed that a /26
+without computing CIDR in their head, and field testing revealed that a /26
 CIDR gets broadcast_address=10.0.0.63 which is NOT a real Ethernet broadcast
 on a physical /24 subnet (silent Who-Is failure). This parser decouples
 "which hosts to probe" from "which broadcast address to use."
@@ -156,7 +156,7 @@ class TestIterableInput:
 
 
 class TestOCCRegression:
-    """The scenario that actually broke on OCC: user typed 10.0.0.0/26
+    """The scenario that actually broke in the field: user typed 10.0.0.0/26
     expecting to scan the first 64 IPs of their /24 network. Result: zero
     BACnet devices because broadcast_address=10.0.0.63 isn't a real
     Ethernet broadcast on /24. In v2.1.2 the user can instead type a

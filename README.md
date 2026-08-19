@@ -43,7 +43,7 @@ installations. These devices have known-good classification profiles:
   (handles RPM rejection via fallback to single ReadProperty)
 - **Siemens PXC Compact** (EPXC V3.5.x firmware) — field panel
 - **Siemens PXC Modular** (PXME V3.5.x firmware) — field panel
-  (verified with 1,960-object HV-1 program)
+  (verified with 1,960-object program)
 - **Siemens DXR2.E10PL-1, .E12P-1, .E18-1** — room controllers
 - **Siemens Desigo CC / Insight** — supervisors
 
@@ -183,7 +183,7 @@ broadcast target so it's never magic. Power users can override via the
   site recon; Full overrides all caps when you really do want
   everything.
 - **Device name in Points tab.** The Device column now shows the
-  device's BACnet `objectName` (e.g. `"SC-1 + E22J04614 (10.0.0.19)"`)
+  device's BACnet `objectName` (e.g. `"SC-1 + SN00000000 (10.0.0.19)"`)
   instead of a bare `"10.0.0.19 (33333)"`. CSV export adds an Object
   Name column.
 - **Double-click any point row** for a detail popup with wrapped,
@@ -192,7 +192,7 @@ broadcast target so it's never magic. Power users can override via the
   now tells you why it might have failed (offline, firewalled, not
   BACnet/IP, wrong protocol, or older Siemens APOGEE/BLN hardware
   that isn't reachable via BACnet/IP at all).
-- **Tested against real hardware at OCC Portland:**
+- **Tested against real hardware in a live installation:**
   - Trane Tracer SC+ (5,476 and 4,403 object scans, 0 errors)
   - Trane Symbio 400-500 (MSTP, 90 objects, 0 errors)
   - Trane Tracer Ensemble workstation (RPM-reject fallback verified)

@@ -259,7 +259,7 @@ class BACnetClient:
         notifications, and stale replies from prior requests regularly arrive.
         Without this filtering, responses from different devices got parsed
         under the wrong request's context, producing column-swapped values
-        in the Points tab (observed on Trane Tracer against a busy OCC segment).
+        in the Points tab (observed on Trane Tracer against a busy site segment).
         """
         assert self._sock is not None
         try:

@@ -98,7 +98,7 @@ class TestVendorRegistryGrew:
         # IDs that OldAutomator's '>100 shows as number' complaint was about
         critical_ids = {
             245: "Contemporary",  # Contemporary Control Systems (BASRT-B)
-            332: "Distech",       # Distech Controls (OCC)
+            332: "Distech",       # Distech Controls
             389: "Chipkin",       # CAS gateways (widely deployed)
             423: "BELIMO",        # Belimo Automation
             502: "EasyIO",        # EasyIO (popular on Niagara)

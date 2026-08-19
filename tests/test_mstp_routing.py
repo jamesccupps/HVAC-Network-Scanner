@@ -120,7 +120,7 @@ class TestReadPropertyRouted:
         """The exact fix: control byte 0x24 + DNET + DLEN=1 + DADR + hop."""
         pkt = codec.build_read_property(
             "Analog Input", 42, "presentValue",
-            dnet=103, dadr="1",  # matches OCC: JCI FEC at MSTP net 103, MAC 1
+            dnet=103, dadr="1",  # realistic case: JCI FEC at MSTP net 103, MAC 1
         )
         # NPDU layout after BVLC (4 bytes)
         # 0x01 0x24 00 67 01 01 FF  (DNET=103=0x67, DLEN=1, DADR=1, hop=255)

@@ -2,7 +2,7 @@
 range are dropped before deep-scan, and that results only contain
 in-range devices.
 
-Regression guard for the OCC test where user typed 10.0.0.2-10.0.0.21
+Regression guard for the field case where user typed 10.0.0.2-10.0.0.21
 and the scanner deep-read 15 devices across the whole /24 because the
 Who-Is broadcast reached every device on the physical subnet.
 """
@@ -82,7 +82,7 @@ class TestOCCScenario:
             callback=lambda _m: None,
         )
         allowed = engine._allowed_ips_for_targets()
-        # Every one of these answered Who-Is in the OCC pcap but the user
+        # Every one of these answered Who-Is in the reference pcap but the user
         # never asked for them. Filter must reject them.
         out_of_range = [
             "10.0.0.22",   # just outside the range
@@ -154,7 +154,7 @@ class TestDeduplicationAcrossMultipleTargets:
     targets were on the same /24, each broadcast returned the same I-Am
     responses, and each pass through the filter appended them to results.
 
-    Found at OCC testing with target `10.0.0.245, 10.0.0.201, 10.0.0.230,
+    Found in field testing with target `10.0.0.245, 10.0.0.201, 10.0.0.230,
     10.0.0.176` — 4 devices returned 16 CSV rows.
     """
 

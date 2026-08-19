@@ -77,7 +77,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Fix: I-Am responses are now filtered against the user's target spec
   before deep-scan on both BACnet/IP and MSTP paths. Scan log shows
   "Discovered N device(s); kept M in target range (dropped K out-of-range)."
-  Found during v2.1.2 verification testing at OCC; confirmed at the wire
+  Found during v2.1.2 field verification; confirmed at the wire
   level (13,071 packets, 11,067 of them to out-of-range IPs).
 
 - **Silent truncation on supervisory controllers.** The fixed 500-object
@@ -144,8 +144,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Device profile system.** New module `hvac_scanner/device_profiles.py`
   with verified per-vendor/model entries plus size-based heuristic fallback
-  for unknown devices. Seeded with Trane entries verified against OCC
-  Portland hardware. Siemens, JCI, Tridium, and others will be added as
+  for unknown devices. Seeded with Trane entries field-verified against real hardware. Siemens, JCI, Tridium, and others will be added as
   they're verified against real equipment. Every entry records where and
   when it was validated.
 
@@ -293,7 +292,7 @@ tab.
   object names in the Units column. The v1 and v2.0.0/v2.0.1
   `BACnetClient._request_response` did `sendto()` then `recvfrom()` and
   assumed the first packet back was the reply to the request just sent. On
-  any busy BAS network — like OCC with 161 BACnet devices — the shared UDP
+  any busy BAS network — like a large site with ~160 BACnet devices — the shared UDP
   socket bound to port 47808 is constantly receiving I-Am broadcasts, COV
   notifications, and stale replies from prior requests. Those stranger
   packets got parsed under the wrong request's context, so the property
@@ -343,7 +342,7 @@ Went from 64 to 98 tests (+34).
 
 ## [2.0.1] — 2026-04-16
 
-Post-first-scan bug fixes discovered running against One City Center's
+Post-first-scan bug fixes discovered running against a live installation's
 161-device BACnet network.
 
 ### Fixed
