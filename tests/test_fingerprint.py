@@ -55,13 +55,19 @@ def test_contemporary_controls_router():
     assert 'Router' in fp['device_type']
 
 
-def test_contemporary_controls_vendor_485_also_works():
+def test_vendor_485_is_scs_not_contemporary_controls():
+    """485 is SCS in the ASHRAE registry, not Contemporary Controls.
+
+    This test previously asserted the opposite, codifying the desync
+    introduced when BACNET_VENDORS was regenerated in v2.1.1.
+    """
     dev = {
         'ip': '192.168.5.3', 'protocol': 'BACnet/IP',
         'vendor_id': 485, 'instance': 50002, 'max_apdu': 1476,
     }
     fp = fingerprint_device(dev, [])
-    assert 'BASRT-B' in fp['model']
+    assert 'BASRT-B' not in fp['model']
+    assert 'SCS' in fp['model']
 
 
 def test_snmp_trane_fallback():
@@ -89,3 +95,80 @@ def test_service_only_unifi():
     }
     fp = fingerprint_device(dev, [dev])
     assert 'UniFi' in fp['model']
+
+
+# ---------------------------------------------------------------------------
+# Guard: the vendor IDs this module branches on must agree with the ASHRAE
+# registry in constants.py.
+#
+# v2.1.1 regenerated BACNET_VENDORS from the official list (34 -> 593 entries)
+# without re-checking the hardcoded IDs in fingerprint.py. Two branches
+# silently desynced: 485 (SCS) was treated as Contemporary Controls, and
+# 13/514 (Teletrol Systems / t-mac Technologies) as Cimetrics. The SCS case
+# also attached another vendor's default credentials to the result. These
+# tests fail loudly if a future registry update desyncs them again.
+# ---------------------------------------------------------------------------
+
+from hvac_scanner.constants import BACNET_VENDORS
+from hvac_scanner import fingerprint as _fp
+
+
+def test_vendor_id_constants_match_the_registry():
+    expected = {
+        _fp.VENDOR_TRANE:              'trane',
+        _fp.VENDOR_JOHNSON_CONTROLS:   'johnson',
+        _fp.VENDOR_CIMETRICS:          'cimetrics',
+        _fp.VENDOR_CONTEMPORARY:       'contemporary',
+    }
+    for vid, substring in expected.items():
+        assert vid in BACNET_VENDORS, f"vendor id {vid} missing from registry"
+        assert substring in BACNET_VENDORS[vid].lower(), (
+            f"vendor id {vid} is {BACNET_VENDORS[vid]!r}, expected a "
+            f"{substring!r} vendor"
+        )
+
+
+def test_siemens_vendor_ids_match_the_registry():
+    for vid in _fp.VENDORS_SIEMENS:
+        assert vid in BACNET_VENDORS, f"vendor id {vid} missing from registry"
+        assert 'siemens' in BACNET_VENDORS[vid].lower(), (
+            f"vendor id {vid} is {BACNET_VENDORS[vid]!r}, expected Siemens"
+        )
+
+
+def test_scs_is_not_identified_as_a_contemporary_controls_router():
+    """485 is SCS. It must not inherit Contemporary Controls' default creds."""
+    assert 'contemporary' not in BACNET_VENDORS[485].lower()
+    info = fingerprint_device({'ip': '10.0.0.5', 'vendor_id': 485,
+                               'protocol': 'BACnet/IP'})
+    assert 'BASRT' not in info['model']
+    assert info['default_creds'] == ''
+
+
+def test_teletrol_and_tmac_are_not_identified_as_cimetrics():
+    for vid in (13, 514):
+        assert 'cimetrics' not in BACNET_VENDORS[vid].lower()
+        info = fingerprint_device({'ip': '10.0.0.6', 'vendor_id': vid,
+                                   'protocol': 'BACnet/IP'})
+        assert 'Cimetrics' not in info['model']
+
+
+def test_cimetrics_is_identified_at_its_real_vendor_id():
+    info = fingerprint_device({'ip': '10.0.0.7', 'vendor_id': 14,
+                               'protocol': 'BACnet/IP'})
+    assert 'Cimetrics' in info['model']
+
+
+def test_contemporary_controls_still_identified_at_245():
+    info = fingerprint_device({'ip': '10.0.0.8', 'vendor_id': 245,
+                               'protocol': 'BACnet/IP'})
+    assert 'BASRT-B' in info['model']
+    assert info['default_creds'] == 'admin / admin'
+
+
+def test_siemens_alternate_vendor_ids_are_fingerprinted():
+    """A device reporting 9, 22, or 313 is still Siemens, not an unknown."""
+    for vid in _fp.VENDORS_SIEMENS:
+        info = fingerprint_device({'ip': '10.0.0.9', 'vendor_id': vid,
+                                   'protocol': 'BACnet/IP'})
+        assert 'Siemens' in info['model'], f"vendor {vid} -> {info['model']!r}"
