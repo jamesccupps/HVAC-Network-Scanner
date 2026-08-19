@@ -111,6 +111,12 @@ def fingerprint_device(dev: dict[str, Any],
         'web_url': '', 'default_creds': '',
     }
     ip = dev.get('ip', '')
+    # The device's own Device-object properties, populated by engine._deep_read
+    # before _refingerprint runs. modelName is ground truth: the controller
+    # literally tells us what it is. The heuristics below only ever existed to
+    # cover the case where it does not answer.
+    props = dev.get('properties') or {}
+    reported_model = str(props.get('model_name') or '').strip()
     vendor_id = dev.get('vendor_id')
     instance = dev.get('instance', 0) or 0
     protocol = dev.get('protocol', '')
@@ -138,8 +144,15 @@ def fingerprint_device(dev: dict[str, Any],
 
     # --- Trane --------------------------------------------------------
     if vendor_id == VENDOR_TRANE:
-        if max_apdu == 1024 and instance in (33333, 22222):
-            info['model'] = 'Trane Tracer SC+'
+        # 'tracer sc' covers SC and SC+; the device reports which.
+        #
+        # This used to key off `instance in (33333, 22222)`, which are simply
+        # the device instances configured at the site this was developed
+        # against — an arbitrary local convention, not a protocol fact. An SC+
+        # numbered 1 elsewhere fell through to the UC800/UC600 branch and was
+        # reported as a unitary controller.
+        if 'tracer sc' in reported_model.lower():
+            info['model'] = reported_model
             info['device_type'] = 'Supervisory Controller'
             info['description'] = 'BACnet supervisory controller with integrated web server and LonWorks gateway'
             info['default_creds'] = 'admin / Tracer1$'
@@ -170,6 +183,10 @@ def fingerprint_device(dev: dict[str, Any],
     elif vendor_id in VENDORS_SIEMENS:
         inst_prefix = instance // 1000 if instance else 0
 
+        # NB: `instance % 1000 == 0` below is a site addressing convention, not
+        # a Siemens property. It is kept as a weak hint for panels that do not
+        # answer ReadProperty, but a reported modelName overrides it at the end
+        # of this function.
         if instance and instance % 1000 == 0 and has_nucleus_ftp:
             info['model'] = 'Siemens Desigo PXC Automation Station'
             info['device_type'] = 'Automation Station'
@@ -272,6 +289,16 @@ def fingerprint_device(dev: dict[str, Any],
     if not info['model'] and vendor_id is not None:
         info['model'] = BACNET_VENDORS.get(vendor_id, f'Vendor #{vendor_id}') + ' Controller'
         info['device_type'] = 'Controller'
+
+    # The device's own modelName beats anything we inferred. Applied before
+    # credential resolution so the DEFAULT_CREDS match runs against the real
+    # product name rather than a guess. This also aligns the JSON/GUI
+    # 'identified_model' with the CSV export, which already preferred
+    # properties.model_name — the two used to disagree on the same device.
+    if reported_model:
+        info['model'] = reported_model
+        if not info['device_type']:
+            info['device_type'] = 'Controller'
 
     # Fill default credentials from the shared table when no branch above
     # produced a model-specific value.

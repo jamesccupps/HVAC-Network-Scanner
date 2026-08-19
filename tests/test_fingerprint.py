@@ -4,15 +4,70 @@ from hvac_scanner.fingerprint import fingerprint_device
 
 
 def test_trane_tracer_sc_plus():
+    """A device that reports its own modelName is identified from it.
+
+    This used to key off `instance in (33333, 22222)` — the device instances
+    configured at the site this was developed against, an arbitrary local
+    convention rather than anything Trane defines.
+    """
+    dev = {
+        'ip': '192.168.5.10', 'protocol': 'BACnet/IP',
+        'vendor_id': 2, 'instance': 33333, 'max_apdu': 1024,
+        'properties': {'model_name': 'Tracer SC+'},
+    }
+    services = [{'ip': '192.168.5.10', 'port': 443, 'protocol': 'Service', 'server': 'nginx'}]
+    fp = fingerprint_device(dev, services)
+    assert fp['model'] == 'Tracer SC+'
+    assert fp['device_type'] == 'Supervisory Controller'
+    assert 'admin / Tracer1$' in fp['default_creds']
+    assert fp['web_url'] == 'https://192.168.5.10'
+
+
+def test_trane_supervisory_without_a_reported_model_falls_back_to_heuristic():
+    """No modelName: the max-APDU heuristic still labels it, less precisely."""
     dev = {
         'ip': '192.168.5.10', 'protocol': 'BACnet/IP',
         'vendor_id': 2, 'instance': 33333, 'max_apdu': 1024,
     }
-    services = [{'ip': '192.168.5.10', 'port': 443, 'protocol': 'Service', 'server': 'nginx'}]
-    fp = fingerprint_device(dev, services)
-    assert 'Trane Tracer SC+' in fp['model']
+    fp = fingerprint_device(dev, [])
+    assert 'Tracer SC' in fp['model']
+    assert fp['device_type'] == 'Supervisory Controller'
     assert 'admin / Tracer1$' in fp['default_creds']
-    assert fp['web_url'] == 'https://192.168.5.10'
+
+
+def test_supervisory_controller_at_an_arbitrary_instance_is_not_a_unitary():
+    """Regression: an SC+ numbered 1 fell through to the UC800/UC600 branch."""
+    dev = {
+        'ip': '192.168.5.10', 'protocol': 'BACnet/IP',
+        'vendor_id': 2, 'instance': 1, 'max_apdu': 1476,
+        'properties': {'model_name': 'Tracer SC+'},
+    }
+    fp = fingerprint_device(dev, [])
+    assert fp['model'] == 'Tracer SC+'
+    assert fp['device_type'] == 'Supervisory Controller'
+
+
+def test_reported_model_overrides_a_heuristic_label():
+    """Whatever the heuristics guessed, the device's own answer wins."""
+    dev = {
+        'ip': '10.0.0.5', 'protocol': 'BACnet/IP',
+        'vendor_id': 7, 'instance': 103000, 'max_apdu': 1476,
+        'properties': {'model_name': 'Siemens BACnet Field Panel'},
+    }
+    fp = fingerprint_device(dev, [])
+    assert fp['model'] == 'Siemens BACnet Field Panel'
+
+
+def test_json_model_now_agrees_with_the_csv_export():
+    """write_csv already preferred properties.model_name; the fingerprint did
+    not, so the same device was named two different things in two exports."""
+    dev = {
+        'ip': '10.0.0.5', 'protocol': 'BACnet/IP',
+        'vendor_id': 2, 'instance': 9, 'max_apdu': 1476,
+        'properties': {'model_name': 'Symbio 400-500'},
+    }
+    fp = fingerprint_device(dev, [])
+    assert fp['model'] == dev['properties']['model_name']
 
 
 def test_siemens_desigo_with_nucleus_ftp():
@@ -236,8 +291,9 @@ def test_model_specific_creds_still_win_over_the_table():
     info = fingerprint_device({
         'ip': '10.0.0.19', 'protocol': 'BACnet/IP',
         'vendor_id': 2, 'instance': 33333, 'max_apdu': 1024,
+        'properties': {'model_name': 'Tracer SC+'},
     }, [])
-    assert info['model'] == 'Trane Tracer SC+'
+    assert info['model'] == 'Tracer SC+'
     assert info['default_creds'] == 'admin / Tracer1$'
 
 
