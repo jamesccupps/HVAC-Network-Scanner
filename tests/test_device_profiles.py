@@ -244,3 +244,60 @@ class TestTable:
     def test_every_cap_is_positive(self):
         for key, prof in DEVICE_PROFILES.items():
             assert prof.object_cap > 0, f"Entry {key} has invalid cap"
+
+
+# ---------------------------------------------------------------------------
+# --max-objects was accepted by the CLI, stored on ScanOptions, and never read
+# by the engine: _deep_read used profile.object_cap exclusively, so the flag
+# was inert at any value. Wiring the old default (500) straight through would
+# have re-imposed the flat cap v2.1.2 removed, so the option now defaults to
+# None and only ever lowers a cap.
+# ---------------------------------------------------------------------------
+
+from hvac_scanner.device_profiles import apply_max_objects_override
+
+
+def test_no_override_leaves_the_profile_cap_alone():
+    prof, _ = classify_device("The Trane Company", "Tracer SC+", 5476)
+    out, note = apply_max_objects_override(prof, None)
+    assert out.object_cap == prof.object_cap
+    assert note == ""
+
+
+def test_override_lowers_the_cap():
+    prof, _ = classify_device("The Trane Company", "Tracer SC+", 5476)
+    out, note = apply_max_objects_override(prof, 250)
+    assert out.object_cap == 250
+    assert "250" in note
+
+
+def test_override_never_raises_a_verified_cap():
+    prof, _ = classify_device("The Trane Company", "Symbio 400-500", 90)
+    out, _ = apply_max_objects_override(prof, 999_999)
+    assert out.object_cap == prof.object_cap
+
+
+def test_override_ignores_nonsense_values():
+    prof, _ = classify_device("The Trane Company", "Tracer SC+", 5476)
+    for bad in (0, -1):
+        out, _ = apply_max_objects_override(prof, bad)
+        assert out.object_cap == prof.object_cap
+
+
+def test_override_preserves_class_label_and_provenance():
+    prof, _ = classify_device("The Trane Company", "Tracer SC+", 5476)
+    out, _ = apply_max_objects_override(prof, 100)
+    assert out.class_label == prof.class_label
+    assert out.verified_at == prof.verified_at
+
+
+def test_scan_options_default_does_not_reimpose_a_flat_cap():
+    """Regression guard for the 500-object truncation v2.1.2 fixed."""
+    from hvac_scanner.engine import ScanOptions
+    assert ScanOptions().max_objects_per_device is None
+
+
+def test_cli_max_objects_defaults_to_unset():
+    from hvac_scanner.cli import _build_parser
+    args = _build_parser().parse_args(["10.0.0.0/24"])
+    assert args.max_objects is None

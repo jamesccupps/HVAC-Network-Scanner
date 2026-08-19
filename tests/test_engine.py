@@ -18,7 +18,10 @@ def test_scan_options_defaults():
     assert opts.deep_scan is True
     assert opts.use_rpm is True
     assert opts.rate_limit_ms == 0
-    assert opts.max_objects_per_device == 500
+    # None, not 500: the flag is an optional ceiling over the vendor-aware
+    # profile cap. A default of 500 would re-impose the flat cap that
+    # v2.1.2 removed to stop truncating supervisory controllers.
+    assert opts.max_objects_per_device is None
 
 
 def test_scan_options_disables_cleanly():

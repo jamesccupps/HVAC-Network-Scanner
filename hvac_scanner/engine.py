@@ -65,7 +65,14 @@ class ScanOptions:
     # Performance tuning:
     use_rpm: bool = True                 # ReadPropertyMultiple for deep reads
     rate_limit_ms: int = 0               # per-IP inter-packet delay
-    max_objects_per_device: int = 500    # cap on point enumeration
+    # Hard user ceiling on point enumeration, applied on top of the
+    # vendor-aware profile cap. None = no override, use the profile's cap.
+    #
+    # This defaults to None rather than 500 deliberately. Until v2.2 the CLI
+    # set it to 500 and the engine never read it; wiring the old default
+    # through would have re-imposed the flat 500-object cap that v2.1.2
+    # removed, silently re-truncating supervisory controllers.
+    max_objects_per_device: Optional[int] = None
     service_workers: int = 80
     modbus_workers: int = 50
     snmp_workers: int = 50
@@ -868,7 +875,9 @@ class ScanEngine:
             self._log("    Object list is empty or unreadable.")
             obj_list: list[tuple[str, int]] = []
         else:
-            from .device_profiles import classify_device, apply_scan_depth
+            from .device_profiles import (
+                classify_device, apply_scan_depth, apply_max_objects_override,
+            )
             # v2.1.2: some devices return a short vendor_name via ReadProperty
             # that doesn't match the canonical ASHRAE registry string
             # (e.g. a Trane SC+ reports vendor_name="Trane" via Device object,
@@ -883,8 +892,11 @@ class ScanEngine:
                 object_list_count=total_count,
             )
             profile, depth_note = apply_scan_depth(profile, self.opts.scan_depth)
+            profile, override_note = apply_max_objects_override(
+                profile, self.opts.max_objects_per_device)
+            notes = " | ".join(n for n in (depth_note, override_note) if n)
             self._log(f"    Classified: {explanation}"
-                      + (f" | {depth_note}" if depth_note else ""))
+                      + (f" | {notes}" if notes else ""))
 
             # v2.2: stash classification info for --export-classification.
             # Lets users submit this verbatim when reporting unknown gear.
