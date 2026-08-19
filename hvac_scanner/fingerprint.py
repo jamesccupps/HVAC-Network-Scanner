@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from .constants import BACNET_VENDORS
+from .constants import BACNET_VENDORS, DEFAULT_CREDS
 
 # ASHRAE BACnet vendor IDs this module branches on.
 #
@@ -32,6 +32,68 @@ VENDOR_CONTEMPORARY = 245      # Contemporary Control Systems
 # report any of them. Branching on 7 alone dropped the rest to the generic
 # vendor fallback.
 VENDORS_SIEMENS = (7, 9, 22, 313)   # Siemens Schweiz / Siemens Industry
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_CREDS wiring
+#
+# constants.DEFAULT_CREDS carries 22 vendor entries but nothing ever read it:
+# every credential the scanner emitted came from a string literal inside one
+# of the vendor branches below, so only Trane, Siemens, JCI and Contemporary
+# Controls ever produced a value. Devices from the other 18 vendors got an
+# empty Default Credentials column, despite the README advertising coverage
+# for them.
+#
+# Resolution order:
+#   1. A branch below set creds explicitly — it knows the exact model, keep it.
+#   2. The model text contains a DEFAULT_CREDS key (longest key wins, so
+#      'Trane Tracer SC+' is preferred over 'Trane Tracer SC').
+#   3. The vendor ID maps to a product family with a known factory default.
+#
+# Every ID below was checked against BACNET_VENDORS; tests/test_fingerprint.py
+# asserts the mapping so a registry regeneration cannot desync it the way it
+# desynced the branch IDs in v2.1.1.
+# ---------------------------------------------------------------------------
+
+_VENDOR_ID_TO_CREDS_KEY = {
+    17:  'Honeywell Tridium Niagara',   # Honeywell
+    18:  'Honeywell Tridium Niagara',   # Alerton / Honeywell
+    333: 'Honeywell Tridium Niagara',   # Novar / Honeywell
+    36:  'Honeywell Tridium Niagara',   # Tridium
+    10:  'Schneider EcoStruxure',       # Schneider Electric
+    335: 'Schneider EcoStruxure',       # Schneider Electric
+    24:  'Automated Logic WebCTRL',     # Automated Logic
+    16:  'Carrier i-Vu',                # United Technologies Carrier
+    129: 'Carrier i-Vu',                # Carrier Japan
+    28:  'KMC Controls',                # KMC Controls
+    332: 'Distech Controls',            # Distech Controls SAS
+    364: 'Distech Controls',            # Distech Controls
+    35:  'Reliable Controls',           # Reliable Controls
+    8:   'Delta Controls',              # Delta Controls
+    402: 'Delta Controls',              # Delta Controls Integration Products
+    77:  'Carel pCO',                   # Carel Industries
+    284: 'Belimo',                      # BELIMO Automation
+    423: 'Belimo',                      # BELIMO Automation
+    502: 'EasyIO',                      # EasyIO
+    3:   'Daikin',                      # Daikin Applied Americas
+    53:  'Daikin',                      # DAIKIN Industries
+}
+
+# Longest first so more specific product names win the substring match.
+_CREDS_KEYS_BY_LENGTH = sorted(DEFAULT_CREDS, key=len, reverse=True)
+
+
+def _lookup_default_creds(model_text: str, vendor_id) -> str:
+    """Resolve factory-default credentials for a device we could not pin to
+    an exact model in the branches above. Returns '' when we have nothing —
+    an empty column is honest, a guessed credential is not."""
+    text = (model_text or '').lower()
+    if text:
+        for key in _CREDS_KEYS_BY_LENGTH:
+            if key.lower() in text:
+                return DEFAULT_CREDS[key]
+    key = _VENDOR_ID_TO_CREDS_KEY.get(vendor_id)
+    return DEFAULT_CREDS.get(key, '') if key else ''
 
 
 def fingerprint_device(dev: dict[str, Any],
@@ -210,6 +272,11 @@ def fingerprint_device(dev: dict[str, Any],
     if not info['model'] and vendor_id is not None:
         info['model'] = BACNET_VENDORS.get(vendor_id, f'Vendor #{vendor_id}') + ' Controller'
         info['device_type'] = 'Controller'
+
+    # Fill default credentials from the shared table when no branch above
+    # produced a model-specific value.
+    if not info['default_creds']:
+        info['default_creds'] = _lookup_default_creds(info['model'], vendor_id)
 
     # Default web URL if we haven't set one
     if not info['web_url'] and has_http:

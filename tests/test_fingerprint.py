@@ -172,3 +172,82 @@ def test_siemens_alternate_vendor_ids_are_fingerprinted():
         info = fingerprint_device({'ip': '10.0.0.9', 'vendor_id': vid,
                                    'protocol': 'BACnet/IP'})
         assert 'Siemens' in info['model'], f"vendor {vid} -> {info['model']!r}"
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_CREDS was defined in constants.py and never read by anything: all
+# emitted credentials came from literals inside the vendor branches, so only
+# Trane / Siemens / JCI / Contemporary Controls ever produced a value while
+# the README advertised coverage for 18 more vendors.
+# ---------------------------------------------------------------------------
+
+from hvac_scanner.constants import DEFAULT_CREDS
+
+
+def test_default_creds_table_is_actually_reachable():
+    """Every key in DEFAULT_CREDS must be reachable by at least one route."""
+    from hvac_scanner.fingerprint import (
+        _VENDOR_ID_TO_CREDS_KEY, _lookup_default_creds,
+    )
+    reachable = set(_VENDOR_ID_TO_CREDS_KEY.values())
+    for key in DEFAULT_CREDS:
+        # Either a vendor ID maps to it, or its own name matches it.
+        if key in reachable:
+            continue
+        assert _lookup_default_creds(key, None) == DEFAULT_CREDS[key], (
+            f"DEFAULT_CREDS key {key!r} is unreachable"
+        )
+
+
+def test_creds_vendor_id_map_agrees_with_the_registry():
+    """Each mapped vendor ID must exist and its creds key must be a real key."""
+    from hvac_scanner.fingerprint import _VENDOR_ID_TO_CREDS_KEY
+    for vid, key in _VENDOR_ID_TO_CREDS_KEY.items():
+        assert vid in BACNET_VENDORS, f"vendor id {vid} not in registry"
+        assert key in DEFAULT_CREDS, f"{key!r} is not a DEFAULT_CREDS key"
+
+
+def test_previously_uncovered_vendors_now_get_credentials():
+    """The vendors the README promised but the code never delivered."""
+    expected = {
+        24:  'Automated Logic WebCTRL',
+        36:  'Honeywell Tridium Niagara',
+        28:  'KMC Controls',
+        364: 'Distech Controls',
+        35:  'Reliable Controls',
+        8:   'Delta Controls',
+        77:  'Carel pCO',
+        284: 'Belimo',
+        502: 'EasyIO',
+        3:   'Daikin',
+        16:  'Carrier i-Vu',
+        10:  'Schneider EcoStruxure',
+    }
+    for vid, key in expected.items():
+        info = fingerprint_device({'ip': '10.0.0.5', 'vendor_id': vid,
+                                   'protocol': 'BACnet/IP'})
+        assert info['default_creds'] == DEFAULT_CREDS[key], (
+            f"vendor {vid} -> {info['default_creds']!r}"
+        )
+
+
+def test_model_specific_creds_still_win_over_the_table():
+    """A branch that knows the exact model must not be overwritten."""
+    info = fingerprint_device({
+        'ip': '10.0.0.19', 'protocol': 'BACnet/IP',
+        'vendor_id': 2, 'instance': 33333, 'max_apdu': 1024,
+    }, [])
+    assert info['model'] == 'Trane Tracer SC+'
+    assert info['default_creds'] == 'admin / Tracer1$'
+
+
+def test_longest_key_wins_the_substring_match():
+    from hvac_scanner.fingerprint import _lookup_default_creds
+    assert _lookup_default_creds('Trane Tracer SC+', 2) == DEFAULT_CREDS['Trane Tracer SC+']
+
+
+def test_unknown_vendor_gets_no_credentials():
+    """An empty column is honest; a guessed credential is not."""
+    info = fingerprint_device({'ip': '10.0.0.5', 'vendor_id': 9999,
+                               'protocol': 'BACnet/IP'})
+    assert info['default_creds'] == ''
