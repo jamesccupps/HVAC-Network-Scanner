@@ -14,6 +14,25 @@ from typing import Any, Iterable, Optional
 
 from .constants import BACNET_VENDORS
 
+# ASHRAE BACnet vendor IDs this module branches on.
+#
+# These were hardcoded as bare literals until the v2.1.1 registry regeneration
+# (34 entries -> 593) silently desynced two of them: 485 is SCS, not
+# Contemporary Controls, and neither 13 (Teletrol Systems) nor 514 (t-mac
+# Technologies) is Cimetrics — Cimetrics is 14. An SCS device was being
+# labelled a BACnet router and handed Contemporary Controls' default
+# credentials. tests/test_fingerprint.py now asserts each of these against
+# BACNET_VENDORS so a future registry update cannot desync them again.
+VENDOR_TRANE = 2               # The Trane Company
+VENDOR_JOHNSON_CONTROLS = 5    # Johnson Controls
+VENDOR_CIMETRICS = 14          # Cimetrics Technology
+VENDOR_CONTEMPORARY = 245      # Contemporary Control Systems
+
+# Siemens registered several IDs against the same vendor name; a device may
+# report any of them. Branching on 7 alone dropped the rest to the generic
+# vendor fallback.
+VENDORS_SIEMENS = (7, 9, 22, 313)   # Siemens Schweiz / Siemens Industry
+
 
 def fingerprint_device(dev: dict[str, Any],
                        all_services: Optional[Iterable[dict[str, Any]]] = None
@@ -56,7 +75,7 @@ def fingerprint_device(dev: dict[str, Any],
     has_http = 80 in ip_services or 443 in ip_services
 
     # --- Trane --------------------------------------------------------
-    if vendor_id == 2:
+    if vendor_id == VENDOR_TRANE:
         if max_apdu == 1024 and instance in (33333, 22222):
             info['model'] = 'Trane Tracer SC+'
             info['device_type'] = 'Supervisory Controller'
@@ -86,7 +105,7 @@ def fingerprint_device(dev: dict[str, Any],
             info['device_type'] = 'Controller'
 
     # --- Siemens ------------------------------------------------------
-    elif vendor_id == 7:
+    elif vendor_id in VENDORS_SIEMENS:
         inst_prefix = instance // 1000 if instance else 0
 
         if instance and instance % 1000 == 0 and has_nucleus_ftp:
@@ -134,7 +153,7 @@ def fingerprint_device(dev: dict[str, Any],
                 info['web_url'] = f"https://{ip}"
 
     # --- Johnson Controls ---------------------------------------------
-    elif vendor_id == 5:
+    elif vendor_id == VENDOR_JOHNSON_CONTROLS:
         if snet:
             info['model'] = 'JCI FEC/FAC Controller'
             info['device_type'] = 'MSTP Field Controller'
@@ -146,7 +165,7 @@ def fingerprint_device(dev: dict[str, Any],
             info['default_creds'] = 'MetasysAgent / (site-specific)'
 
     # --- Contemporary Controls ----------------------------------------
-    elif vendor_id in (245, 485):
+    elif vendor_id == VENDOR_CONTEMPORARY:
         info['model'] = 'Contemporary Controls BASRT-B'
         info['device_type'] = 'BACnet Router'
         info['description'] = 'BACnet/IP to MS/TP router (Ethernut platform)'
@@ -155,7 +174,7 @@ def fingerprint_device(dev: dict[str, Any],
             info['web_url'] = f"http://{ip}"
 
     # --- Cimetrics ----------------------------------------------------
-    elif vendor_id in (13, 514):
+    elif vendor_id == VENDOR_CIMETRICS:
         info['model'] = 'Cimetrics BACstac Device'
         info['device_type'] = 'Gateway / Analyzer'
         info['description'] = 'Cimetrics BACstac-based protocol gateway or analyzer'
