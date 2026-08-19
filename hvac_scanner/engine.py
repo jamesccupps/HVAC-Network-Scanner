@@ -284,9 +284,15 @@ class ScanResult:
 class ScanEngine:
     def __init__(self, options: ScanOptions,
                  callback: Optional[Callable[[str], None]] = None,
-                 stop_event: Optional[threading.Event] = None):
+                 stop_event: Optional[threading.Event] = None,
+                 device_callback: Optional[Callable[[dict[str, Any]], None]] = None):
         self.opts = options
         self.callback = callback or (lambda msg: None)
+        # Fired as each device finishes, so a UI can show results while the
+        # scan is still running rather than sitting blank until the end. The
+        # device dict is the same object stored in result.devices; treat it as
+        # read-only.
+        self.device_callback = device_callback or (lambda dev: None)
         self.stop_event = stop_event or threading.Event()
         self.result = ScanResult()
 
@@ -299,6 +305,14 @@ class ScanEngine:
 
     def _stopped(self) -> bool:
         return self.stop_event.is_set()
+
+    def _emit_device(self, dev: dict[str, Any]) -> None:
+        """Hand a finished device to the consumer. Never let a UI error
+        interrupt the scan."""
+        try:
+            self.device_callback(dev)
+        except Exception:
+            log.exception("device callback failed")
 
     # -- main entry ------------------------------------------------------
 
@@ -643,6 +657,7 @@ class ScanEngine:
                         self._deep_read(client, dev)
                     self.result.devices.append(dev)
                     self.result.counts['bacnet'] += 1
+                    self._emit_device(dev)
 
             if self.opts.scan_mstp and not self._stopped():
                 self._scan_mstp(client)
@@ -793,6 +808,7 @@ class ScanEngine:
                         self._deep_read(client, dev)
                     self.result.devices.append(dev)
                     self.result.counts['mstp'] += 1
+                    self._emit_device(dev)
 
     def _stride_sample_indices(self, total_count: int, cap: int) -> list[int]:
         """Evenly spaced indices across the whole objectList, no reads needed.
@@ -1159,6 +1175,7 @@ class ScanEngine:
 
                 self.result.devices.append(dev)
                 self.result.counts['modbus'] += 1
+                self._emit_device(dev)
 
     # -- Services -------------------------------------------------------
 
@@ -1184,6 +1201,7 @@ class ScanEngine:
                     break
                 self.result.devices.append(svc)
                 self.result.counts['services'] += 1
+                self._emit_device(svc)
 
     # -- SNMP -----------------------------------------------------------
 
@@ -1218,6 +1236,7 @@ class ScanEngine:
                         break
                 self.result.devices.append(dev)
                 self.result.counts['snmp'] += 1
+                self._emit_device(dev)
 
     # -- final pass -----------------------------------------------------
 
