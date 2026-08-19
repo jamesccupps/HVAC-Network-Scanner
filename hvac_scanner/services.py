@@ -179,7 +179,7 @@ class HVACServiceScanner:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(b'fox a 1 -1 fox hello\n')
+                sock.sendall(b'fox a 1 -1 fox hello\n')
                 resp = sock.recv(2048).decode('ascii', errors='replace')
             if 'fox' in resp.lower():
                 info['banner'] = resp.strip()[:200]
@@ -201,7 +201,7 @@ class HVACServiceScanner:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(cotp_cr)
+                sock.sendall(cotp_cr)
                 resp = sock.recv(1024)
             if resp and len(resp) >= 4 and resp[0] == 0x03:
                 info['banner'] = f"S7 ISO-TSAP response ({len(resp)} bytes)"
@@ -211,12 +211,22 @@ class HVACServiceScanner:
 
     def _probe_ethernet_ip(self, ip: str, port: int) -> dict:
         info: dict[str, Any] = {'product': 'EtherNet/IP Device'}
-        list_id = struct.pack('<HHIHIQ', 0x0063, 0x0000, 0x00000000, 0x00000000, 0x00000000, 0)
+        # EtherNet/IP encapsulation header (ODVA spec, 24 bytes):
+        #   command uint16 | length uint16 | session uint32 | status uint32
+        #   | sender_context 8 bytes | options uint32
+        #
+        # Was '<HHIHIQ', which is 22 bytes and misaligns every field after
+        # `length`. All of them are zero so the bytes looked innocuous, but a
+        # conforming device sees a truncated header and does not reply — so
+        # this probe only ever reported the generic 'EtherNet/IP Device'
+        # inferred from the open port, never an actual identity.
+        list_id = struct.pack('<HHII8sI', 0x0063, 0x0000, 0x00000000,
+                              0x00000000, bytes(8), 0x00000000)
         try:
             with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
                 sock.settimeout(self.timeout)
                 sock.connect((ip, port))
-                sock.send(list_id)
+                sock.sendall(list_id)
                 resp = sock.recv(4096)
             if resp and len(resp) >= 26:
                 cmd = struct.unpack('<H', resp[0:2])[0]
