@@ -52,6 +52,8 @@ class HVACNetworkScannerGUI:
         self.root.minsize(1100, 700)
 
         self.result = None
+        self._streamed: set[int] = set()
+        self._streamed_points = 0
         self.scan_running = False
         self.stop_event = threading.Event()
         self._sort_state: dict[int, tuple[str, bool]] = {}
@@ -179,6 +181,11 @@ class HVACNetworkScannerGUI:
         self.stop_btn = ttk.Button(row2, text="STOP", style="Danger.TButton",
                                    command=self.stop_scan, state='disabled')
         self.stop_btn.pack(side=tk.RIGHT, padx=4)
+        self.compare_btn = ttk.Button(row2, text="COMPARE",
+                                      command=self.compare_to_baseline,
+                                      state='disabled')
+        self.compare_btn.pack(side=tk.RIGHT, padx=4)
+
         self.export_btn = ttk.Button(row2, text="EXPORT", style="Export.TButton",
                                      command=self.export_results, state='disabled')
         self.export_btn.pack(side=tk.RIGHT, padx=4)
@@ -487,12 +494,17 @@ class HVACNetworkScannerGUI:
         self.scan_btn.configure(state='disabled')
         self.stop_btn.configure(state='normal')
         self.export_btn.configure(state='disabled')
+        self.compare_btn.configure(state='disabled')
         self.status_var.set("Scanning...")
 
         for tree in (self.device_tree, self.points_tree, self.reg_tree, self.svc_tree):
             for item in tree.get_children():
                 tree.delete(item)
         self.raw_text.delete("1.0", tk.END)
+        # Rows arrive during the scan now, so remember which devices have
+        # already been drawn and how much has landed.
+        self._streamed: set[int] = set()
+        self._streamed_points = 0
 
         threading.Thread(target=self._run_scan, daemon=True).start()
 
@@ -549,7 +561,8 @@ class HVACNetworkScannerGUI:
             )
 
             engine = ScanEngine(opts, callback=self.log_message,
-                                stop_event=self.stop_event)
+                                stop_event=self.stop_event,
+                                device_callback=self._on_device_found)
             self.result = engine.run()
 
             # Populate UI
@@ -564,7 +577,169 @@ class HVACNetworkScannerGUI:
             self.root.after(0, lambda: self.scan_btn.configure(state='normal'))
             self.root.after(0, lambda: self.stop_btn.configure(state='disabled'))
             self.root.after(0, lambda: self.export_btn.configure(state='normal'))
+            self.root.after(0, lambda: self.compare_btn.configure(state='normal'))
             self.root.after(0, lambda: self.status_var.set("Scan complete"))
+
+    # -- baseline comparison ------------------------------------------------
+
+    def compare_to_baseline(self) -> None:
+        """Compare the scan just finished against a saved JSON export.
+
+        The CLI has --baseline for scheduled runs; this is the same comparison
+        for someone working interactively, so the feature does not require
+        dropping to a terminal to be useful.
+        """
+        if not self.result or not self.result.devices:
+            messagebox.showinfo("Compare", "Run a scan first.")
+            return
+
+        path = filedialog.askopenfilename(
+            title="Select a previous scan (JSON) to compare against",
+            filetypes=[("Scan JSON", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        from . import diff as diffmod
+        try:
+            baseline = diffmod.load_scan(path)
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Compare", f"Could not read {path}:\n{e}")
+            return
+
+        d = diffmod.diff_scans(baseline, self.result.to_dict())
+        self._show_diff_window(d, path)
+
+    def _show_diff_window(self, d, baseline_path: str) -> None:
+        from . import diff as diffmod
+
+        win = tk.Toplevel(self.root)
+        win.title("Baseline comparison")
+        win.geometry("900x600")
+        win.configure(bg=Colors.BG_DARK)
+
+        header = ttk.Frame(win, style="Card.TFrame")
+        header.pack(fill=tk.X, padx=10, pady=(10, 4))
+        summary = (f"{len(d.added)} new, {len(d.removed)} not responding, "
+                   f"{len(d.changed)} changed, {d.unchanged} unchanged")
+        ttk.Label(header, text=summary, style="Info.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, text=f"  vs {baseline_path}",
+                  style="Dim.TLabel").pack(side=tk.LEFT)
+
+        text = tk.Text(win, bg=Colors.BG_PANEL, fg=Colors.TEXT, wrap="none",
+                       font=("Consolas", 10), relief=tk.FLAT)
+        ysb = ttk.Scrollbar(win, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=ysb.set)
+        ysb.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+        text.insert("1.0", diffmod.format_text(d))
+        text.configure(state="disabled")
+
+        btns = ttk.Frame(win, style="Card.TFrame")
+        btns.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        def _save_report():
+            out = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text report", "*.txt"), ("JSON", "*.json")])
+            if not out:
+                return
+            try:
+                if out.lower().endswith(".json"):
+                    diffmod.write_json(d, out)
+                else:
+                    diffmod.write_text(d, out)
+                self.log_message(f"Wrote comparison report: {out}")
+            except OSError as e:
+                messagebox.showerror("Compare", f"Could not write {out}:\n{e}")
+
+        def _save_baseline():
+            out = filedialog.asksaveasfilename(
+                defaultextension=".json", filetypes=[("Scan JSON", "*.json")])
+            if not out:
+                return
+            try:
+                self.result.write_json(out)
+                self.log_message(f"Saved this scan as baseline: {out}")
+            except OSError as e:
+                messagebox.showerror("Compare", f"Could not write {out}:\n{e}")
+
+        ttk.Button(btns, text="Save report...", command=_save_report).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Save this scan as new baseline...",
+                   command=_save_baseline).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+
+    # -- live results ------------------------------------------------------
+
+    def _on_device_found(self, dev: dict) -> None:
+        """Called from the scan thread as each device finishes.
+
+        Tk is not thread-safe, so this only marshals onto the UI thread.
+        """
+        self.root.after(0, lambda d=dev: self._stream_device(d))
+
+    def _stream_device(self, dev: dict) -> None:
+        """Draw one finished device. Runs on the Tk thread.
+
+        Service rows are deliberately left to the final pass: deduplicating
+        them against the primary device rows needs the whole result set, and a
+        host that answers on BACnet should not also appear as four separate
+        service rows. Services are quick to scan anyway; the wait this exists
+        to fix is the per-point BACnet read.
+        """
+        if dev.get('protocol') == 'Service':
+            return
+        key = id(dev)
+        if key in self._streamed:
+            return
+        self._streamed.add(key)
+
+        try:
+            self._add_device_to_tree(dev)
+            self._streamed_points += self._add_points_for(dev)
+            self._add_registers_for(dev)
+        except tk.TclError:
+            return          # window closed mid-scan
+
+        n = len(self._streamed)
+        self.status_var.set(
+            f"Scanning... {n} device(s), {self._streamed_points} point(s) so far")
+
+    def _device_label(self, dev: dict) -> str:
+        """Prefer the device's own BACnet objectName over ip (instance)."""
+        ip = dev.get('ip', '?')
+        props = dev.get('properties', {}) or {}
+        name = (props.get('object_name') or '').strip()
+        return f"{name} ({ip})" if name else f"{ip} ({dev.get('instance', '?')})"
+
+    def _add_points_for(self, dev: dict) -> int:
+        label = self._device_label(dev)
+        count = 0
+        for pt in dev.get('objects', []) or []:
+            self.points_tree.insert("", tk.END, values=(
+                label, pt.get('type', '?'), pt.get('instance', '?'),
+                pt.get('name', ''), pt.get('present_value', ''),
+                pt.get('units', ''), pt.get('description', ''),
+            ))
+            count += 1
+        return count
+
+    def _add_registers_for(self, dev: dict) -> None:
+        if dev.get('protocol') != 'Modbus TCP':
+            return
+        label = f"{dev['ip']}:{dev['port']} u={dev.get('unit_id')}"
+        for reg in dev.get('holding_registers', []) or []:
+            self.reg_tree.insert("", tk.END, values=(
+                label, "Holding (FC3)", reg['register'],
+                reg['value'], reg['hex'], format(reg['value'], '016b')))
+        for reg in dev.get('input_registers', []) or []:
+            self.reg_tree.insert("", tk.END, values=(
+                label, "Input (FC4)", reg['register'],
+                reg['value'], reg['hex'], format(reg['value'], '016b')))
+        for coil in dev.get('coils', []) or []:
+            self.reg_tree.insert("", tk.END, values=(
+                label, "Coil (FC1)", coil['coil'],
+                coil['value'], f"0x{coil['value']:04X}", coil['state']))
 
     def _populate_results(self) -> None:
         if not self.result:
@@ -579,6 +754,7 @@ class HVACNetworkScannerGUI:
         # Track which IPs we've already added a "Service-only" row for, so
         # one Ubiquiti gateway with 4 open ports shows once, not 4 times.
         seen_service_ips: set[str] = set()
+        streamed = getattr(self, '_streamed', set())
         for dev in self.result.devices:
             proto = dev.get('protocol')
             ip = dev.get('ip')
@@ -588,6 +764,8 @@ class HVACNetworkScannerGUI:
                 if ip in seen_service_ips:
                     continue  # dedup: first service row for this IP already shown
                 seen_service_ips.add(ip)
+            elif id(dev) in streamed:
+                continue      # already drawn while the scan was running
             self._add_device_to_tree(dev)
 
         # Points tab
@@ -595,39 +773,15 @@ class HVACNetworkScannerGUI:
         # SN00000000") over the generic "ip (instance)" label when
         # available. Falls back to IP+instance when name is missing.
         for dev in self.result.devices:
-            ip = dev.get('ip', '?')
-            instance = dev.get('instance', '?')
-            props = dev.get('properties', {}) or {}
-            device_name = props.get('object_name', '').strip()
-            if device_name:
-                device_label = f"{device_name} ({ip})"
-            else:
-                device_label = f"{ip} ({instance})"
-            for pt in dev.get('objects', []):
-                self.points_tree.insert("", tk.END, values=(
-                    device_label, pt.get('type', '?'),
-                    pt.get('instance', '?'), pt.get('name', ''),
-                    pt.get('present_value', ''), pt.get('units', ''),
-                    pt.get('description', ''),
-                ))
+            if id(dev) in streamed:
+                continue      # points already drawn during the scan
+            self._add_points_for(dev)
 
         # Registers tab
         for dev in self.result.devices:
-            if dev.get('protocol') != 'Modbus TCP':
-                continue
-            label = f"{dev['ip']}:{dev['port']} u={dev.get('unit_id')}"
-            for reg in dev.get('holding_registers', []):
-                self.reg_tree.insert("", tk.END, values=(
-                    label, "Holding (FC3)", reg['register'],
-                    reg['value'], reg['hex'], format(reg['value'], '016b')))
-            for reg in dev.get('input_registers', []):
-                self.reg_tree.insert("", tk.END, values=(
-                    label, "Input (FC4)", reg['register'],
-                    reg['value'], reg['hex'], format(reg['value'], '016b')))
-            for coil in dev.get('coils', []):
-                self.reg_tree.insert("", tk.END, values=(
-                    label, "Coil (FC1)", coil['coil'],
-                    coil['value'], f"0x{coil['value']:04X}", coil['state']))
+            if id(dev) in streamed:
+                continue      # registers already drawn during the scan
+            self._add_registers_for(dev)
 
         # Services tab
         for dev in self.result.devices:
