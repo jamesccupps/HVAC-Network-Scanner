@@ -106,17 +106,8 @@ tk = pytest.importorskip("tkinter")
 
 
 @pytest.fixture
-def app():
-    from hvac_scanner.gui import HVACNetworkScannerGUI
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no Tk display: {e}")
-    root.withdraw()
-    try:
-        yield HVACNetworkScannerGUI(root)
-    finally:
-        root.destroy()
+def app(gui_app):
+    return gui_app
 
 
 def _device(ip='10.0.0.19', instance=33333, points=3, protocol='BACnet/IP'):

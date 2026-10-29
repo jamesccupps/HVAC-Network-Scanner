@@ -25,6 +25,7 @@ import sys
 import threading
 from datetime import datetime
 
+from . import __version__
 from .engine import ScanEngine, ScanOptions
 
 
@@ -71,6 +72,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
+    p.add_argument("--bacnet-workers", type=int, default=4, metavar="N",
+                   help="BACnet devices deep-scanned at once (default: 4). Each "
+                        "worker owns one IP address, so no device sees more "
+                        "than one request at a time either way; 1 scans "
+                        "strictly one device after another.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
 
     # Large-network probing
     d = p.add_argument_group("large-network probing")
@@ -94,6 +102,16 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--bbmd-ttl", type=int, default=60, metavar="SECONDS",
                    help="Foreign Device registration lease (default: 60). "
                         "Renewed automatically during long scans.")
+    d.add_argument("--unicast", choices=["auto", "always", "off"], default="auto",
+                   help="Unicast BACnet discovery for targets a broadcast "
+                        "cannot reach. 'auto' (default) probes target "
+                        "addresses on other subnets that did not answer the "
+                        "broadcast; 'always' probes every silent target; "
+                        "'off' relies on broadcast alone.")
+    d.add_argument("--snmp-community", action="append", metavar="NAME",
+                   help="SNMP community to try (repeatable; default: public). "
+                        "Each one is tried only against hosts that did not "
+                        "answer the previous.")
 
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
@@ -224,7 +242,22 @@ def _handle_baseline(args, result) -> bool:
     return changed
 
 
+def _utf8_streams() -> None:
+    """Never let an encoding error kill a scan's output.
+
+    Unit labels (°F, m², Ω) and the log's punctuation are not all in the
+    Windows ANSI code page, which is what stdout/stderr use when redirected
+    to a file — the normal case under Task Scheduler. Write UTF-8 instead.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_streams()
     args = _build_parser().parse_args(argv)
     _configure_logging(args.verbose, args.quiet)
 
@@ -235,6 +268,17 @@ def main(argv: list[str] | None = None) -> int:
     for n in (args.networks_flag or []):
         if n not in networks:
             networks.append(n)
+
+    # A target that will not parse is a bad argument (exit 1), and should be
+    # reported before anything is sent rather than as a scan that "completed"
+    # with nothing in it.
+    from .netrange import parse_targets, InvalidTargetSyntaxError
+    for n in networks:
+        try:
+            parse_targets(n)
+        except InvalidTargetSyntaxError as e:
+            print(f"ERROR: invalid target {n!r}: {e}", file=sys.stderr)
+            return 1
 
     if args.bacnet_only:
         args.no_modbus = args.no_services = args.no_snmp = True
@@ -258,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
         bbmd=args.bbmd,
         bbmd_ttl=args.bbmd_ttl,
         scan_depth=args.scan_depth,
+        bacnet_workers=max(1, args.bacnet_workers),
+        unicast_discovery=args.unicast,
+        snmp_communities=args.snmp_community or ["public"],
     )
 
     # Progress callback - streams log lines to stderr unless quiet

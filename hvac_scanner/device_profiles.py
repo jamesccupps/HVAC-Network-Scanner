@@ -29,7 +29,7 @@ Policy for adding entries to DEVICE_PROFILES:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

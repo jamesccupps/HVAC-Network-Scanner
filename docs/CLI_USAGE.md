@@ -16,7 +16,7 @@ is also on your PATH and is equivalent.
 
 | Flag | Description |
 |------|-------------|
-| `NETWORKS` | One or more CIDR networks (e.g. `192.168.1.0/24`). Multiple networks are space-separated. |
+| `NETWORKS` | One or more targets: CIDR (`192.168.1.0/24`), single host, last-octet range (`10.0.0.2-100`), full range (`10.0.0.2-10.0.0.12`), space- or comma-separated. A target that will not parse exits 1 before anything is sent. |
 
 ### General
 
@@ -28,6 +28,9 @@ is also on your PATH and is equivalent.
 | `--scan-depth LEVEL` | `normal` | `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
 | `--broadcast IP` | auto | Override the computed Who-Is broadcast target. Rarely needed: the broadcast is derived from the target syntax automatically. |
 | `--no-rpm` | off | Disable `ReadPropertyMultiple`. Use if a specific device misbehaves with RPM requests. Costs roughly two orders of magnitude more round trips on a large controller. |
+| `--bacnet-workers N` | `4` | BACnet devices deep-scanned at once. Each worker owns one IP address — a router and the MS/TP devices behind it share one — so no device sees more than one request at a time either way. `1` scans strictly one device after another. |
+| `--snmp-community NAME` | `public` | SNMP community to try. Repeat the flag for several; each is tried only against hosts that stayed silent for the previous one. |
+| `--version` | | Print the version and exit. |
 
 ### Large-network probing
 
@@ -82,11 +85,26 @@ compared — they differ on every scan and would bury the signal.
 |------|-------------|
 | `--bbmd IP` | Register as a Foreign Device with this BBMD and send Who-Is through it. Discovers subnets the scanner cannot broadcast to. |
 | `--bbmd-ttl SECONDS` | Registration lease, default 60. Renewed automatically during long scans. |
+| `--unicast {auto,always,off}` | Unicast discovery for targets a broadcast cannot reach. Default `auto`. |
 
-Without `--bbmd`, discovery only sees the scanner's own subnet: a Who-Is is a
-broadcast and broadcasts do not cross a router. If registration fails the
-BACnet pass is skipped rather than quietly falling back to a local broadcast,
-which would report an empty network and look like a clean result.
+A Who-Is is a broadcast, and broadcasts do not cross a router. There are two
+ways round that:
+
+- **Unicast discovery** (`--unicast`, on by default in `auto` mode) asks each
+  target address directly with a ReadProperty of the Device object at the
+  wildcard instance 4194303, which any BACnet device answers as if addressed
+  to its own instance. `auto` probes target addresses that are on a
+  different /24 from every local interface and did not answer the broadcast —
+  the usual case when the building system sits on its own VLAN — up to 1,024
+  of them. `always` probes every silent target. Devices on pre-2004 stacks
+  answer the wildcard with an error; they are counted in the log but need a
+  BBMD or a scan from their own subnet. MS/TP devices behind a remote router
+  are not reachable this way.
+- **A BBMD** (`--bbmd`) relays broadcasts for you and also reaches MS/TP
+  devices behind remote routers. If registration fails the BACnet pass is
+  skipped rather than quietly falling back to a local broadcast, which would
+  report an empty network and look like a clean result. Devices relayed by
+  the BBMD are reported at their own addresses, not the BBMD's.
 
 ### Exit codes
 
@@ -155,6 +173,18 @@ that night's delta rather than repeating the same drift forever.
 
 The first run has no baseline to compare against; create one with a plain
 `--save-baseline` and no `--baseline`.
+
+### Scanning a BAS VLAN from another subnet
+
+```bash
+python -m hvac_scanner.cli 10.50.20.0/24 --unicast always --rate-limit 20
+```
+
+The laptop is on the office network and the controllers on their own VLAN;
+the firewall routes UDP 47808 between them but a broadcast never crosses.
+`auto` would already probe this target because it is not on a local /24;
+`always` also covers a target that *is* on a local /24 but whose devices
+sit behind something that eats broadcasts.
 
 ### Scanning several buildings from one host
 

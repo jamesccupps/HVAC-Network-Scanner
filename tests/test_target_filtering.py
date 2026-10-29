@@ -324,6 +324,13 @@ class TestMstpScanPath:
                     ]
                 return []
 
+            def discover_who_is_networks(self, target_ip=None, dnets=(),
+                                         extra_wait=0.0):
+                out = []
+                for dnet in dnets:
+                    out.extend(self.discover_who_is(target_ip, dnet=dnet))
+                return out
+
             def discover_routers(self, target_ip=None):
                 # Three routers on the segment; scanner filter should
                 # only consider ones within the target range.
