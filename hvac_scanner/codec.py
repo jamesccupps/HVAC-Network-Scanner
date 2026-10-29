@@ -21,10 +21,10 @@ References:
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
-from .constants import BACNET_OBJ_TYPES, BACNET_PORT, BACNET_BVLC_TYPE, PROP_IDS
+from .constants import BACNET_OBJ_TYPES, BACNET_BVLC_TYPE, PROP_IDS
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +444,21 @@ def parse_bvlc_result(data: bytes) -> Optional[int]:
         return None
 
 
+def forwarded_origin(data: bytes) -> Optional[tuple[str, int]]:
+    """The originating device's address in a Forwarded-NPDU, else None.
+
+    A BBMD relays a broadcast to its foreign devices (and its peers) as a
+    Forwarded-NPDU (Annex J.2.5): the UDP datagram comes from the BBMD, and
+    the device that actually sent the broadcast is named in the six octets
+    after the BVLC header — four of IP address, two of port.
+    """
+    if (len(data) < 10 or data[0] != BACNET_BVLC_TYPE
+            or data[1] != BVLC_FORWARDED_NPDU):
+        return None
+    ip = '.'.join(str(b) for b in data[4:8])
+    return ip, struct.unpack('!H', data[8:10])[0]
+
+
 def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
     """Parse a received I-Am packet. Returns None if it isn't one."""
     try:
@@ -457,8 +472,17 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
         # that arrives through a BBMD fails the NPDU version check below and
         # is silently dropped — which would make foreign-device registration
         # look like it had done nothing.
-        if data[1] == BVLC_FORWARDED_NPDU:
+        #
+        # The address is also the device's real one. The datagram itself comes
+        # from the BBMD, so taking `src_addr` put every device the BBMD relayed
+        # at the BBMD's IP, and the deep scan then asked the BBMD for objects
+        # belonging to controllers on another subnet.
+        origin = forwarded_origin(data)
+        if origin is not None:
+            src_addr = origin
             idx += 6
+        elif data[1] == BVLC_FORWARDED_NPDU:
+            return None
 
         # NPDU
         if idx + 2 > len(data) or data[idx] != 0x01:
@@ -627,11 +651,17 @@ def _extract_invoke_id(data: bytes) -> Optional[int]:
 
 
 def parse_iam_router(data: bytes) -> Optional[list[int]]:
-    """Parse I-Am-Router-To-Network. Returns list of reachable DNETs, or None."""
+    """Parse I-Am-Router-To-Network. Returns list of reachable DNETs, or None.
+
+    The router's address is the datagram source, unless the message was
+    relayed by a BBMD — see `forwarded_origin`.
+    """
     try:
         if len(data) < 4 or data[0] != BACNET_BVLC_TYPE:
             return None
         idx = 4
+        if data[1] == BVLC_FORWARDED_NPDU:
+            idx += 6
         if idx + 2 > len(data) or data[idx] != 0x01:
             return None
         npdu_ctrl = data[idx + 1]
@@ -855,10 +885,11 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
         if encoding == 0:  # UTF-8
             return text.decode('utf-8', errors='replace'), vend
         if encoding == 4:  # UCS-2
-            try:
-                return text.decode('utf-16-be', errors='replace'), vend
-            except Exception:
-                return text.decode('latin-1', errors='replace'), vend
+            return text.decode('utf-16-be', errors='replace'), vend
+        if encoding == 3:  # UCS-4
+            return text.decode('utf-32-be', errors='replace'), vend
+        # 5 = ISO 8859-1; the DBCS/JIS sets (1, 2) are not decodable without
+        # knowing the code page, and Latin-1 at least keeps every byte.
         return text.decode('latin-1', errors='replace'), vend
     if tag_num == 8:  # Bit String
         return value_bytes.hex(), vend
@@ -866,13 +897,18 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
         return int.from_bytes(value_bytes, 'big'), vend
     if tag_num == 10:  # Date
         if length == 4:
-            y, m, d, dow = value_bytes
-            return f"{1900+y}-{m:02d}-{d:02d}", vend
+            # 255 in any field means "unspecified" (a schedule's "every
+            # year"); printing it as year 2155 or month 255 was nonsense.
+            y, m, d, _dow = value_bytes
+            return "-".join("*" if v == 255 else f"{v:0{w}d}"
+                            for v, w in ((1900 + y if y != 255 else 255, 4),
+                                         (m, 2), (d, 2))), vend
         return value_bytes.hex(), vend
     if tag_num == 11:  # Time
         if length == 4:
-            h, mm, s, hs = value_bytes
-            return f"{h:02d}:{mm:02d}:{s:02d}.{hs:02d}", vend
+            return ":".join("*" if v == 255 else f"{v:02d}"
+                            for v in value_bytes[:3]) + (
+                "" if value_bytes[3] == 255 else f".{value_bytes[3]:02d}"), vend
         return value_bytes.hex(), vend
     if tag_num == 12:  # Object Identifier
         if length == 4:

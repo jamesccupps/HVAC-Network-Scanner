@@ -26,8 +26,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any
 
 # Device fields worth reporting a change on, in report order.
 # (path, human label) where path is either a top-level key or 'properties.<k>'.

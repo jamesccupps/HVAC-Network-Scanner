@@ -67,7 +67,15 @@ _POINT_BATCH_MIN = 1
 class BACnetClient:
     """Single long-lived socket for all BACnet traffic from this scanner.
 
-    Thread-safe: _send_and_wait serializes access to the socket.
+    Thread-safe for confirmed requests: several threads may each have a
+    request in flight (to different devices) at once. Replies all arrive on
+    the one socket, so whichever waiting thread is free reads it and hands
+    each reply to the request it belongs to, matched on (source IP, invoke
+    ID). See `_request_response`.
+
+    Discovery (Who-Is, router discovery, BBMD registration) reads the socket
+    directly and must not overlap with confirmed requests; the engine runs it
+    as its own phase.
     """
 
     def __init__(self, timeout: float = 3.0, callback: Optional[Callable[[str], None]] = None,
@@ -76,8 +84,16 @@ class BACnetClient:
         self.callback = callback or (lambda msg: None)
         self.rate_limit_ms = rate_limit_ms  # min ms between packets to same IP
         self._last_send: dict[str, float] = {}
-        self._invoke_id = 0
+        # Invoke IDs are allocated per destination: only one request per
+        # device is ever in flight, and a per-device counter takes 256 of its
+        # own requests to wrap, which keeps a straggling reply to a timed-out
+        # request from being mistaken for the answer to a later one.
+        self._invoke_ids: dict[str, int] = {}
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        # (ip, invoke_id) -> reply bytes, or None while still waiting.
+        self._pending: dict[tuple[str, int], Optional[bytes]] = {}
+        self._reader_active = False
         self._sock: Optional[socket.socket] = None
         self._bound_port: Optional[int] = None
         # (ip, property_name) -> consecutive individual-read failures, used to
@@ -140,21 +156,26 @@ class BACnetClient:
         except Exception:
             log.exception("log callback failed")
 
-    def _next_invoke_id(self) -> int:
+    def _next_invoke_id(self, ip: str = '') -> int:
         with self._lock:
-            self._invoke_id = (self._invoke_id + 1) % 256
-            return self._invoke_id
+            nxt = self._invoke_ids.get(ip, 0)
+            for _ in range(256):
+                nxt = (nxt + 1) % 256
+                if (ip, nxt) not in self._pending:
+                    break
+            self._invoke_ids[ip] = nxt
+            return nxt
 
     def _throttle(self, ip: str) -> None:
         """Enforce rate_limit_ms between packets to the same IP."""
         if self.rate_limit_ms <= 0:
             return
-        now = time.monotonic()
-        last = self._last_send.get(ip, 0.0)
-        delta_ms = (now - last) * 1000.0
-        if delta_ms < self.rate_limit_ms:
-            time.sleep((self.rate_limit_ms - delta_ms) / 1000.0)
-        self._last_send[ip] = time.monotonic()
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._last_send.get(ip, 0.0) + self.rate_limit_ms / 1000.0)
+            self._last_send[ip] = slot
+        if slot > now:
+            time.sleep(slot - now)
 
     # -- Broadcast discovery ---------------------------------------------
 
@@ -182,6 +203,28 @@ class BACnetClient:
             return []
 
         return self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+
+    def discover_who_is_networks(self, target_ip: str, dnets: "list[int]",
+                                 extra_wait: float = 0.0,
+                                 spacing_s: float = 0.05) -> list[dict[str, Any]]:
+        """Who-Is to several remote networks, collected in one window.
+
+        Each routed I-Am carries the network it came from (SNET), so the
+        replies need no per-network wait to tell them apart. `spacing_s`
+        keeps the requests from landing on the routers all at once.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        for i, dnet in enumerate(dnets):
+            try:
+                self._sock.sendto(codec.build_whois(dnet=dnet), (target_ip, BACNET_PORT))
+            except OSError as e:
+                self._log(f"  Who-Is send error (DNET {dnet}): {e}")
+            if spacing_s and i < len(dnets) - 1:
+                time.sleep(spacing_s)
+        wanted = set(dnets)
+        return [d for d in self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+                if d.get('source_network') in wanted]
 
     # -- BBMD / foreign device -------------------------------------------
 
@@ -217,6 +260,10 @@ class BACnetClient:
                     data, addr = self._sock.recvfrom(4096)
                 except socket.timeout:
                     break
+                except OSError as e:
+                    # Windows: an ICMP port-unreachable for an earlier send.
+                    log.debug("recvfrom: %s", e)
+                    continue
                 if addr[0] != bbmd_ip:
                     continue
                 code = codec.parse_bvlc_result(data)
@@ -297,11 +344,18 @@ class BACnetClient:
                     data, addr = self._sock.recvfrom(4096)
                 except socket.timeout:
                     break
+                except OSError as e:
+                    # Windows: an ICMP port-unreachable for an earlier send.
+                    log.debug("recvfrom: %s", e)
+                    continue
                 parsed = codec.parse_iam_router(data)
                 if parsed:
-                    routers.append({'ip': addr[0], 'port': addr[1], 'networks': parsed})
+                    # Relayed through a BBMD: the router is the origin, not
+                    # the BBMD the datagram came from.
+                    ip, port = codec.forwarded_origin(data) or addr
+                    routers.append({'ip': ip, 'port': port, 'networks': parsed})
                     networks.update(parsed)
-                    self._log(f"  Router at {addr[0]} -> networks: {parsed}")
+                    self._log(f"  Router at {ip} -> networks: {parsed}")
         finally:
             self._sock.settimeout(old_timeout)
 
@@ -320,6 +374,10 @@ class BACnetClient:
                     data, addr = self._sock.recvfrom(4096)
                 except socket.timeout:
                     break
+                except OSError as e:
+                    # Windows: an ICMP port-unreachable for an earlier send.
+                    log.debug("recvfrom: %s", e)
+                    continue
                 device = codec.parse_iam(data, addr)
                 if device is None:
                     continue
@@ -352,14 +410,12 @@ class BACnetClient:
         so the router forwards across the MSTP trunk.
         """
         self._throttle(ip)
-        invoke_id = self._next_invoke_id()
+        invoke_id = self._next_invoke_id(ip)
         pkt = codec.build_read_property(obj_type, obj_instance, prop_id,
                                         array_index=array_index, invoke_id=invoke_id,
                                         dnet=dnet, dadr=dadr)
-
-        with self._lock:  # serialize socket access
-            return self._request_response(ip, pkt, invoke_id,
-                                          parser=codec.parse_read_property_ack)
+        return self._request_response(ip, pkt, invoke_id,
+                                      parser=codec.parse_read_property_ack)
 
     def read_property_multiple(self, ip: str, obj_type: int | str, obj_instance: int,
                                prop_ids: list[int | str],
@@ -370,81 +426,245 @@ class BACnetClient:
         See `read_property` for MSTP routing semantics.
         """
         self._throttle(ip)
-        invoke_id = self._next_invoke_id()
+        invoke_id = self._next_invoke_id(ip)
         pkt = codec.build_read_property_multiple(obj_type, obj_instance, prop_ids,
                                                  invoke_id=invoke_id,
                                                  dnet=dnet, dadr=dadr)
-
-        with self._lock:
-            result = self._request_response(
-                ip, pkt, invoke_id,
-                parser=lambda d: codec.parse_read_property_multiple_ack(d, prop_ids)
-            )
+        result = self._request_response(
+            ip, pkt, invoke_id,
+            parser=lambda d: codec.parse_read_property_multiple_ack(d, prop_ids)
+        )
         return result or {}
 
     def _request_response(self, ip: str, pkt: bytes, expected_invoke_id: int,
                           parser: Callable[[bytes], Any]) -> Any:
         """Send one packet and wait for the matching response.
 
-        Validates invoke_id + source IP on each received packet. Discards
-        anything that doesn't match — this is critical because the socket
-        is shared and bound to port 47808 where I-Am broadcasts, COV
-        notifications, and stale replies from prior requests regularly arrive.
-        Without this filtering, responses from different devices got parsed
-        under the wrong request's context, producing column-swapped values
-        in the Points tab (observed on Trane Tracer against a busy site segment).
+        A reply is matched on source IP *and* invoke ID; anything else is
+        discarded. This is critical because the socket is shared and bound to
+        port 47808, where I-Am broadcasts, COV notifications, and stale
+        replies from prior requests regularly arrive. Without this filtering,
+        responses from different devices got parsed under the wrong request's
+        context, producing column-swapped values in the Points tab (observed on
+        Trane Tracer against a busy site segment).
+
+        Several threads may wait at once, each for its own device. There is no
+        background receive thread: one waiter at a time reads the socket and
+        files every reply it receives under the request it answers, and the
+        others wait to be handed theirs (or to take over reading once the
+        current reader is done). Until v2.7 a single lock serialized every
+        request, so a site's controllers were deep-scanned strictly one after
+        another.
         """
         assert self._sock is not None
+        key = (ip, expected_invoke_id)
+        with self._lock:
+            self._pending[key] = None
         try:
-            self._sock.sendto(pkt, (ip, BACNET_PORT))
-        except OSError as e:
-            self._log(f"  sendto {ip} failed: {e}")
+            try:
+                self._sock.sendto(pkt, (ip, BACNET_PORT))
+            except OSError as e:
+                self._log(f"  sendto {ip} failed: {e}")
+                return None
+
+            deadline = time.monotonic() + self.timeout
+            while True:
+                with self._cond:
+                    data = self._pending.get(key)
+                    if data is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return None
+                        if self._reader_active:
+                            self._cond.wait(remaining)
+                            continue
+                        self._reader_active = True
+                if data is not None:
+                    break
+                try:
+                    timed_out = self._read_and_route(remaining)
+                finally:
+                    with self._cond:
+                        self._reader_active = False
+                        self._cond.notify_all()
+                with self._lock:
+                    if self._pending.get(key) is None and timed_out:
+                        return None
+        finally:
+            with self._lock:
+                self._pending.pop(key, None)
+
+        # It's our reply — parse and return
+        try:
+            return parser(data)
+        except Exception as e:
+            log.debug("parse error from %s: %s", ip, e)
             return None
 
-        deadline = time.monotonic() + self.timeout
+    def _read_and_route(self, timeout: float) -> bool:
+        """Read one datagram and file it under the request it answers.
+
+        Only the thread holding the reader role calls this. Returns True when
+        the read timed out, which — since `timeout` is the reader's own
+        remaining time — means the reader's request has run out of time.
+
+        A reply is routed on its (source IP, invoke ID). `None` for the invoke
+        ID means the packet carries none at all — an Unconfirmed-Request such
+        as an I-Am, an unconfirmed COV notification, or an unconfirmed event
+        notification. The devices we are polling emit those on their own
+        schedule and we are bound to 47808, so they land here routinely on a
+        live segment. They are never a reply: drop them. (Before v2.0.3 the
+        first such packet aborted the read and silently lost the point.)
+        """
+        assert self._sock is not None
         old_timeout = self._sock.gettimeout()
-        discarded = 0
         try:
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    if discarded:
-                        log.debug("timeout after discarding %d unrelated packets from %s",
-                                  discarded, ip)
-                    return None
-                self._sock.settimeout(remaining)
-                try:
-                    data, addr = self._sock.recvfrom(4096)
-                except socket.timeout:
-                    return None
-
-                # Source IP must match the target we sent to
-                if addr[0] != ip:
-                    discarded += 1
-                    continue
-
-                # Invoke ID must match what we sent. `None` means the packet
-                # carries no invoke-id at all — an Unconfirmed-Request such as
-                # an I-Am, an unconfirmed COV notification, or an unconfirmed
-                # event notification. The device we are polling emits those on
-                # its own schedule and we are bound to 47808, so they land here
-                # routinely on a live segment. They are never our reply: drop
-                # them and keep waiting out the timeout. Returning here (the
-                # pre-fix behavior) aborted the read on the first stray packet
-                # and silently lost the point.
-                got_id = _extract_invoke_id(data)
-                if got_id is None or got_id != expected_invoke_id:
-                    discarded += 1
-                    continue
-
-                # It's our reply — parse and return
-                try:
-                    return parser(data)
-                except Exception as e:
-                    log.debug("parse error from %s: %s", ip, e)
-                    return None
+            self._sock.settimeout(max(timeout, 0.001))
+            try:
+                data, addr = self._sock.recvfrom(4096)
+            except socket.timeout:
+                return True
+            except OSError as e:
+                # Windows reports an ICMP port-unreachable from an earlier
+                # send as an error on the next receive. It says nothing about
+                # the request being waited on.
+                log.debug("recvfrom: %s", e)
+                return False
         finally:
             self._sock.settimeout(old_timeout)
+
+        got_id = _extract_invoke_id(data)
+        if got_id is None:
+            return False
+        key = (addr[0], got_id)
+        with self._cond:
+            if key in self._pending and self._pending[key] is None:
+                self._pending[key] = data
+                self._cond.notify_all()
+            else:
+                log.debug("discarded unmatched packet from %s (invoke %s)", addr[0], got_id)
+        return False
+
+    def _request_many(self, requests: "list[tuple[str, bytes, int]]",
+                      parser: Callable[[bytes], Any],
+                      stop_fn=None, pace_s: float = 0.002) -> dict[str, Any]:
+        """Send one request to each of many devices and gather the replies.
+
+        `requests` is ``[(ip, packet, invoke_id)]``, at most one per IP. The
+        packets go out back to back (spaced by `pace_s`) and then the replies
+        are collected for one timeout period, so probing a few hundred
+        addresses costs about one timeout rather than one per address.
+        Returns ``{ip: parsed reply}`` for the addresses that answered.
+        """
+        assert self._sock is not None
+        keys = {(ip, inv): ip for ip, _pkt, inv in requests}
+        with self._lock:
+            for key in keys:
+                self._pending[key] = None
+        try:
+            for ip, pkt, _inv in requests:
+                if stop_fn and stop_fn():
+                    break
+                try:
+                    self._sock.sendto(pkt, (ip, BACNET_PORT))
+                except OSError as e:
+                    log.debug("sendto %s failed: %s", ip, e)
+                if pace_s:
+                    time.sleep(pace_s)
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                with self._lock:
+                    if all(self._pending.get(k) is not None for k in keys):
+                        break
+                if stop_fn and stop_fn():
+                    break
+                self._read_and_route(min(0.25, deadline - time.monotonic()))
+            out: dict[str, Any] = {}
+            with self._lock:
+                answered = {k: self._pending.get(k) for k in keys}
+            for key, data in answered.items():
+                if data is None:
+                    continue
+                try:
+                    out[keys[key]] = parser(data)
+                except Exception as e:
+                    log.debug("parse error from %s: %s", key[0], e)
+            return out
+        finally:
+            with self._lock:
+                for key in keys:
+                    self._pending.pop(key, None)
+
+    # -- Unicast discovery -------------------------------------------------
+
+    def discover_unicast(self, ips: "list[str]", stop_fn=None,
+                         batch: int = 256) -> list[dict[str, Any]]:
+        """Find BACnet devices by asking each address directly.
+
+        Who-Is is a broadcast and does not cross a router, so a controller on
+        another subnet stays invisible to it even when unicast traffic to it
+        is routed fine — the usual arrangement when the building system sits
+        on its own VLAN. A ReadProperty of the Device object's
+        objectIdentifier at the wildcard instance 4194303 is answered by any
+        device as if addressed to its own instance, so it returns the device
+        instance over plain unicast. Devices that predate the wildcard (it
+        arrived with protocol revision 4) answer with an error instead; those
+        are counted and reported but cannot be enumerated this way.
+
+        Returns device dicts shaped like I-Am results, with
+        ``discovered_via='unicast'``.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        found: dict[str, int] = {}
+        refused = 0
+        for i in range(0, len(ips), batch):
+            if stop_fn and stop_fn():
+                break
+            reqs = []
+            for ip in ips[i:i + batch]:
+                inv = self._next_invoke_id(ip)
+                reqs.append((ip, codec.build_read_property(
+                    'Device', 4194303, 'objectIdentifier', invoke_id=inv), inv))
+            replies = self._request_many(reqs, parser=codec.parse_read_property_ack,
+                                         stop_fn=stop_fn)
+            for ip, value in replies.items():
+                if (isinstance(value, tuple) and len(value) == 2
+                        and value[0] == 'Device' and isinstance(value[1], int)):
+                    found[ip] = value[1]
+                else:
+                    refused += 1
+        if refused:
+            self._log(f"  {refused} address(es) answered on 47808 but not at the "
+                      f"wildcard device instance (pre-2004 BACnet stacks); they "
+                      f"need --bbmd or a scan from their own subnet.")
+
+        devices = []
+        for ip, instance in found.items():
+            if stop_fn and stop_fn():
+                break
+            info = self.read_property_multiple(
+                ip, 'Device', instance,
+                ['vendorIdentifier', 'maxApduLengthAccepted', 'segmentationSupported'])
+            if not info:
+                info = {}
+                for name in ('vendorIdentifier', 'maxApduLengthAccepted',
+                             'segmentationSupported'):
+                    val = self.read_property(ip, 'Device', instance, name)
+                    if val is not None:
+                        info[PROP_IDS[name]] = val
+            vendor_id = info.get(PROP_IDS['vendorIdentifier'])
+            seg = info.get(PROP_IDS['segmentationSupported'])
+            dev = _iam_to_dict(IAmDevice(
+                ip=ip, port=BACNET_PORT, instance=instance,
+                max_apdu=info.get(PROP_IDS['maxApduLengthAccepted']),
+                segmentation=({0: "Both", 1: "Transmit", 2: "Receive", 3: "None"}
+                              .get(seg, str(seg)) if seg is not None else None),
+                vendor_id=vendor_id if isinstance(vendor_id, int) else None,
+            ))
+            dev['discovered_via'] = 'unicast'
+            devices.append(dev)
+        return devices
 
     # -- High-level deep scan --------------------------------------------
 
@@ -599,16 +819,15 @@ class BACnetClient:
         fall back, not as an empty object list.
         """
         self._throttle(ip)
-        invoke_id = self._next_invoke_id()
+        invoke_id = self._next_invoke_id(ip)
         pkt = codec.build_read_property_multiple(
             'Device', instance, [('objectList', i) for i in batch],
             invoke_id=invoke_id, dnet=dnet, dadr=dadr,
         )
-        with self._lock:
-            entries = self._request_response(
-                ip, pkt, invoke_id,
-                parser=codec.parse_read_property_multiple_ack_full,
-            )
+        entries = self._request_response(
+            ip, pkt, invoke_id,
+            parser=codec.parse_read_property_multiple_ack_full,
+        )
         if not entries:
             return None
         out: list[tuple[int, tuple[str, int]]] = []
@@ -736,7 +955,8 @@ class BACnetClient:
                 val = self.read_property(ip, obj_type, obj_instance, name,
                                          dnet=dnet, dadr=dadr)
                 if val is None:
-                    self._partial_fill_failures[key] =                         self._partial_fill_failures.get(key, 0) + 1
+                    self._partial_fill_failures[key] = (
+                        self._partial_fill_failures.get(key, 0) + 1)
                     if self._partial_fill_failures[key] == _PARTIAL_FILL_GIVE_UP:
                         log.debug("%s does not answer %s individually either; "
                                   "stopping per-object retries", ip, name)
@@ -825,14 +1045,13 @@ class BACnetClient:
         specs = [(otype, oinst, [p for p in props if p in PROP_IDS])
                  for otype, oinst, props in batch]
         self._throttle(ip)
-        invoke_id = self._next_invoke_id()
+        invoke_id = self._next_invoke_id(ip)
         pkt = codec.build_read_property_multiple_objects(
             specs, invoke_id=invoke_id, dnet=dnet, dadr=dadr)
-        with self._lock:
-            entries = self._request_response(
-                ip, pkt, invoke_id,
-                parser=codec.parse_read_property_multiple_ack_full,
-            )
+        entries = self._request_response(
+            ip, pkt, invoke_id,
+            parser=codec.parse_read_property_multiple_ack_full,
+        )
         if not entries:
             return None
 
@@ -913,6 +1132,8 @@ _POINT_PROPERTY_TYPES = {
     'modelName':    ('string',),
     'firmwareRevision': ('string',),
     'applicationSoftwareVersion': ('string',),
+    'statusFlags':  ('string',),           # BIT STRING, decoded to hex by the codec
+    'stateText':    ('string_list',),      # BACnetARRAY of CharacterString
 }
 
 
@@ -941,6 +1162,13 @@ def _validate_point_property(name: str, val: Any) -> Any:
         # Numeric values masquerading as string-typed props are almost always
         # a sign of packet misalignment (vendor RPM quirk) — drop them rather
         # than let them leak into the Name/Description column.
+        return None
+
+    if expected == 'string_list':
+        # A one-element array decodes as a bare value, not a list of one.
+        items = [val] if isinstance(val, str) else val
+        if isinstance(items, list) and items and all(isinstance(s, str) for s in items):
+            return items
         return None
 
     if expected == 'int_or_str':

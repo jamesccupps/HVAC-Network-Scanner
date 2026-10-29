@@ -10,9 +10,11 @@ Design:
 - ScanResult holds devices, points, services; export helpers live here
 
 Parallelism:
-- BACnet IP discovery is serialized (needs a single bound UDP port)
-- Deep-scan per-device is serialized (preserves reply correlation)
-- Modbus, services, SNMP sweeps use their own thread pools
+- BACnet discovery runs as its own phase on the one bound UDP port
+- Deep scans run several devices at once (`bacnet_workers`), one worker per
+  IP address, so no device — and no router fronting an MS/TP trunk — ever
+  sees more than one request at a time
+- Modbus, services, SNMP sweeps use their own concurrency
 """
 
 from __future__ import annotations
@@ -22,15 +24,19 @@ import ipaddress
 import json
 import logging
 import re
+import socket
+import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field, replace
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Optional
 
+from . import __version__
 from .bacnet import BACnetClient
 from .constants import (
-    BACNET_VENDORS,
     BACNET_UNITS,
     DEFAULT_POINT_PROPERTIES,
     POINT_PROPERTIES_BY_TYPE,
@@ -38,6 +44,7 @@ from .constants import (
 )
 from .fingerprint import fingerprint_device
 from .modbus import ModbusScanner
+from .p2 import P2Scanner
 from .services import HVACServiceScanner
 from .snmp import SNMPScanner
 
@@ -57,6 +64,9 @@ class ScanOptions:
     scan_modbus: bool = True
     scan_services: bool = True
     scan_snmp: bool = True
+    # Siemens APOGEE P2 panels (TCP/5033). Read-only and registration-free;
+    # see p2.py for exactly what is sent.
+    scan_p2: bool = True
     deep_scan: bool = True
     # v2.1.2: scan depth preset. "quick" samples ~5% of objects per device
     # (useful for fast inventory), "normal" honors vendor-aware caps,
@@ -73,9 +83,13 @@ class ScanOptions:
     # through would have re-imposed the flat 500-object cap that v2.1.2
     # removed, silently re-truncating supervisory controllers.
     max_objects_per_device: Optional[int] = None
-    service_workers: int = 80
-    modbus_workers: int = 50
-    snmp_workers: int = 50
+    # Concurrent TCP connection attempts in the Modbus and service sweeps.
+    # Attempts are coroutines, not threads (see netsweep), and targets go out
+    # port-major, so a high number here does not mean a device sees more
+    # than about one connection at a time.
+    service_workers: int = 256
+    modbus_workers: int = 256
+    snmp_workers: int = 50               # unused since v2.7; kept for callers
     # Large-network discovery behavior:
     #   whois_chunk_size=0 → single global broadcast Who-Is (default, fine for /24)
     #   whois_chunk_size>0 → chunked Who-Is by instance range, much gentler on
@@ -105,6 +119,22 @@ class ScanOptions:
     # discovers every subnet the BBMD and its peers serve.
     bbmd: Optional[str] = None
     bbmd_ttl: int = 60
+    # Devices deep-scanned at the same time. Each worker owns one IP address
+    # (so one device, or one router and the MS/TP devices behind it), which
+    # keeps the load any single controller sees exactly what it was with a
+    # single worker. 1 restores the old strictly sequential behavior.
+    bacnet_workers: int = 4
+    # Unicast discovery for targets a broadcast cannot reach (another subnet
+    # or VLAN). "auto" probes target addresses that are not on a directly
+    # attached /24 and did not answer the broadcast; "always" probes every
+    # target that did not answer; "off" never probes.
+    unicast_discovery: str = "auto"
+    snmp_communities: list[str] = field(default_factory=lambda: ["public"])
+
+
+# Hosts "auto" unicast discovery will probe without being told to. A /22's
+# worth: past that, the user should ask for it explicitly with "always".
+UNICAST_AUTO_LIMIT = 1024
 
 
 @dataclass
@@ -113,8 +143,11 @@ class ScanResult:
     elapsed: float = 0.0
     devices: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=lambda: {
-        'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'points': 0,
+        'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'p2': 0,
+        'points': 0,
     })
+    # What was asked for, so an export says what it is a survey of.
+    targets: list[str] = field(default_factory=list)
 
     # -- export helpers -------------------------------------------------
 
@@ -122,7 +155,8 @@ class ScanResult:
         return {
             'scan_time': self.started_at,
             'elapsed_seconds': round(self.elapsed, 2),
-            'scanner': 'HVAC Network Scanner v2',
+            'scanner': f'HVAC Network Scanner v{__version__}',
+            'targets': self.targets,
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
         }
@@ -143,6 +177,7 @@ class ScanResult:
                 'Max APDU', 'Segmentation', 'Vendor ID',
                 'Banner', 'Page Title',
                 'TLS Certificate',
+                'Flagged Points',
             ])
             for dev in self.devices:
                 fp = dev.get('_fingerprint', {})
@@ -176,7 +211,48 @@ class ScanResult:
                     dev.get('banner', ''),
                     dev.get('title', ''),
                     dev.get('tls_summary', ''),
+                    ", ".join(f"{n} {f}" for f, n in (dev.get('point_flags') or {}).items()),
                 ])
+
+    def write_html(self, path: str) -> None:
+        """A self-contained HTML survey report: findings, inventory, flagged
+        points and open services. See report.py."""
+        from .report import write_html
+        write_html(self.to_dict(), path)
+
+    def write_points_csv(self, path: str) -> None:
+        """One row per BACnet point and Modbus register — a point list.
+
+        The device CSV has one row per device, and the points themselves were
+        only reachable through the JSON. A point list is the thing an
+        integrator actually takes away from a site survey.
+        """
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Device IP', 'Device ID', 'Device Name', 'MSTP Network', 'MSTP MAC',
+                'Object Type', 'Instance', 'Name', 'Present Value', 'Units',
+                'Description', 'Status',
+            ])
+            for dev in self.devices:
+                props = dev.get('properties', {}) or {}
+                head = [dev.get('ip', ''), dev.get('instance', ''),
+                        props.get('object_name', ''),
+                        dev.get('source_network') or '', dev.get('source_address') or '']
+                for pt in dev.get('objects', []) or []:
+                    writer.writerow(head + [
+                        pt.get('type', ''), pt.get('instance', ''), pt.get('name', ''),
+                        pt.get('present_value', ''), pt.get('units', ''),
+                        pt.get('description', ''), pt.get('status', ''),
+                    ])
+                if dev.get('protocol') == 'Modbus TCP':
+                    mb_head = [dev.get('ip', ''), f"unit {dev.get('unit_id', '')}", '', '', '']
+                    for label, key, idx in (('Holding Register', 'holding_registers', 'register'),
+                                            ('Input Register', 'input_registers', 'register'),
+                                            ('Coil', 'coils', 'coil')):
+                        for reg in dev.get(key, []) or []:
+                            writer.writerow(mb_head + [label, reg.get(idx, ''), '',
+                                                       reg.get('value', ''), '', '', ''])
 
     def write_classification_report(self, path: str) -> None:
         """Write a plain-text classification report (v2.2).
@@ -287,7 +363,8 @@ class ScanEngine:
     def __init__(self, options: ScanOptions,
                  callback: Optional[Callable[[str], None]] = None,
                  stop_event: Optional[threading.Event] = None,
-                 device_callback: Optional[Callable[[dict[str, Any]], None]] = None):
+                 device_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+                 progress_callback: Optional[Callable[[str, int, int], None]] = None):
         self.opts = options
         self.callback = callback or (lambda msg: None)
         # Fired as each device finishes, so a UI can show results while the
@@ -295,15 +372,45 @@ class ScanEngine:
         # device dict is the same object stored in result.devices; treat it as
         # read-only.
         self.device_callback = device_callback or (lambda dev: None)
+        # (phase, done, total) as the scan moves along; total 0 means the
+        # phase cannot say how long it will take.
+        self.progress_callback = progress_callback or (lambda phase, done, total: None)
         self.stop_event = stop_event or threading.Event()
         self.result = ScanResult()
+        # Deep-scan workers update counts and the device list concurrently.
+        self._result_lock = threading.Lock()
+        self._log_lock = threading.Lock()
+        self._tls = threading.local()           # per-worker log buffer
+        self._bcast_cache: dict[str, str] = {}
+        self._local_cache: dict[str, bool] = {}
 
     def _log(self, msg: str) -> None:
-        log.info(msg)
+        # The callback is how messages reach the user. They also go to the
+        # module logger, but at DEBUG: logging them at INFO meant a CLI run
+        # (which configures logging and prints the callback) showed every
+        # line twice.
+        log.debug(msg)
+        buf = getattr(self._tls, 'buffer', None)
+        if buf is not None:
+            buf.append(msg)
+            return
+        self._emit_log(msg)
+
+    def _emit_log(self, msg: str) -> None:
         try:
             self.callback(msg)
         except Exception:
             log.exception("log callback failed")
+
+    def _progress(self, phase: str, done: int, total: int) -> None:
+        try:
+            self.progress_callback(phase, done, total)
+        except Exception:
+            log.exception("progress callback failed")
+
+    def _add_points(self, n: int) -> None:
+        with self._result_lock:
+            self.result.counts['points'] += n
 
     def _stopped(self) -> bool:
         return self.stop_event.is_set()
@@ -320,6 +427,7 @@ class ScanEngine:
 
     def run(self) -> ScanResult:
         start = time.time()
+        self.result.targets = list(self.opts.networks)
 
         if not self.opts.networks:
             self._log("No networks specified")
@@ -358,6 +466,11 @@ class ScanEngine:
                     self._scan_modbus()
                 except Exception:
                     log.exception("Modbus scan pass failed")
+            if self.opts.scan_p2 and not self._stopped():
+                try:
+                    self._scan_p2()
+                except Exception:
+                    log.exception("APOGEE P2 scan pass failed")
             if self.opts.scan_services and not self._stopped():
                 try:
                     self._scan_services()
@@ -393,6 +506,8 @@ class ScanEngine:
         self._log(f"  Modbus TCP:  {self.result.counts['modbus']}")
         self._log(f"  Service ports: {self.result.counts['services']}")
         self._log(f"  SNMP:        {self.result.counts['snmp']}")
+        if self.opts.scan_p2:
+            self._log(f"  APOGEE P2:   {self.result.counts['p2']}")
         self._log(f"  Total:       {len(unique_ips)} unique IP(s), "
                   f"{self.result.counts['points']} points/registers")
         self._log("=" * 65)
@@ -431,6 +546,15 @@ class ScanEngine:
         return allowed or None
 
     def _bcast_for(self, network: str) -> str:
+        """Broadcast target for `network`, worked out (and logged) once.
+
+        Both the BACnet/IP and the MS/TP passes ask, and computing it twice
+        logged the same explanation twice."""
+        if network not in self._bcast_cache:
+            self._bcast_cache[network] = self._compute_bcast(network)
+        return self._bcast_cache[network]
+
+    def _compute_bcast(self, network: str) -> str:
         """Compute the broadcast target for the BACnet Who-Is.
 
         v2.1.2: Does the right thing automatically for every supported
@@ -571,6 +695,8 @@ class ScanEngine:
                           f"(saved {saved} redundant Who-Is broadcasts).")
 
             seen_devices: set[tuple[str, Any]] = set()
+            to_scan: list[dict[str, Any]] = []
+            heard_any = False
 
             for bcast, networks_for_bcast in bcast_to_networks.items():
                 if self._stopped():
@@ -580,7 +706,9 @@ class ScanEngine:
                 self._log(f"\nBACnet/IP scan: {targets_label}")
                 self._log(f"  Broadcasting Who-Is to {bcast}:47808 "
                           f"(we send Who-Is — we do not send I-Am)")
+                self._progress("BACnet discovery", 0, 0)
                 devices = self._discover_whois_on(client, bcast)
+                heard_any = heard_any or bool(devices)
 
                 # Filter: drop I-Am responses from IPs the user didn't ask for.
                 # Also dedupe against devices seen in earlier iterations
@@ -610,62 +738,226 @@ class ScanEngine:
                         and allowed_ips is not None
                         and len(allowed_ips) > 0
                         and len(devices) > 0):
-                    missing = sorted(allowed_ips)
-                    shown = missing[:5]
-                    more = f" (and {len(missing)-5} more)" if len(missing) > 5 else ""
-                    self._log(
-                        f"  Note: target IP(s) {shown}{more} did not "
-                        f"respond to Who-Is on UDP 47808. This means either "
-                        f"the device is not running BACnet/IP, or this "
-                        f"scanner cannot reach it. Possibilities:"
-                    )
-                    self._log(
-                        f"    - Device does not have a BACnet/IP stack enabled. "
-                        f"Some devices that support BACnet ship with it disabled "
-                        f"or on non-standard ports, or run a firmware variant "
-                        f"that speaks a proprietary protocol instead. For example, "
-                        f"Siemens APOGEE PXC panels with firmware revision 2.x "
-                        f"speak proprietary P2/Apogee Ethernet. The same "
-                        f"hardware with firmware revision 3.x speaks BACnet/IP "
-                        f"and is scannable with this tool."
-                    )
-                    self._log(
-                        f"    - Firewall blocks UDP 47808 between this scanner "
-                        f"and the target."
-                    )
-                    self._log(
-                        f"    - Device uses a fundamentally different BMS "
-                        f"protocol (Modbus, LonTalk, JCI N2, etc.)."
-                    )
-                    self._log(
-                        f"    - Device is offline or unreachable at the IP layer."
-                    )
-                    self._log(
-                        f"  If the device pings but this message appears, check "
-                        f"its BACnet/IP configuration in its management interface. "
-                        f"Many devices have BACnet disabled by default."
-                    )
+                    self._explain_no_match(allowed_ips)
                 for dev in kept:
-                    mstp_tag = (f" (MSTP net {dev['source_network']})"
-                                if dev.get('source_network') else "")
+                    # A router answers a global Who-Is on behalf of the MS/TP
+                    # devices behind it. Those arrive here, not in the MS/TP
+                    # pass, and used to be labelled BACnet/IP and counted as
+                    # IP devices.
+                    dev['protocol'] = ('BACnet/MSTP' if dev.get('source_network')
+                                       else 'BACnet/IP')
+                    mstp_tag = (f" (MSTP net {dev['source_network']} "
+                                f"via {dev['ip']})" if dev.get('source_network') else "")
                     self._log(f"    Device {dev.get('instance','?')} "
                               f"at {dev.get('ip','?')}{mstp_tag}")
+                to_scan.extend(kept)
 
-                for dev in kept:
-                    if self._stopped():
-                        break
-                    dev['protocol'] = 'BACnet/IP'
-                    if self.opts.deep_scan:
-                        self._deep_read(client, dev)
-                    self.result.devices.append(dev)
-                    self.result.counts['bacnet'] += 1
-                    self._emit_device(dev)
+            if not self._stopped():
+                found = self._discover_unicast(client, allowed_ips, seen_devices)
+                to_scan.extend(found)
+                heard_any = heard_any or bool(found)
+
+            if not heard_any and not self.opts.bbmd and not self._stopped():
+                self._explain_silence()
+
+            self._deep_scan_devices(client, to_scan)
 
             if self.opts.scan_mstp and not self._stopped():
                 self._scan_mstp(client)
 
         finally:
             client.close()
+
+    def _explain_no_match(self, allowed_ips: set[str]) -> None:
+        missing = sorted(allowed_ips)
+        shown = missing[:5]
+        more = f" (and {len(missing)-5} more)" if len(missing) > 5 else ""
+        self._log(
+            f"  Note: target IP(s) {shown}{more} did not "
+            f"respond to Who-Is on UDP 47808. This means either "
+            f"the device is not running BACnet/IP, or this "
+            f"scanner cannot reach it. Possibilities:"
+        )
+        self._log(
+            "    - Device does not have a BACnet/IP stack enabled. "
+            "Some devices that support BACnet ship with it disabled "
+            "or on non-standard ports, or run a firmware variant "
+            "that speaks a proprietary protocol instead. For example, "
+            "Siemens APOGEE PXC panels with firmware revision 2.x "
+            "speak proprietary P2/Apogee Ethernet. The same "
+            "hardware with firmware revision 3.x speaks BACnet/IP "
+            "and is scannable with this tool."
+        )
+        self._log("    - Firewall blocks UDP 47808 between this scanner "
+                  "and the target.")
+        self._log("    - Device uses a fundamentally different BMS "
+                  "protocol (Modbus, LonTalk, JCI N2, etc.).")
+        self._log("    - Device is offline or unreachable at the IP layer.")
+        self._log(
+            "  If the device pings but this message appears, check "
+            "its BACnet/IP configuration in its management interface. "
+            "Many devices have BACnet disabled by default."
+        )
+
+    def _explain_silence(self) -> None:
+        """Nothing at all answered. Say what most often causes that."""
+        self._log("  [!] No BACnet device answered.")
+        if sys.platform.startswith('win'):
+            self._log(
+                "      On Windows the usual cause is Windows Firewall: replies to "
+                "a broadcast come from addresses this program never sent to, "
+                "and are dropped unless the program is allowed inbound UDP 47808 "
+                "(Windows Defender Firewall > Allow an app, or the prompt shown "
+                "the first time it runs). A device on another subnet or VLAN "
+                "will not hear a broadcast at all — scan with unicast discovery "
+                "set to 'always', or register with a BBMD.")
+        else:
+            self._log(
+                "      Check that a host firewall allows inbound UDP 47808, and "
+                "that the devices share this subnet. For another subnet or "
+                "VLAN, use unicast discovery ('always') or a BBMD.")
+
+    # -- unicast discovery ------------------------------------------------
+
+    def _discover_unicast(self, client: BACnetClient,
+                          allowed_ips: "set[str] | None",
+                          seen: set[tuple[str, Any]]) -> list[dict[str, Any]]:
+        """Probe target addresses a broadcast cannot have reached.
+
+        Who-Is does not cross a router. When the building system sits on its
+        own VLAN and the scanner on another — common, and the right way to
+        run a BAS network — broadcast discovery finds nothing even though
+        unicast BACnet to every controller works. See
+        BACnetClient.discover_unicast for the probe itself.
+        """
+        mode = (self.opts.unicast_discovery or "auto").lower()
+        if mode == "off" or self.opts.bbmd or allowed_ips is None:
+            return []
+        answered = {ip for ip, _inst in seen}
+        candidates = [ip for ip in self._target_ips_in_order() if ip not in answered]
+        if mode == "auto":
+            # A /24 the broadcast got answers from is evidently reachable by
+            # broadcast, whatever the routing table says; its silent
+            # addresses are just silent.
+            heard = {str(ipaddress.ip_network(f"{ip}/24", strict=False)) for ip in answered}
+            candidates = [ip for ip in candidates
+                          if str(ipaddress.ip_network(f"{ip}/24", strict=False)) not in heard
+                          and not self._is_local(ip)]
+            if not candidates:
+                return []
+            if len(candidates) > UNICAST_AUTO_LIMIT:
+                self._log(f"  {len(candidates)} target address(es) are on another "
+                          f"subnet, where a broadcast does not reach. That is more "
+                          f"than auto mode probes ({UNICAST_AUTO_LIMIT}); set "
+                          f"unicast discovery to 'always' to probe them.")
+                return []
+        if not candidates:
+            return []
+
+        self._log(f"\nUnicast BACnet discovery: probing {len(candidates)} "
+                  f"address(es) a broadcast cannot reach")
+        self._progress("BACnet unicast discovery", 0, len(candidates))
+        found = client.discover_unicast(candidates, stop_fn=self._stopped)
+        kept = []
+        for dev in found:
+            key = (dev['ip'], dev.get('instance'))
+            if key in seen:
+                continue
+            seen.add(key)
+            dev['protocol'] = 'BACnet/IP'
+            self._log(f"    Device {dev.get('instance', '?')} at {dev['ip']} "
+                      f"(unicast)")
+            kept.append(dev)
+        self._log(f"  Unicast discovery found {len(kept)} device(s).")
+        return kept
+
+    def _target_ips_in_order(self) -> list[str]:
+        from .netrange import parse_targets, InvalidTargetSyntaxError
+        try:
+            return parse_targets(self.opts.networks)
+        except InvalidTargetSyntaxError:
+            return []
+
+    def _is_local(self, ip: str) -> bool:
+        """Whether `ip` is on a directly attached network, judged the way the
+        rest of the engine judges subnets: by /24.
+
+        The interface the OS would route `ip` through is found by
+        "connecting" a UDP socket, which sends nothing. If that interface's
+        address shares the target's /24, a broadcast reaches it.
+        """
+        net = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+        if net not in self._local_cache:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.connect((ip, 47808))
+                    local = s.getsockname()[0]
+                self._local_cache[net] = (
+                    str(ipaddress.ip_network(f"{local}/24", strict=False)) == net)
+            except OSError:
+                self._local_cache[net] = True      # unroutable: unicast won't help
+        return self._local_cache[net]
+
+    # -- deep scan ----------------------------------------------------------
+
+    def _deep_scan_devices(self, client: BACnetClient,
+                           devices: list[dict[str, Any]]) -> None:
+        """Deep-scan discovered devices, several at a time.
+
+        Devices are grouped by IP address and each group runs on one worker,
+        in order. A router and every MS/TP device behind it share the
+        router's address, so they share a worker too: an MS/TP trunk at
+        38,400 baud is the slowest link on the site and must not be asked to
+        carry two conversations at once.
+        """
+        if not devices:
+            return
+        groups: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
+        for dev in devices:
+            groups.setdefault(dev['ip'], []).append(dev)
+        workers = max(1, min(self.opts.bacnet_workers or 1, len(groups)))
+        total = len(devices)
+        done = [0]
+        self._progress("BACnet deep scan", 0, total)
+        if self.opts.deep_scan and workers > 1:
+            self._log(f"\nDeep-scanning {total} device(s) on {len(groups)} "
+                      f"address(es), {workers} at a time")
+
+        def finish(dev: dict[str, Any]) -> None:
+            proto_key = 'mstp' if dev.get('protocol') == 'BACnet/MSTP' else 'bacnet'
+            with self._result_lock:
+                self.result.devices.append(dev)
+                self.result.counts[proto_key] += 1
+                done[0] += 1
+                n = done[0]
+            self._emit_device(dev)
+            self._progress("BACnet deep scan", n, total)
+
+        def run_group(group: list[dict[str, Any]]) -> None:
+            for dev in group:
+                if self._stopped():
+                    return
+                if self.opts.deep_scan:
+                    try:
+                        self._deep_read(client, dev, buffered=workers > 1)
+                    except Exception:
+                        log.exception("deep read of %s failed", dev.get('ip'))
+                finish(dev)
+
+        if workers == 1:
+            for group in groups.values():
+                run_group(group)
+        else:
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="bacnet-deep") as pool:
+                list(pool.map(run_group, groups.values()))
+
+        # Keep the result in discovery order, whatever order workers finished.
+        order = {id(d): i for i, d in enumerate(devices)}
+        with self._result_lock:
+            scanned = [d for d in self.result.devices if id(d) in order]
+            others = [d for d in self.result.devices if id(d) not in order]
+            self.result.devices = others + sorted(scanned, key=lambda d: order[id(d)])
 
     def _discover_whois_on(self, client: BACnetClient, bcast: str) -> list[dict]:
         """Discover devices on a subnet. Chunked by instance range if configured.
@@ -776,41 +1068,56 @@ class ScanEngine:
                           f"{len(dnets)} remote network(s)")
                 dnets_to_scan = dnets
 
-            for dnet in dnets_to_scan:
-                if self._stopped():
-                    break
-                self._log(f"  -> Who-Is to DNET {dnet}...")
-                mstp_devs = client.discover_who_is(target_ip=bcast, dnet=dnet, extra_wait=2.0)
+            # A router passes a global Who-Is on to its MS/TP side, so the
+            # BACnet/IP pass has usually heard from every network already.
+            # Asking those again costs a timeout plus the MS/TP allowance and
+            # turns up the same devices.
+            heard = {d.get('source_network') for d in self.result.devices
+                     if d.get('source_network') is not None}
+            already = [dn for dn in dnets_to_scan if dn in heard]
+            if already:
+                self._log(f"  Network(s) {', '.join(str(d) for d in already)} already "
+                          f"answered the global Who-Is; not asking again.")
+            dnets_to_scan = [dn for dn in dnets_to_scan if dn not in heard]
+            if not dnets_to_scan or self._stopped():
+                continue
+            # One directed Who-Is per remote network, all sent before any
+            # reply is awaited: each I-Am names its network (SNET), so one
+            # collection window serves them all. One at a time, every network
+            # cost a full timeout plus the MS/TP allowance on its own.
+            self._log(f"  -> Who-Is to DNET(s) {', '.join(str(d) for d in dnets_to_scan)}...")
+            mstp_devs = client.discover_who_is_networks(
+                target_ip=bcast, dnets=dnets_to_scan, extra_wait=2.0)
 
-                # Second filter: the routed Who-Is on the wire is a broadcast
-                # that hits all routers on the segment; a router not in our
-                # target could still proxy an I-Am back. Drop those.
-                kept_mstp = []
-                dropped_mstp = 0
-                for dev in mstp_devs:
-                    ip = dev.get('ip', '')
-                    if allowed_ips is None or ip in allowed_ips:
-                        kept_mstp.append(dev)
-                    else:
-                        dropped_mstp += 1
-                if dropped_mstp:
-                    self._log(f"    Dropped {dropped_mstp} MSTP response(s) "
-                              f"from routers outside target range. "
-                              f"Kept {len(kept_mstp)}.")
+            # Second filter: the routed Who-Is on the wire is a broadcast
+            # that hits all routers on the segment; a router not in our
+            # target could still proxy an I-Am back. Drop those.
+            kept_mstp = []
+            dropped_mstp = 0
+            for dev in mstp_devs:
+                ip = dev.get('ip', '')
+                if allowed_ips is None or ip in allowed_ips:
+                    kept_mstp.append(dev)
+                else:
+                    dropped_mstp += 1
+            if dropped_mstp:
+                self._log(f"    Dropped {dropped_mstp} MSTP response(s) "
+                          f"from routers outside target range. "
+                          f"Kept {len(kept_mstp)}.")
 
-                for dev in kept_mstp:
-                    if self._stopped():
-                        break
-                    key = (dev['ip'], dev.get('instance'))
-                    if key in existing:
-                        continue
-                    existing.add(key)
-                    dev['protocol'] = 'BACnet/MSTP'
-                    if self.opts.deep_scan and dev.get('source_network'):
-                        self._deep_read(client, dev)
-                    self.result.devices.append(dev)
-                    self.result.counts['mstp'] += 1
-                    self._emit_device(dev)
+            new_devs = []
+            for dev in kept_mstp:
+                key = (dev['ip'], dev.get('instance'))
+                if key in existing:
+                    continue
+                existing.add(key)
+                dev['protocol'] = 'BACnet/MSTP'
+                self._log(f"    Device {dev.get('instance', '?')} on MSTP net "
+                          f"{dev.get('source_network')} via {dev['ip']}")
+                new_devs.append(dev)
+            if not new_devs:
+                self._log("    No MS/TP devices beyond those already found.")
+            self._deep_scan_devices(client, new_devs)
 
     def _stride_sample_indices(self, total_count: int, cap: int) -> list[int]:
         """Evenly spaced indices across the whole objectList, no reads needed.
@@ -899,7 +1206,7 @@ class ScanEngine:
                       f"{len(full_map)} that did.")
 
         type_counts = {t: len(v) for t, v in by_type.items()}
-        self._log(f"    Object types found: "
+        self._log("    Object types found: "
                   + ", ".join(f"{t}={n}" for t, n in sorted(type_counts.items())))
 
         # Interleave: round-robin through types. Take from each type in
@@ -947,7 +1254,8 @@ class ScanEngine:
                   f"{len(by_type)} object type(s).")
         return chosen
 
-    def _deep_read(self, client: BACnetClient, dev: dict[str, Any]) -> None:
+    def _deep_read(self, client: BACnetClient, dev: dict[str, Any],
+                   buffered: bool = False) -> None:
         """Read device-level properties + object list + per-point properties.
 
         For MSTP devices (those with a `source_network` from a routed I-Am),
@@ -956,19 +1264,40 @@ class ScanEngine:
         but every MSTP device returns 'Object not found' because the router
         tries to answer as itself. (Root cause: v2.0.2 `build_read_property`
         hardcoded an unrouted NPDU. Fix: v2.1.0, credit OldAutomator/Reddit.)
+
+        With `buffered`, everything after the opening line is held back and
+        written as one block when the device finishes, so devices scanned in
+        parallel do not interleave their detail line by line.
         """
         ip = dev['ip']
         instance = dev.get('instance')
         if instance is None:
             return
 
-        # If this device was discovered behind a router, the router's IP is
-        # still where we send UDP — but the NPDU must carry the MSTP route.
         dnet = dev.get('source_network')
         dadr = dev.get('source_address')
         route_suffix = (f" (MSTP net={dnet} mac={dadr})"
                         if dnet is not None else "")
         self._log(f"  Deep scan device {instance} at {ip}{route_suffix}...")
+        if not buffered:
+            self._deep_read_device(client, dev)
+            return
+        self._tls.buffer = [f"  Device {instance} at {ip}{route_suffix}:"]
+        try:
+            self._deep_read_device(client, dev)
+        finally:
+            lines, self._tls.buffer = self._tls.buffer, None
+            with self._log_lock:
+                for line in lines:
+                    self._emit_log(line)
+
+    def _deep_read_device(self, client: BACnetClient, dev: dict[str, Any]) -> None:
+        ip = dev['ip']
+        instance = dev['instance']
+        # If this device was discovered behind a router, the router's IP is
+        # still where we send UDP — but the NPDU must carry the MSTP route.
+        dnet = dev.get('source_network')
+        dadr = dev.get('source_address')
 
         # Device-level properties (uses RPM if supported)
         try:
@@ -1108,7 +1437,8 @@ class ScanEngine:
                 break
             obj_type_str = str(obj_type)
             point = {'type': obj_type_str, 'instance': int(obj_inst),
-                     'name': '', 'present_value': '', 'units': '', 'description': ''}
+                     'name': '', 'present_value': '', 'units': '', 'description': '',
+                     'status': ''}
             for key, val in raw.items():
                 if key == 'units':
                     # BACnet units enum → label. Anything weird gets stringified.
@@ -1117,22 +1447,49 @@ class ScanEngine:
                     else:
                         point['units'] = _safe_str(val)
                 elif key == 'presentValue':
-                    point['present_value'] = _format_present_value(val)
+                    # BACnetBinaryPV is an enumeration: 0 inactive, 1 active.
+                    # Shown as a bare 0/1 it reads like an analog value.
+                    if (obj_type_str.startswith('Binary') and isinstance(val, int)
+                            and not isinstance(val, bool) and val in (0, 1)):
+                        point['present_value'] = ('inactive', 'active')[val]
+                    else:
+                        point['present_value'] = _format_present_value(val)
                 elif key == 'objectName':
                     point['name'] = _safe_str(val)
                 elif key == 'description':
                     point['description'] = _safe_str(val)
+                elif key == 'statusFlags':
+                    point['status'] = ", ".join(_status_flags(val))
                 # Any other returned property is intentionally dropped from
                 # the point row — we don't want it spilling into labeled slots.
+            # Multi-state values are 1-based indexes into stateText.
+            states = raw.get('stateText')
+            pv = raw.get('presentValue')
+            if (states and isinstance(pv, int) and not isinstance(pv, bool)
+                    and 1 <= pv <= len(states)):
+                point['present_value'] = _safe_str(states[pv - 1]) or str(pv)
+                point['state_number'] = pv
             objects.append(point)
-            self.result.counts['points'] += 1
+        self._add_points(len(objects))
 
         props['object_list'] = objects
         dev['properties'] = props
         dev['objects'] = objects
-        self._log(f"    Read {len(objects)} points from device {instance}")
+        flagged = {f: sum(1 for o in objects if f in o.get('status', ''))
+                   for f in STATUS_FLAG_NAMES}
+        flagged = {f: n for f, n in flagged.items() if n}
+        if flagged:
+            dev['point_flags'] = flagged
+        note = ("; " + ", ".join(f"{n} {f}" for f, n in flagged.items())) if flagged else ""
+        self._log(f"    Read {len(objects)} points from device {instance}{note}")
 
     # -- Modbus ---------------------------------------------------------
+
+    def _all_targets(self) -> str:
+        """Every target as one spec. The sweeps used to run once per target
+        token, so twenty single hosts typed into the target box meant twenty
+        separate sweeps, each with its own thread pool and its own wait."""
+        return ", ".join(self.opts.networks)
 
     def _scan_modbus(self) -> None:
         self._log("\n" + "=" * 65)
@@ -1141,43 +1498,56 @@ class ScanEngine:
 
         scanner = ModbusScanner(callback=self.callback,
                                 timeout=min(self.opts.timeout, 2.0))
+        targets = self._all_targets()
+        self._log(f"\nModbus scan: {targets}")
+        devices = scanner.scan_network(
+            targets,
+            max_workers=self.opts.modbus_workers,
+            stop_event=self.stop_event,
+            progress=lambda done, total: self._progress("Modbus TCP", done, total),
+        )
 
-        for network in self.opts.networks:
+        for n, dev in enumerate(devices, 1):
             if self._stopped():
                 break
-            self._log(f"\nModbus scan: {network}")
-            devices = scanner.scan_network(
-                network,
-                max_workers=self.opts.modbus_workers,
+            dev['protocol'] = 'Modbus TCP'
+            dev['instance'] = dev.get('unit_id')
+
+            if self.opts.deep_scan:
+                self._log(f"  Reading registers from {dev['ip']} unit={dev['unit_id']}...")
+                try:
+                    dev.update(scanner.read_points(dev['ip'], dev['port'], dev['unit_id']))
+                    self._add_points(len(dev.get('holding_registers', []))
+                                     + len(dev.get('input_registers', []))
+                                     + len(dev.get('coils', [])))
+                except Exception as e:
+                    log.debug("modbus deep read failed: %s", e)
+
+            self.result.devices.append(dev)
+            self.result.counts['modbus'] += 1
+            self._emit_device(dev)
+
+    # -- APOGEE P2 ------------------------------------------------------
+
+    def _scan_p2(self) -> None:
+        self._log("\n" + "=" * 65)
+        self._log("SIEMENS APOGEE P2 DISCOVERY")
+        self._log("=" * 65)
+        scanner = P2Scanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
+        bacnet_ips = {d.get('ip') for d in self.result.devices
+                      if str(d.get('protocol', '')).startswith('BACnet')}
+        for dev in scanner.scan_network(
+                self._all_targets(), max_workers=self.opts.modbus_workers,
                 stop_event=self.stop_event,
-            )
-
-            for dev in devices:
-                if self._stopped():
-                    break
-                dev['protocol'] = 'Modbus TCP'
-                dev['instance'] = dev.get('unit_id')
-
-                if self.opts.deep_scan:
-                    self._log(f"  Reading registers from {dev['ip']} unit={dev['unit_id']}...")
-                    try:
-                        dev['holding_registers'] = scanner.read_registers(
-                            dev['ip'], dev['port'], dev['unit_id'], 0, 50, 3)
-                        dev['input_registers'] = scanner.read_registers(
-                            dev['ip'], dev['port'], dev['unit_id'], 0, 50, 4)
-                        dev['coils'] = scanner.read_coils(
-                            dev['ip'], dev['port'], dev['unit_id'], 0, 16)
-                        self.result.counts['points'] += (
-                            len(dev.get('holding_registers', []))
-                            + len(dev.get('input_registers', []))
-                            + len(dev.get('coils', []))
-                        )
-                    except Exception as e:
-                        log.debug("modbus deep read failed: %s", e)
-
-                self.result.devices.append(dev)
-                self.result.counts['modbus'] += 1
-                self._emit_device(dev)
+                progress=lambda done, total: self._progress("APOGEE P2", done, total)):
+            if self._stopped():
+                break
+            if dev['p2_role'] == 'field panel' and dev['ip'] not in bacnet_ips:
+                self._log(f"    {dev['ip']} speaks P2 and not BACnet/IP: an APOGEE "
+                          f"panel on firmware 2.x (3.x adds BACnet/IP).")
+            self.result.devices.append(dev)
+            self.result.counts['p2'] += 1
+            self._emit_device(dev)
 
     # -- Services -------------------------------------------------------
 
@@ -1188,22 +1558,20 @@ class ScanEngine:
 
         scanner = HVACServiceScanner(callback=self.callback,
                                      timeout=min(self.opts.timeout, 2.0))
-
-        for network in self.opts.networks:
+        targets = self._all_targets()
+        self._log(f"\nService scan: {targets}")
+        services = scanner.scan_network(
+            targets,
+            max_workers=self.opts.service_workers,
+            stop_event=self.stop_event,
+            progress=lambda done, total: self._progress("Services", done, total),
+        )
+        for svc in services:
             if self._stopped():
                 break
-            self._log(f"\nService scan: {network}")
-            services = scanner.scan_network(
-                network,
-                max_workers=self.opts.service_workers,
-                stop_event=self.stop_event,
-            )
-            for svc in services:
-                if self._stopped():
-                    break
-                self.result.devices.append(svc)
-                self.result.counts['services'] += 1
-                self._emit_device(svc)
+            self.result.devices.append(svc)
+            self.result.counts['services'] += 1
+            self._emit_device(svc)
 
     # -- SNMP -----------------------------------------------------------
 
@@ -1214,38 +1582,47 @@ class ScanEngine:
 
         scanner = SNMPScanner(callback=self.callback,
                               timeout=min(self.opts.timeout, 2.0))
+        targets = self._all_targets()
+        self._log(f"\nSNMP scan: {targets}")
+        snmp_devs = scanner.scan_network(
+            targets,
+            stop_event=self.stop_event,
+            communities=self.opts.snmp_communities or ["public"],
+            progress=lambda done, total: self._progress("SNMP", done, total),
+        )
 
-        for network in self.opts.networks:
+        for dev in snmp_devs:
             if self._stopped():
                 break
-            self._log(f"\nSNMP scan: {network}")
-            snmp_devs = scanner.scan_network(
-                network,
-                max_workers=self.opts.snmp_workers,
-                stop_event=self.stop_event,
-            )
-
-            for dev in snmp_devs:
-                if self._stopped():
+            dev['protocol'] = 'SNMP'
+            dev['vendor'] = ''
+            dev['product'] = dev.get('sys_descr', '')[:80]
+            descr = (dev.get('sys_descr') or '').lower()
+            for pattern, vendor in HTTP_FINGERPRINTS:
+                if re.search(pattern, descr):
+                    dev['vendor'] = vendor
                     break
-                dev['protocol'] = 'SNMP'
-                dev['vendor'] = ''
-                dev['product'] = dev.get('sys_descr', '')[:80]
-                descr = (dev.get('sys_descr') or '').lower()
-                for pattern, vendor in HTTP_FINGERPRINTS:
-                    if re.search(pattern, descr):
-                        dev['vendor'] = vendor
-                        break
-                self.result.devices.append(dev)
-                self.result.counts['snmp'] += 1
-                self._emit_device(dev)
+            self.result.devices.append(dev)
+            self.result.counts['snmp'] += 1
+            self._emit_device(dev)
 
     # -- final pass -----------------------------------------------------
 
     def _refingerprint(self) -> None:
         self._log("\nRe-fingerprinting devices with full service data...")
+        self._progress("Fingerprinting", 0, len(self.result.devices))
+        # Index services by IP once. Passing the whole device list made each
+        # device scan every other device: quadratic, and noticeable on a
+        # campus-sized result.
+        services_by_ip: dict[str, list[dict[str, Any]]] = {}
+        for d in self.result.devices:
+            if d.get('protocol') == 'Service':
+                services_by_ip.setdefault(d.get('ip'), []).append(d)
         for dev in self.result.devices:
-            dev['_fingerprint'] = fingerprint_device(dev, self.result.devices)
+            dev['_fingerprint'] = fingerprint_device(
+                dev, services_by_ip.get(dev.get('ip'), []))
+        self._progress("Fingerprinting", len(self.result.devices),
+                       len(self.result.devices))
         self._log("  Fingerprinting complete")
 
 
@@ -1254,6 +1631,29 @@ class ScanEngine:
 # ---------------------------------------------------------------------------
 
 _MAX_CELL_LEN = 200  # cap any single cell so one rogue value can't eat the UI
+
+# BACnetStatusFlags, in bit order (ASHRAE 135 clause 21).
+STATUS_FLAG_NAMES = ('in-alarm', 'fault', 'overridden', 'out-of-service')
+
+
+def _status_flags(val: Any) -> list[str]:
+    """Names of the set flags in a statusFlags BIT STRING.
+
+    The codec hands bit strings over as hex of their contents: one octet
+    giving the number of unused trailing bits, then the bits, most
+    significant first. Anything unexpected yields no flags rather than a
+    guess.
+    """
+    if not isinstance(val, str):
+        return []
+    try:
+        data = bytes.fromhex(val)
+    except ValueError:
+        return []
+    if len(data) < 2:
+        return []
+    bits = data[1]
+    return [name for i, name in enumerate(STATUS_FLAG_NAMES) if bits & (0x80 >> i)]
 
 
 def _safe_str(val: Any) -> str:

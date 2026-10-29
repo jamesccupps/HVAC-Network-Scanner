@@ -12,11 +12,44 @@
 # zero-dependency property of the package itself is unaffected.
 
 import os
+import re
 
 block_cipher = None
 
 # The spec runs with CWD at the project root when invoked as documented.
 project_root = os.path.abspath(os.getcwd())
+
+with open(os.path.join(project_root, 'hvac_scanner', '__init__.py'), encoding='utf-8') as f:
+    VERSION = re.search(r'__version__ = "([^"]+)"', f.read()).group(1)
+
+
+def _version_info():
+    """File properties (Details tab) for the exe: product name, version,
+    copyright. Unsigned binaries with blank properties look even less
+    trustworthy than unsigned ones with them filled in."""
+    try:
+        from PyInstaller.utils.win32.versioninfo import (
+            FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+            VarFileInfo, VarStruct, VSVersionInfo)
+    except ImportError:
+        return None
+    nums = tuple(int(x) for x in (VERSION.split('.') + ['0'] * 4)[:4])
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=nums, prodvers=nums),
+        kids=[
+            StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'James Cupps'),
+                StringStruct('FileDescription', 'HVAC Network Scanner'),
+                StringStruct('FileVersion', VERSION),
+                StringStruct('InternalName', 'HVACNetworkScanner'),
+                StringStruct('LegalCopyright', 'MIT License'),
+                StringStruct('OriginalFilename', 'HVACNetworkScanner.exe'),
+                StringStruct('ProductName', 'HVAC Network Scanner'),
+                StringStruct('ProductVersion', VERSION),
+            ])]),
+            VarFileInfo([VarStruct('Translation', [1033, 1200])]),
+        ],
+    )
 
 a = Analysis(
     [os.path.join(project_root, 'packaging', 'gui_entry.py')],
@@ -37,9 +70,14 @@ a = Analysis(
         'hvac_scanner.engine',
         'hvac_scanner.fingerprint',
         'hvac_scanner.gui',
+        'hvac_scanner.icon',
         'hvac_scanner.modbus',
         'hvac_scanner.netrange',
+        'hvac_scanner.netsweep',
+        'hvac_scanner.p2',
+        'hvac_scanner.report',
         'hvac_scanner.services',
+        'hvac_scanner.settings',
         'hvac_scanner.snmp',
     ],
     hookspath=[],
@@ -83,4 +121,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Regenerate with packaging/make_icon.py if the drawing changes.
+    icon=os.path.join(project_root, 'packaging', 'hvac_scanner.ico'),
+    version=_version_info(),
 )

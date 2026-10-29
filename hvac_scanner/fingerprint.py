@@ -275,6 +275,19 @@ def fingerprint_device(dev: dict[str, Any],
             info['device_type'] = 'Automation Station'
             info['description'] = 'Siemens controller identified by Nucleus RTOS FTP server'
 
+    # --- Siemens APOGEE P2 --------------------------------------------
+    elif protocol == 'APOGEE P2':
+        if dev.get('p2_role') == 'field panel':
+            info['model'] = 'Siemens APOGEE field panel (P2)'
+            info['device_type'] = 'Field Panel'
+            info['description'] = ('APOGEE panel speaking P2 over Ethernet (firmware 2.x '
+                                   'PXC/MBC/MEC class); not reachable over BACnet/IP until '
+                                   'upgraded to firmware 3.x')
+        else:
+            info['model'] = 'Siemens P2 supervisor (Desigo CC / Insight)'
+            info['device_type'] = 'Management Station'
+            info['description'] = 'Management station accepting P2 connections from APOGEE panels'
+
     # --- SNMP devices -------------------------------------------------
     elif protocol == 'SNMP':
         descr = (dev.get('sys_descr') or '').lower()

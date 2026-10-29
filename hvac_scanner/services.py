@@ -8,23 +8,58 @@ vendor/product info via banner grabs and protocol-specific handshakes.
 from __future__ import annotations
 
 import http.client
-import ipaddress
 import logging
 import re
 import socket
 import ssl
 import struct
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import warnings
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, Callable, Optional
 
+from . import __version__
 from .certs import parse_der_certificate
 from .constants import HTTP_FINGERPRINTS, HVAC_TCP_PORTS, PORT_TO_SERVICE
+from .netsweep import tcp_sweep
 
 log = logging.getLogger(__name__)
 
 # Ports we explicitly skip here - handled by their own scanners
 _SKIP_PORTS = {47808, 502}
+
+# Hosts identified concurrently after the sweep. Each host's own ports are
+# probed one after another: an embedded web server often serves a single
+# connection at a time.
+_IDENTIFY_WORKERS = 16
+
+
+def _tls_context() -> ssl.SSLContext:
+    """A client context that will talk to old building-automation gear.
+
+    Python's default context refuses TLS 1.0/1.1 and the ciphers that go with
+    them, and a lot of installed BAS hardware — older JACEs, supervisory
+    controllers on original firmware — offers nothing newer, so the probe
+    failed the handshake and reported an HTTPS port with no banner and no
+    certificate. This probe reads a public banner and certificate and sends
+    nothing secret, so accepting a weak handshake costs nothing; it is never
+    used for anything else.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1
+    except (ValueError, AttributeError):
+        pass
+    try:
+        ctx.set_ciphers('DEFAULT:@SECLEVEL=0')
+    except ssl.SSLError:
+        pass
+    return ctx
 
 
 class HVACServiceScanner:
@@ -44,7 +79,9 @@ class HVACServiceScanner:
             log.exception("log callback failed")
 
     def scan_network(self, network_cidr: str, ports: Optional[list[int]] = None,
-                     max_workers: int = 80, stop_event=None) -> list[dict[str, Any]]:
+                     max_workers: int = 256, stop_event=None,
+                     progress: Optional[Callable[[int, int], None]] = None
+                     ) -> list[dict[str, Any]]:
         self.services = []
         ports = [p for p in (ports or HVAC_TCP_PORTS) if p not in _SKIP_PORTS]
         if not ports:
@@ -62,41 +99,47 @@ class HVACServiceScanner:
             return []
 
         self._log(f"Scanning {len(hosts)} hosts x {len(ports)} HVAC service ports...")
-        targets = [(ip, p) for ip in hosts for p in ports]
 
-        def probe(target):
-            if stop_event and stop_event.is_set():
-                return None
-            ip, port = target
-            try:
-                with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-                    s.settimeout(self.timeout)
-                    if s.connect_ex((ip, port)) == 0:
-                        return (ip, port)
-            except OSError:
-                pass
-            return None
+        def on_open(ip: str, port: int) -> None:
+            svc_name = PORT_TO_SERVICE.get((port, "tcp"), f"TCP/{port}")
+            self._log(f"  {ip}:{port} - {svc_name}")
 
-        open_services: list[tuple[str, int, str]] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(probe, t) for t in targets]
-            for f in as_completed(futures):
+        # Port-major: each host sees one connection attempt at a time.
+        found = tcp_sweep(((ip, p) for p in ports for ip in hosts),
+                          total=len(hosts) * len(ports),
+                          # A LAN answers a SYN in milliseconds; the full probe
+                          # timeout is for the banner exchange afterwards.
+                          timeout=min(self.timeout, 1.0),
+                          concurrency=max_workers, stop_event=stop_event,
+                          on_open=on_open, progress=progress)
+        self._log(f"  Found {len(found)} open HVAC service port(s)")
+        if stop_event and stop_event.is_set():
+            return []
+
+        # Identify in host order, ports ascending, so results read naturally.
+        rank = {ip: i for i, ip in enumerate(hosts)}
+        by_host: "OrderedDict[str, list[int]]" = OrderedDict()
+        for ip, port in sorted(found, key=lambda t: (rank.get(t[0], 0), t[1])):
+            by_host.setdefault(ip, []).append(port)
+
+        def identify_host(item: tuple[str, list[int]]) -> list[dict[str, Any]]:
+            ip, host_ports = item
+            out = []
+            for port in host_ports:
                 if stop_event and stop_event.is_set():
                     break
-                result = f.result()
-                if result:
-                    ip, port = result
-                    svc_name = PORT_TO_SERVICE.get((port, "tcp"), f"TCP/{port}")
-                    open_services.append((ip, port, svc_name))
-                    self._log(f"  {ip}:{port} - {svc_name}")
+                svc_name = PORT_TO_SERVICE.get((port, "tcp"), f"TCP/{port}")
+                try:
+                    out.append(self._identify(ip, port, svc_name))
+                except Exception:
+                    log.exception("identifying %s:%d failed", ip, port)
+            return out
 
-        self._log(f"  Found {len(open_services)} open HVAC service port(s)")
-
-        for ip, port, svc_name in open_services:
-            if stop_event and stop_event.is_set():
-                break
-            info = self._identify(ip, port, svc_name)
-            self.services.append(info)
+        if by_host:
+            with ThreadPoolExecutor(max_workers=min(_IDENTIFY_WORKERS, len(by_host)),
+                                    thread_name_prefix="svc-id") as pool:
+                for infos in pool.map(identify_host, by_host.items()):
+                    self.services.extend(infos)
 
         self._log(f"Identified {len(self.services)} HVAC service(s)")
         return self.services
@@ -144,13 +187,11 @@ class HVACServiceScanner:
         conn = None
         try:
             if use_ssl:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                conn = http.client.HTTPSConnection(ip, port, timeout=self.timeout, context=ctx)
+                conn = http.client.HTTPSConnection(ip, port, timeout=self.timeout,
+                                                   context=_tls_context())
             else:
                 conn = http.client.HTTPConnection(ip, port, timeout=self.timeout)
-            conn.request("GET", "/", headers={"User-Agent": "HVAC-Scanner/2.0"})
+            conn.request("GET", "/", headers={"User-Agent": f"HVAC-Scanner/{__version__}"})
 
             # Capture the certificate before reading the response. The probe
             # already establishes TLS and threw this away; BAS controllers put
