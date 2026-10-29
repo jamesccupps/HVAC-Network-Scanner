@@ -219,11 +219,11 @@ project's MIT license.
   (vendor EULAs) and because it creates liability exposure for
   anyone using the tool.
 - Integrations with non-BACnet / non-Modbus protocols that would
-  significantly expand the scanner's scope. This is a BACnet and
-  Modbus TCP inventory tool. Requests for Siemens APOGEE P2, JCI N2,
-  or other proprietary protocols should go to tools specifically
-  designed for those protocols (e.g. PurpleSwift BACnetP2 for
-  Siemens APOGEE integration).
+  significantly expand the scanner's scope beyond inventory. Detecting
+  and identifying proprietary-protocol gear is on the
+  [roadmap](ROADMAP.md) — Siemens APOGEE (P2) panels first — but full
+  integration with APOGEE P2, JCI N2 or similar belongs in tools built
+  for those protocols (e.g. PurpleSwift BACnetP2 for APOGEE).
 - Features that require users to disable safety mechanisms (e.g.
   "scan without any rate limiting at all") without a clear,
   documented use case.

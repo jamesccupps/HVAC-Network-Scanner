@@ -17,17 +17,8 @@ from hvac_scanner.engine import ScanOptions
 
 
 @pytest.fixture
-def app():
-    from hvac_scanner.gui import HVACNetworkScannerGUI
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:            # no display
-        pytest.skip(f"no Tk display available: {e}")
-    root.withdraw()
-    try:
-        yield HVACNetworkScannerGUI(root)
-    finally:
-        root.destroy()
+def app(gui_app):
+    return gui_app
 
 
 def test_rate_limit_field_exists(app):
