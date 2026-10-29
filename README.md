@@ -16,11 +16,13 @@ Scans a network and tells you what building-automation gear lives on it. For eac
 
 Works against:
 
-- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions.
+- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions. Reaches other subnets and VLANs by unicast discovery or through a BBMD.
 - **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs.
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
 - **HVAC services** — Niagara Fox, OPC UA, Siemens S7, EtherNet/IP CIP, KNXnet/IP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
 - **SNMP v1/v2c** — raw UDP `sysDescr` probe, no pysnmp dependency.
+- **Siemens APOGEE P2** — detects firmware 2.x APOGEE field panels and P2
+  supervisors on TCP/5033 without registering on them (see below).
 
 Model identification combines signals from multiple protocols:
 
@@ -59,14 +61,21 @@ so future users can benefit from verified classification.
 
 **Known out-of-scope:**
 
-- Panels running proprietary firmware that doesn't include BACnet/IP.
-  For example, Siemens APOGEE PXC panels running firmware revision 2.x
-  speak Apogee P2 Ethernet rather than BACnet/IP. These panels may have
-  IP addresses and be actively managed by Siemens Desigo CC, but they
-  don't answer BACnet/IP. The same hardware upgraded to firmware
-  revision 3.x or later would be scannable. If you're affected, check
-  with your Siemens representative about a firmware upgrade path — or
-  use commercial P2 gateways like PurpleSwift BACnetP2 for integration.
+- Reading points from panels running proprietary firmware without
+  BACnet/IP. Siemens APOGEE PXC panels on firmware revision 2.x speak P2
+  rather than BACnet/IP: the scanner **detects** them (and P2 supervisors)
+  and tells you so, but does not read their points — that needs a P2
+  session with the site's BLN name, which registers the client on the
+  panel. For that, use the
+  [P2 scanner](https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner),
+  a commercial gateway such as PurpleSwift BACnetP2, or upgrade the panels
+  to firmware 3.x, which speaks BACnet/IP.
+
+  How detection works: each host with TCP/5033 open gets one well-formed P2
+  identify frame carrying a BLN name no site uses. A field panel resets the
+  connection at its access gate, a supervisor listener closes it, both
+  before any processing and without writing to the node table. One
+  attempt, one fixed name — not a handshake and not BLN-name guessing.
 - Proprietary BMS protocols that are not BACnet or Modbus TCP
   (JCI N2, LonTalk, Honeywell C-Bus, various others).
 
@@ -87,12 +96,30 @@ python -m hvac_scanner.cli --help
 
 Requires Python 3.10 or newer. No extra packages.
 
+### Try it without a building
+
+`tools/sim_site.py` stands up a small simulated site on loopback addresses —
+a Trane SC+, Siemens PXC and DXR2 controllers, an MS/TP router with three
+JCI field controllers behind it, a workstation that rejects
+ReadPropertyMultiple, Modbus meters and a gateway, an APOGEE P2 panel and
+supervisor, a Niagara JACE with SNMP
+and Fox, and web UIs. Real sockets on the real ports, so the whole scanner
+runs against it:
+
+```bash
+python tools/sim_site.py            # leave running
+python -m hvac_scanner              # scan 127.0.0.2-30 in the GUI
+```
+
+The screenshot above was taken against it. Windows and Linux only (macOS
+needs loopback aliases); ports below 1024 need root on Linux.
+
 ### Standalone executable
 
 For a Windows machine without Python — an engineering workstation you would
 rather not install anything on — grab `HVACNetworkScanner.exe` from the
 [latest release](https://github.com/jamesccupps/HVAC-Network-Scanner/releases).
-One file, no installer, no runtime.
+One ~13 MB file, no installer, no runtime.
 
 To build it yourself:
 
@@ -132,17 +159,37 @@ the same spec file CI uses.
 python -m hvac_scanner
 ```
 
-Enter one or more CIDR networks (comma-separated), pick which protocols to scan, click **SCAN**. Devices populate into tabs:
+Type the network(s) to scan, tick the protocols, press **Scan** (or
+Ctrl+Enter). Results appear as each device finishes, not at the end:
 
-- **All Devices** — cross-protocol table with identified model, vendor, web UI URL, default credentials, and description. Right-click for open-web-UI, copy-IP, copy-creds, ping, and a full details popup.
-- **BACnet Points** — per-device object lists with present values and units.
-- **Modbus Registers** — holding / input / coil reads.
-- **Services** — discovered TCP service ports with banners and page titles.
-- **Raw JSON** — the full scan result, ready to copy or export.
+- **Devices** — one row per device across protocols: address, the device's
+  own name, model, vendor, type, web UI and the factory-default credentials
+  for that product. Select a row for everything the scan learned about it in
+  the details panel; double-click it (or **Show points**) to list its points.
+  Right-click for web UI, copy, ping.
+- **BACnet Points** — every object read, with present value, engineering
+  units and status. Points in alarm or fault are red, overridden or out of
+  service amber, and multi-state values read as their state text
+  ("Occupied"). Double-click a point for its full name and description.
+- **Modbus Registers**, **Services** (open ports, banners, page titles, TLS
+  certificates) and **Raw JSON**.
 
-Click column headers to sort. IP addresses sort numerically by octet, not lexicographically.
+The filter box (Ctrl+F) narrows every tab at once — type `vav` or a device
+name or an IP. Column headers sort; IP addresses sort numerically. Ctrl+C
+copies the selected rows as tab-separated text that pastes straight into a
+spreadsheet.
 
-Export to CSV or JSON with the **EXPORT** button.
+**Export** writes a **survey report** (HTML — findings, inventory and open
+services in one file you can hand to the building owner), the device list
+(CSV), a **point list** (CSV, one row per point and register — the thing you
+take away from a site survey), the full results (JSON, also Ctrl+S) or a
+classification report. **Compare** diffs this
+scan against an earlier JSON export.
+
+**Advanced** holds the timeout, the per-device rate limit (use 20-50 ms on
+sites with small field controllers), parallel deep scans, unicast discovery,
+BBMD registration, broadcast override, Who-Is chunking, an object cap and
+SNMP communities. Everything you set is remembered for next time.
 
 ### Target syntax
 
@@ -187,6 +234,19 @@ python -m hvac_scanner.cli 10.0.0.2-100
 # Target specific devices only (no scan sweep at all):
 python -m hvac_scanner.cli 10.0.0.19,10.0.0.21,10.0.0.192
 
+# The BAS is on its own VLAN and broadcasts do not reach it: ask each
+# address directly (this happens automatically for non-local subnets)
+python -m hvac_scanner.cli 10.50.20.0/24 --unicast always
+
+# Several SNMP communities, tried in turn
+python -m hvac_scanner.cli 10.0.0.0/24 --snmp-community public --snmp-community bas
+
+# Survey report and point list for the building owner
+python -m hvac_scanner.cli 10.0.0.0/24 --html survey.html --points-csv points.csv
+
+# ...or build the report later from a saved scan
+python -m hvac_scanner.report scan.json -o survey.html
+
 # Power-user: override the auto-computed broadcast
 python -m hvac_scanner.cli 10.0.0.0/24 --broadcast 255.255.255.255
 
@@ -207,22 +267,82 @@ Exit codes:
 - `2` — interrupted (SIGINT)
 - `3` — internal error
 
-## What's new in v2.6
+## What's new in v2.7
 
-### v2.6.0 (2026-08-19)
+A review-and-polish release. Highlights; the full list is in
+[CHANGELOG.md](CHANGELOG.md).
 
-- **TLS certificates are captured on HTTPS probes.** The scan already
-  established TLS to every 443/8443 and discarded the certificate. BAS
-  controllers put the product line and often the panel name in the subject CN,
-  and the expiry date is worth knowing on its own. Reported in the JSON, as a
-  CSV column, and as a scan-log warning when a certificate is expired or
-  inside 30 days. Self-signed is flagged, since that is the norm here and it
-  means the CN is self-asserted.
-- **A Windows executable.** One ~14 MB `HVACNetworkScanner.exe`, no Python
-  install required — see [Standalone executable](#standalone-executable).
+**Correctness**
 
-Earlier releases are in [CHANGELOG.md](CHANGELOG.md), which covers every
-version back to v1.
+- **Engineering units were wrong for most point types.** A humidity sensor
+  showed "W", a CO2 sensor "kPa-alt", an energy meter "kPa"; duct static,
+  psi, gpm and kW had no label at all. The table is now the full
+  BACnetEngineeringUnits enumeration. Object types 32-62 (Integer Value,
+  Large Analog Value, Network Port, ...) were missing or off by one.
+- **Devices relayed by a BBMD were put at the BBMD's address**, so the deep
+  scan asked the wrong host. They are now attributed to their own address.
+- **Modbus no longer reports phantom devices.** A gateway's "no device at
+  this unit" exception counted as a device, and a meter that answers every
+  unit ID was listed nine times.
+- MS/TP devices found by the global Who-Is are labelled and counted as MS/TP.
+  Binary points read active/inactive. Older HTTPS gear (TLS 1.0/1.1) now
+  yields its banner and certificate.
+
+**Speed** — about twice as fast end to end on the bundled simulated site (28 s
+to 15 s). Sweeps of real subnets, where every empty address costs a
+timeout, gain more:
+
+- BACnet devices are deep-scanned in parallel (4 at a time by default),
+  without any one controller or MS/TP trunk seeing more than one request.
+- The Modbus and service sweeps use an asyncio connect sweep, port-major so
+  each host sees one connection attempt at a time; SNMP sends to every host
+  from one socket and waits once.
+
+**New**
+
+- **Unicast discovery** finds controllers on other subnets and VLANs, where
+  a Who-Is broadcast never arrives.
+- **A rebuilt GUI**: live summary and progress, a filter across every tab, a
+  device details panel, point-list export, remembered settings, keyboard
+  shortcuts, and an icon.
+- **Point status**: points in alarm, fault, overridden or out of service
+  are flagged, and multi-state values read as their state text.
+- **An HTML survey report**: findings ranked by severity (default
+  credentials on a reachable login, cleartext logins, SNMP defaults,
+  certificates, flagged points), the inventory and open services, in one
+  file for the building owner.
+- A point-list CSV export, multiple SNMP communities, `--version`, and a
+  hint when nothing answers (usually Windows Firewall, or a VLAN boundary).
+- `tools/sim_site.py`, a simulated site to try the scanner on, which the
+  end-to-end tests also run against.
+
+- **Siemens APOGEE P2 detection**: firmware 2.x panels and P2 supervisors
+  are found on TCP/5033 and identified, without a handshake and without
+  registering on them, so an APOGEE building no longer looks empty.
+
+Up next is in [ROADMAP.md](ROADMAP.md).
+
+## Troubleshooting
+
+**Nothing answers on BACnet.** On Windows, check Windows Defender Firewall
+allows the scanner (python.exe or HVACNetworkScanner.exe) inbound UDP 47808:
+replies to a broadcast come from addresses the scanner never sent to, and the
+firewall drops them unless the program is allowed. Accept the prompt the first
+time it runs, or add it under *Allow an app through firewall*.
+
+**The controllers are on another subnet or VLAN.** A broadcast does not cross
+a router. Unicast discovery handles this automatically for targets that are
+not on a local /24; set it to `always` (Advanced, or `--unicast always`) to
+force it, or register with a BBMD to reach MS/TP devices behind remote
+routers too. UDP 47808 has to be routed between the two networks either way.
+
+**Siemens APOGEE panels don't show up on BACnet.** Firmware 2.x panels speak
+P2, not BACnet/IP. Keep *APOGEE P2* ticked and they are detected on TCP/5033
+and listed as such; reading their points needs a P2 tool (see *Known
+out-of-scope* above).
+
+**Small controllers misbehave during a scan.** Set a rate limit of 20-50 ms
+and lower Parallel devices to 1.
 
 ## Safety and legal
 
@@ -236,45 +356,40 @@ The default-credentials database reflects the factory defaults published in each
 hvac_scanner/
 ├── constants.py       # Vendor DB, BACnet units, object types, HVAC ports
 ├── codec.py           # Pure-function BACnet packet encode/decode
-├── bacnet.py          # UDP transport, socket reuse, RPM, deep-scan
-├── modbus.py          # Modbus TCP sweep + register reads
-├── services.py        # TCP port scan + protocol-specific probes
-├── snmp.py            # Raw UDP SNMP sysDescr probe
+├── bacnet.py          # UDP transport: shared socket, concurrent requests, RPM, unicast discovery
+├── modbus.py          # Modbus TCP: per-host sessions, unit-ID probing, register reads
+├── services.py        # TCP service probes, banners, TLS certificates
+├── snmp.py            # Raw UDP SNMP sysDescr fan-out
+├── netsweep.py        # asyncio TCP connect sweep shared by Modbus, P2 and services
+├── p2.py              # Siemens APOGEE P2 detection (registration-free probe)
 ├── fingerprint.py     # Cross-protocol model identification
 ├── device_profiles.py # Per-vendor enumeration caps + scan-depth presets
 ├── netrange.py        # Target syntax: CIDR, ranges, host lists
 ├── engine.py          # ScanEngine orchestrator + result/export
 ├── certs.py           # Minimal X.509 parsing for HTTPS probes
 ├── diff.py            # Baseline comparison (what changed since last scan)
+├── report.py          # HTML survey report (findings, inventory, services)
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
+├── settings.py        # Remembered GUI settings
+├── icon.py            # The app icon, drawn in code
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
-tests/                               # 502 tests
-├── test_codec.py                    # BACnet packet encode/decode + parser regressions
-├── test_bacnet_client.py            # Socket / invoke-id filtering, RPM gap filling
-├── test_modbus.py                   # Modbus framing, MBAP reassembly, device ID
-├── test_snmp.py                     # SNMP BER encode/decode
-├── test_rpm_batching.py             # Array-index RPM enumeration
-├── test_point_batching.py           # Multi-object RPM point reads
-├── test_bbmd.py                     # Foreign Device registration
-├── test_certs.py                    # X.509 parsing, expiry, malformed input
-├── test_diff.py                     # Baseline comparison
-├── test_streaming.py                # Live results during a scan
-├── mock_device.py                   # UDP BACnet device for the tests
-├── mock_bbmd.py                     # UDP BBMD for the tests
-├── test_services_probes.py          # CIP and S7 request wire formats
-├── test_engine.py                   # Orchestration, sampling strategy, result shaping
-├── test_device_profiles.py          # Vendor caps, scan depth, --max-objects override
-├── test_fingerprint.py              # Model ID, vendor registry agreement, credentials
-├── test_netrange.py                 # Target syntax, host limits, lazy iteration
-├── test_target_filtering.py         # I-Am filtering and deduplication
-├── test_mstp_routing.py             # DNET/DADR routing across BACnet routers
-├── test_auto_broadcast.py           # Broadcast address heuristic
-├── test_property_per_type.py        # Per-object-type property selection
-├── test_validate_point_property.py  # Per-property type validation
-├── test_classification_report.py    # Classification report export
+tools/
+├── sim_site.py        # Simulated BAS site on loopback (tests, demos, screenshots)
+└── gui_demo.py        # Drive the GUI through a simulated scan and screenshot it
+
+packaging/             # PyInstaller spec, icon, entry point for the Windows exe
+
+tests/                 # 590 tests
+├── test_e2e_site.py   # The whole engine against the simulated site
+├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
+├── test_codec.py      # BACnet packet encode/decode + parser regressions
+├── test_bacnet_client.py, test_rpm_batching.py, test_point_batching.py,
+├── test_bbmd.py, test_mstp_routing.py, test_target_filtering.py, ...
+├── test_modbus.py, test_snmp.py, test_certs.py, test_services_probes.py
+├── test_engine.py, test_streaming.py, test_diff.py, test_fingerprint.py, ...
 ├── test_gui_options.py              # GUI controls reach ScanOptions (skips headless)
 ├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
@@ -289,7 +404,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[ROADMAP.md](ROADMAP.md).
 
 ## Contact
 

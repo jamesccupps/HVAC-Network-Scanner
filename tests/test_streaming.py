@@ -35,7 +35,7 @@ def loopback_engine(monkeypatch):
     def _make(**kw):
         opts = ScanOptions(networks=["127.0.0.1"], timeout=1.0,
                            scan_modbus=False, scan_services=False,
-                           scan_snmp=False, scan_mstp=False,
+                           scan_snmp=False, scan_mstp=False, scan_p2=False,
                            bacnet_broadcast="127.0.0.1", **kw)
         return opts
     return _make
@@ -106,17 +106,8 @@ tk = pytest.importorskip("tkinter")
 
 
 @pytest.fixture
-def app():
-    from hvac_scanner.gui import HVACNetworkScannerGUI
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no Tk display: {e}")
-    root.withdraw()
-    try:
-        yield HVACNetworkScannerGUI(root)
-    finally:
-        root.destroy()
+def app(gui_app):
+    return gui_app
 
 
 def _device(ip='10.0.0.19', instance=33333, points=3, protocol='BACnet/IP'):

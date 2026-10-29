@@ -134,7 +134,7 @@ class TestBacnetScanPath:
                 scan_mstp=False,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False,
+                scan_snmp=False, scan_p2=False,
                 deep_scan=False,  # skip deep scan for simplicity
             ),
             callback=lambda _m: None,
@@ -190,7 +190,7 @@ class TestDeduplicationAcrossMultipleTargets:
                 scan_mstp=False,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False,
+                scan_snmp=False, scan_p2=False,
                 deep_scan=False,
             ),
             callback=lambda _m: None,
@@ -226,7 +226,7 @@ class TestDeduplicationAcrossMultipleTargets:
         eng = ScanEngine(
             ScanOptions(networks=['10.0.0.19'], scan_bacnet=True,
                         scan_mstp=False, scan_modbus=False,
-                        scan_services=False, scan_snmp=False, deep_scan=False),
+                        scan_services=False, scan_snmp=False, scan_p2=False, deep_scan=False),
             callback=lambda _m: None,
         )
         eng.run()
@@ -262,7 +262,7 @@ class TestDeduplicationAcrossMultipleTargets:
             ScanOptions(
                 networks=['10.0.0.176', '10.0.0.201', '10.0.0.230', '10.0.0.245'],
                 scan_bacnet=True, scan_mstp=False, scan_modbus=False,
-                scan_services=False, scan_snmp=False, deep_scan=False,
+                scan_services=False, scan_snmp=False, scan_p2=False, deep_scan=False,
             ),
             callback=lambda _m: None,
         )
@@ -324,6 +324,13 @@ class TestMstpScanPath:
                     ]
                 return []
 
+            def discover_who_is_networks(self, target_ip=None, dnets=(),
+                                         extra_wait=0.0):
+                out = []
+                for dnet in dnets:
+                    out.extend(self.discover_who_is(target_ip, dnet=dnet))
+                return out
+
             def discover_routers(self, target_ip=None):
                 # Three routers on the segment; scanner filter should
                 # only consider ones within the target range.
@@ -344,7 +351,7 @@ class TestMstpScanPath:
                 scan_mstp=True,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False,
+                scan_snmp=False, scan_p2=False,
                 deep_scan=False,
             ),
             callback=lambda _m: None,

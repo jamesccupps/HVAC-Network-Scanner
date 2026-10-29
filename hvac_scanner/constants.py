@@ -18,7 +18,13 @@ BACNET_PORT = 47808
 BACNET_BVLC_TYPE = 0x81
 
 # ---------------------------------------------------------------------------
-# BACnet object types (ASHRAE 135 Table 21-1 partial)
+# BACnet object types (ASHRAE 135 clause 21, BACnetObjectType)
+#
+# Up to v2.6 this table stopped at 31 apart from three entries, and those three
+# were off by one (Network Port is 56, not 57). Integer Value, Large Analog
+# Value, CharacterString Value and the other value objects all came back as
+# "type-45" and so on, which also meant POINT_PROPERTIES_BY_TYPE never matched
+# them and they were read with the wrong property set.
 # ---------------------------------------------------------------------------
 BACNET_OBJ_TYPES = {
     0: "Analog Input", 1: "Analog Output", 2: "Analog Value",
@@ -32,46 +38,111 @@ BACNET_OBJ_TYPES = {
     23: "Accumulator", 24: "Pulse Converter",
     25: "Event Log", 26: "Global Group", 27: "Trend Log Multiple",
     28: "Load Control", 29: "Structured View",
-    30: "Access Door", 31: "Timer", 54: "Lighting Output",
-    57: "Network Port", 58: "Elevator Group", 59: "Escalator",
+    30: "Access Door", 31: "Timer", 32: "Access Credential",
+    33: "Access Point", 34: "Access Rights", 35: "Access User",
+    36: "Access Zone", 37: "Credential Data Input", 38: "Network Security",
+    39: "BitString Value", 40: "CharacterString Value",
+    41: "Date Pattern Value", 42: "Date Value",
+    43: "DateTime Pattern Value", 44: "DateTime Value",
+    45: "Integer Value", 46: "Large Analog Value",
+    47: "OctetString Value", 48: "Positive Integer Value",
+    49: "Time Pattern Value", 50: "Time Value",
+    51: "Notification Forwarder", 52: "Alert Enrollment", 53: "Channel",
+    54: "Lighting Output", 55: "Binary Lighting Output", 56: "Network Port",
+    57: "Elevator Group", 58: "Escalator", 59: "Lift",
+    60: "Staging", 61: "Audit Reporter", 62: "Audit Log",
 }
 
 # ---------------------------------------------------------------------------
-# BACnet engineering units (ASHRAE 135 Table C.1 / engineering-units enum)
-# Corrected from the original scanner:
-#   - 118 is gal/s per the standard, NOT L/min (which is 81)
-#   - Added commonly-encountered units missing from v1
+# BACnet engineering units (ASHRAE 135 clause 21, BACnetEngineeringUnits)
+#
+# Up to v2.6 most of this table was wrong: entries had been assigned by guess
+# rather than from the enumeration, so a humidity sensor (29) showed "W", a
+# CO2 sensor (96) "kPa-alt", an energy meter (19) "kPa", and duct static
+# (58), psi (56), gpm (89) and kW (48) were not in the table at all. Every
+# value below is from the standard; labels are the abbreviations a BAS
+# front end would show.
 # ---------------------------------------------------------------------------
 BACNET_UNITS = {
-    0: "sqm", 1: "sqft", 2: "mA", 3: "A", 4: "ohm",
-    5: "V", 6: "kV", 7: "MV", 8: "VA", 9: "kVA",
-    10: "MVA", 11: "VAR", 12: "kVAR", 13: "MVAR",
-    14: "degrees-phase", 15: "PF",
-    17: "psi", 18: "bar", 19: "kPa", 20: "cmH2O", 21: "inH2O",
-    22: "mmHg", 23: "centibar",
-    24: "BTU/lb", 25: "cal/g", 26: "kcal/kg", 27: "J/kg", 28: "kJ/kg",
-    29: "W", 30: "kW", 31: "MW", 32: "BTU/h",
-    33: "hp", 34: "ton", 35: "J/h", 36: "kJ/h",
-    40: "lux", 41: "fc",
-    62: "C", 63: "K", 64: "F",
-    65: "C-day", 66: "F-day",
-    67: "J", 68: "kJ", 69: "Wh", 70: "kWh",
-    71: "BTU", 72: "therm",
-    75: "L", 76: "gal", 77: "ft3", 78: "m3",
-    80: "L/s", 81: "L/min", 82: "L/h", 83: "gal/min", 84: "CFM",
-    85: "m3/h", 86: "m3/s",
-    90: "m/s", 91: "km/h", 92: "mph",
-    93: "ft/s", 94: "ft/min",
-    95: "Pa",                     # duplicates 19 conceptually but standard lists both
-    96: "kPa-alt", 97: "mmHg",    # kept for backwards compat
-    98: "%", 99: "%/s", 100: "%RH",
-    105: "mm", 106: "cm", 107: "m", 108: "in", 109: "ft",
-    110: "hr", 111: "RPM", 112: "Hz",
-    116: "ppm", 117: "ppb",
-    118: "gal/s",                 # CORRECTED from L/min
-    119: "gal/min",
-    120: "s", 121: "min", 122: "h",
-    145: "inWC",
+    # area
+    0: "m²", 1: "ft²", 115: "in²", 116: "cm²",
+    # currency
+    105: "currency1", 106: "currency2", 107: "currency3", 108: "currency4",
+    109: "currency5", 110: "currency6", 111: "currency7", 112: "currency8",
+    113: "currency9", 114: "currency10",
+    # electrical
+    2: "mA", 3: "A", 167: "A/m", 168: "A/m²", 169: "A·m²",
+    199: "dB", 200: "dBmV", 201: "dBV", 170: "F", 171: "H",
+    4: "Ω", 237: "Ω·m²/m", 172: "Ω·m", 145: "mΩ", 122: "kΩ", 123: "MΩ",
+    190: "µS", 202: "mS", 173: "S", 174: "S/m", 175: "T",
+    5: "V", 124: "mV", 6: "kV", 7: "MV",
+    8: "VA", 9: "kVA", 10: "MVA", 11: "VAR", 12: "kVAR", 13: "MVAR",
+    176: "V/K", 177: "V/m", 14: "° phase", 15: "PF", 178: "Wb",
+    238: "A·s", 239: "VAh", 240: "kVAh", 241: "MVAh",
+    242: "VARh", 243: "kVARh", 244: "MVARh", 245: "V²h", 246: "A²h",
+    # energy
+    16: "J", 17: "kJ", 125: "kJ/kg", 126: "MJ",
+    18: "Wh", 19: "kWh", 146: "MWh", 203: "VARh", 204: "kVARh", 205: "MVARh",
+    20: "BTU", 147: "kBTU", 148: "MBTU", 21: "therm", 22: "ton·h",
+    # enthalpy
+    23: "J/kg dry air", 149: "kJ/kg dry air", 150: "MJ/kg dry air",
+    24: "BTU/lb dry air", 117: "BTU/lb",
+    # entropy
+    127: "J/K", 151: "kJ/K", 152: "MJ/K", 128: "J/(kg·K)",
+    # force
+    153: "N",
+    # frequency
+    25: "cycles/h", 26: "cycles/min", 27: "Hz", 129: "kHz", 130: "MHz", 131: "/h",
+    # humidity
+    28: "g water/kg dry air", 29: "%RH",
+    # length
+    194: "µm", 30: "mm", 118: "cm", 193: "km", 31: "m", 32: "in", 33: "ft",
+    # light
+    179: "cd", 180: "cd/m²", 34: "W/ft²", 35: "W/m²", 36: "lm", 37: "lx", 38: "fc",
+    # mass and mass flow
+    196: "mg", 195: "g", 39: "kg", 40: "lb", 41: "ton",
+    154: "g/s", 155: "g/min", 42: "kg/s", 43: "kg/min", 44: "kg/h",
+    119: "lb/s", 45: "lb/min", 46: "lb/h", 156: "ton/h",
+    # power
+    132: "mW", 47: "W", 48: "kW", 49: "MW", 50: "BTU/h", 157: "kBTU/h",
+    247: "J/h", 51: "hp", 52: "tons",
+    # pressure
+    53: "Pa", 133: "hPa", 54: "kPa", 134: "mbar", 55: "bar", 56: "psi",
+    206: "mmH2O", 57: "cmH2O", 58: "inH2O", 59: "mmHg", 60: "cmHg", 61: "inHg",
+    # temperature
+    62: "°C", 63: "K", 181: "K/h", 182: "K/min", 64: "°F",
+    65: "°C·day", 66: "°F·day", 120: "Δ°F", 121: "ΔK",
+    91: "°C/h", 92: "°C/min", 93: "°F/h", 94: "°F/min",
+    # time
+    67: "years", 68: "months", 69: "weeks", 70: "days", 71: "h", 72: "min",
+    73: "s", 158: "1/100 s", 159: "ms",
+    # torque
+    160: "N·m",
+    # velocity
+    161: "mm/s", 162: "mm/min", 74: "m/s", 163: "m/min", 164: "m/h",
+    75: "km/h", 76: "ft/s", 77: "ft/min", 78: "mph",
+    # volume and volumetric flow
+    79: "ft³", 80: "m³", 81: "imp gal", 197: "mL", 82: "L", 83: "gal",
+    142: "ft³/s", 84: "CFM", 254: "MMSCFM", 191: "ft³/h", 248: "ft³/day",
+    85: "m³/s", 165: "m³/min", 135: "m³/h", 249: "m³/day",
+    86: "imp gal/min", 198: "mL/s", 87: "L/s", 88: "L/min", 136: "L/h",
+    89: "gpm", 192: "gph",
+    # other
+    90: "°", 183: "J·s", 186: "kg/m³", 137: "kWh/m²", 138: "kWh/ft²",
+    250: "Wh/m³", 251: "J/m³", 139: "MJ/m²", 140: "MJ/ft²", 252: "mol%",
+    95: "", 187: "N·s", 188: "N/m", 96: "ppm", 97: "ppb", 253: "Pa·s",
+    98: "%", 143: "%/ft obscuration", 144: "%/m obscuration", 99: "%/s",
+    100: "/min", 101: "/s", 102: "psi/°F", 103: "rad", 184: "rad/s",
+    104: "RPM", 185: "m²/N", 189: "W/(m·K)", 141: "W/(m²·K)",
+    207: "‰", 208: "g/g", 209: "kg/kg", 210: "g/kg", 211: "mg/g", 212: "mg/kg",
+    213: "g/mL", 214: "g/L", 215: "mg/L", 216: "µg/L", 217: "g/m³",
+    218: "mg/m³", 219: "µg/m³", 220: "ng/m³", 221: "g/cm³",
+    222: "Bq", 223: "kBq", 224: "MBq", 225: "Gy", 226: "mGy", 227: "µGy",
+    228: "Sv", 229: "mSv", 230: "µSv", 231: "µSv/h",
+    232: "dBA", 233: "NTU", 234: "pH", 235: "g/m²", 236: "min/K",
+    # extended range (47808 and up)
+    47808: "SCF/day", 47809: "MMSCF/day", 47810: "MCF/day", 47811: "MSCF/day",
+    47812: "lb/day", 47814: "mrem", 47815: "mrem/h",
 }
 
 # ---------------------------------------------------------------------------
@@ -791,6 +862,13 @@ PROP_IDS = {
     'protocolRevision':             139,
     'systemStatus':                 112,
     'databaseRevision':             155,
+    'location':                     58,
+    'outOfService':                 81,
+    'stateText':                    110,
+    'statusFlags':                  111,
+    'maxApduLengthAccepted':        62,
+    'segmentationSupported':        107,
+    'vendorIdentifier':             120,
     # hyphenated aliases for convenience
     'object-name':                  77,
     'object-list':                  76,
@@ -812,6 +890,7 @@ DEFAULT_DEVICE_PROPERTIES = [
     'firmware-revision',
     'application-software-version',
     'description',
+    'location',
     'protocol-version',
     'protocol-revision',
 ]
@@ -830,53 +909,57 @@ DEFAULT_POINT_PROPERTIES = [
 # actually exist for which object types. Any object type not in this map falls
 # back to DEFAULT_POINT_PROPERTIES.
 # Reference: ASHRAE 135 property-list-per-object-type tables.
+# statusFlags (in-alarm, fault, overridden, out-of-service) is read wherever
+# there is a present value: it is what a commissioning walk-through looks at
+# first. Multi-state objects also read stateText so a value can be shown as
+# "Occupied" rather than "2".
 POINT_PROPERTIES_BY_TYPE = {
     # Analog points: have present value, units, name, description
-    'Analog Input':         ['objectName', 'presentValue', 'units', 'description'],
-    'Analog Output':        ['objectName', 'presentValue', 'units', 'description'],
-    'Analog Value':         ['objectName', 'presentValue', 'units', 'description'],
-    'Loop':                 ['objectName', 'presentValue', 'units', 'description'],
-    'Accumulator':          ['objectName', 'presentValue', 'units', 'description'],
-    'Pulse Converter':      ['objectName', 'presentValue', 'units', 'description'],
-    'Averaging':            ['objectName', 'presentValue', 'units', 'description'],
-    'Integer Value':        ['objectName', 'presentValue', 'units', 'description'],
-    'Positive Integer Value': ['objectName', 'presentValue', 'units', 'description'],
-    'Large Analog Value':   ['objectName', 'presentValue', 'units', 'description'],
-    'Lighting Output':      ['objectName', 'presentValue', 'units', 'description'],
+    'Analog Input':         ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Analog Output':        ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Analog Value':         ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Loop':                 ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Accumulator':          ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Pulse Converter':      ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Averaging':            ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Integer Value':        ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Positive Integer Value': ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Large Analog Value':   ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Lighting Output':      ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
 
     # Binary points: have present value, name, description — but NO units
-    'Binary Input':         ['objectName', 'presentValue', 'description'],
-    'Binary Output':        ['objectName', 'presentValue', 'description'],
-    'Binary Value':         ['objectName', 'presentValue', 'description'],
-    'Binary Lighting Output': ['objectName', 'presentValue', 'description'],
+    'Binary Input':         ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Output':        ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Value':         ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Lighting Output': ['objectName', 'presentValue', 'description', 'statusFlags'],
 
     # Multi-state: have present value, name, description — NO units
-    'Multi-State Input':    ['objectName', 'presentValue', 'description'],
-    'Multi-State Output':   ['objectName', 'presentValue', 'description'],
-    'Multi-State Value':    ['objectName', 'presentValue', 'description'],
+    'Multi-State Input':    ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
+    'Multi-State Output':   ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
+    'Multi-State Value':    ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
 
     # Character string / date / time values
-    'CharacterString Value': ['objectName', 'presentValue', 'description'],
-    'DateTime Value':       ['objectName', 'presentValue', 'description'],
-    'Date Value':           ['objectName', 'presentValue', 'description'],
-    'Time Value':           ['objectName', 'presentValue', 'description'],
-    'BitString Value':      ['objectName', 'presentValue', 'description'],
-    'OctetString Value':    ['objectName', 'presentValue', 'description'],
+    'CharacterString Value': ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'DateTime Value':       ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Date Value':           ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Time Value':           ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'BitString Value':      ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'OctetString Value':    ['objectName', 'presentValue', 'description', 'statusFlags'],
 
     # Access control / life safety: have present value but rarely units
-    'Access Door':          ['objectName', 'presentValue', 'description'],
-    'Life Safety Point':    ['objectName', 'presentValue', 'description'],
-    'Life Safety Zone':     ['objectName', 'presentValue', 'description'],
+    'Access Door':          ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Life Safety Point':    ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Life Safety Zone':     ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Command':              ['objectName', 'description'],
 
     # Config/navigational objects — name + description only, no present value
     'Group':                ['objectName', 'description'],
     'Global Group':         ['objectName', 'description'],
     'Network Port':         ['objectName', 'description'],
-    'Timer':                ['objectName', 'presentValue', 'description'],
+    'Timer':                ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Elevator Group':       ['objectName', 'description'],
     'Escalator':            ['objectName', 'description'],
     'Event Enrollment':     ['objectName', 'description'],
-    'Load Control':         ['objectName', 'presentValue', 'description'],
+    'Load Control':         ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Channel':              ['objectName', 'description'],
 }

@@ -1,21 +1,31 @@
 """
 Minimal SNMPv1 sysDescr scanner — raw UDP, no pysnmp dependency.
+
+v2.7: one socket sends a GET to every host and gathers whatever answers within
+one timeout, instead of a thread per host each waiting out its own timeout.
+A /24 now costs about one timeout, and several community strings can be tried
+in turn against the hosts that stayed silent.
 """
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import socket
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from contextlib import closing
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 log = logging.getLogger(__name__)
+
+# Spacing between GETs. A sweep of a /24 goes out in about a quarter second;
+# nothing on the far side sees a burst.
+_SEND_SPACING_S = 0.001
 
 
 class SNMPScanner:
     """Raw UDP SNMP v1/v2c scanner for sysDescr (OID 1.3.6.1.2.1.1.1.0)."""
+
+    PORT = 161
 
     def __init__(self, callback: Optional[Callable[[str], None]] = None,
                  timeout: float = 1.5):
@@ -31,7 +41,12 @@ class SNMPScanner:
             log.exception("log callback failed")
 
     def scan_network(self, network_cidr: str, community: bytes = b'public',
-                     max_workers: int = 50, stop_event=None) -> list[dict[str, Any]]:
+                     max_workers: int = 50, stop_event=None,
+                     communities: Optional[Iterable["str | bytes"]] = None,
+                     progress: Optional[Callable[[int, int], None]] = None
+                     ) -> list[dict[str, Any]]:
+        """GET sysDescr.0 from every host. `max_workers` is accepted for
+        compatibility and unused: there are no workers any more."""
         self.devices = []
         # v2.1.2: accept CIDR, single IPs, shorthand ranges, full-IP ranges, lists.
         from .netrange import parse_targets, InvalidTargetSyntaxError
@@ -42,38 +57,84 @@ class SNMPScanner:
             return []
         if not hosts:
             return []
+        comms = [c.encode() if isinstance(c, str) else bytes(c)
+                 for c in (communities or [community])]
         self._log(f"Scanning {len(hosts)} hosts for SNMP...")
 
-        def probe(ip: str) -> Optional[dict[str, Any]]:
-            if stop_event and stop_event.is_set():
-                return None
-            try:
-                with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
-                    sock.settimeout(self.timeout)
-                    pkt = self._build_snmp_get(community)
-                    sock.sendto(pkt, (ip, 161))
-                    resp, _ = sock.recvfrom(4096)
-                descr = self._parse_snmp_response(resp)
-                if descr is not None:
-                    return {'ip': ip, 'port': 161, 'sys_descr': descr}
-            except OSError:
-                pass
-            except Exception as e:
-                log.debug("snmp probe %s: %s", ip, e)
-            return None
+        found: dict[str, dict[str, Any]] = {}
+        try:
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
+                sock.bind(('', 0))
+                for i, comm in enumerate(comms):
+                    if stop_event and stop_event.is_set():
+                        break
+                    pending = [h for h in hosts if h not in found]
+                    if not pending:
+                        break
+                    self._sweep(sock, pending, comm, found, stop_event, progress,
+                                round_no=i, rounds=len(comms))
+        except OSError as e:
+            self._log(f"  SNMP socket error: {e}")
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(probe, h) for h in hosts]
-            for f in as_completed(futures):
-                if stop_event and stop_event.is_set():
-                    break
-                result = f.result()
-                if result:
-                    self.devices.append(result)
-                    self._log(f"  SNMP at {result['ip']}: {result['sys_descr'][:80]}")
-
+        rank = {ip: i for i, ip in enumerate(hosts)}
+        self.devices = sorted(found.values(), key=lambda d: rank.get(d['ip'], 0))
         self._log(f"Found {len(self.devices)} SNMP device(s)")
         return self.devices
+
+    def _sweep(self, sock: socket.socket, hosts: list[str], community: bytes,
+               found: dict[str, dict[str, Any]], stop_event, progress,
+               round_no: int = 0, rounds: int = 1) -> None:
+        pkt = self._build_snmp_get(community)
+        wanted = set(hosts)
+        total = len(hosts) * rounds
+        base = len(hosts) * round_no
+        for n, ip in enumerate(hosts, 1):
+            if stop_event and stop_event.is_set():
+                return
+            try:
+                sock.sendto(pkt, (ip, self.PORT))
+            except OSError as e:
+                log.debug("snmp send %s: %s", ip, e)
+            if _SEND_SPACING_S:
+                time.sleep(_SEND_SPACING_S)
+            if progress and n % 32 == 0:
+                progress(base + n // 2, total)
+            self._drain(sock, wanted, found, community, wait=0.0)
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline and wanted - found.keys():
+            if stop_event and stop_event.is_set():
+                return
+            self._drain(sock, wanted, found, community,
+                        wait=min(0.2, max(0.0, deadline - time.monotonic())))
+        if progress:
+            progress(base + len(hosts), total)
+
+    def _drain(self, sock: socket.socket, wanted: set[str],
+               found: dict[str, dict[str, Any]], community: bytes, wait: float) -> None:
+        """Read every reply already queued, waiting up to `wait` for the first."""
+        sock.settimeout(wait if wait > 0 else 0.0)
+        while True:
+            try:
+                resp, addr = sock.recvfrom(4096)
+            except (socket.timeout, BlockingIOError):
+                return
+            except OSError as e:
+                # Windows surfaces an ICMP port-unreachable from an earlier
+                # send as an error here. One closed port says nothing about
+                # the rest of the sweep.
+                log.debug("snmp recv: %s", e)
+                continue
+            finally:
+                sock.settimeout(0.0)
+            ip = addr[0]
+            if ip not in wanted or ip in found:
+                continue
+            descr = self._parse_snmp_response(resp)
+            if descr is None:
+                continue
+            found[ip] = {'ip': ip, 'port': 161, 'sys_descr': descr,
+                         'community': community.decode('latin-1')}
+            self._log(f"  SNMP at {ip}: {descr[:80]}")
 
     # -- wire format ------------------------------------------------------
 

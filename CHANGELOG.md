@@ -3,6 +3,159 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.7.0] — unreleased
+
+A full review of the code and the program in use, run against a new simulated
+site (`tools/sim_site.py`) as well as the unit tests. Measured end to end on
+that site with services enabled: 28.0 s before, 14.7 s after, with correct
+results where before there were 15 phantom Modbus devices and mislabelled
+units.
+
+### Fixed
+
+- **Engineering units.** `BACNET_UNITS` had been filled in by guess rather
+  than from the enumeration, and most of it was wrong: 29 (%RH) showed "W",
+  96 (ppm) "kPa-alt", 19 (kWh) "kPa", 30 (mm) "kW", 100 (per minute) "%RH",
+  118 (cm) "gal/s" under a comment calling that a correction; 48 (kW),
+  56 (psi), 58 (inH2O) and 89 (gpm) were missing and printed as `unit-48`
+  and so on. Replaced with the complete BACnetEngineeringUnits table.
+- **Object types.** The table stopped at 31 apart from three entries that
+  were off by one (Network Port is 56, not 57). Integer Value, Large Analog
+  Value, CharacterString Value and the rest came back as `type-45`, which
+  also meant the per-type property lists written for them never matched.
+- **BBMD-relayed I-Ams were attributed to the BBMD.** A Forwarded-NPDU comes
+  from the BBMD's address and names the real device in its header; the
+  parser skipped that header but kept the datagram's source, so every
+  device a BBMD relayed was recorded at the BBMD's IP and deep-scanned
+  there. Router announcements had the same problem. Both now use the
+  originating address.
+- **Phantom Modbus devices.** Exception codes 0x0A/0x0B are a gateway saying
+  there is no device at that unit ID; they were counted as devices, so a
+  gateway with two slaves reported nine. A device that ignores the unit ID —
+  most direct-attached meters and drives — was reported once per probed ID.
+  Both are now reported as what they are.
+- **MS/TP devices found by the global Who-Is** were labelled BACnet/IP and
+  counted as IP devices; the MS/TP pass only labelled devices it found
+  itself.
+- **Every CLI log line was printed twice** when not `--quiet`: once by the
+  progress callback and once by the INFO-level logger.
+- **An invalid target exited 0** after "scanning" nothing; it now exits 1,
+  as documented, before anything is sent.
+- **Double-clicking a point crashed the GUI** (`Colors.TEXT_PRIMARY` does
+  not exist). Device details did nothing for Modbus and service rows, which
+  were matched back to their device by display text that never matched.
+- **Older HTTPS gear returned nothing.** Python's default TLS context refuses
+  TLS 1.0/1.1, which is all a lot of installed BAS hardware offers.
+- **Windows: ICMP port-unreachable aborted discovery.** Windows reports one
+  as an error on the next receive; the discovery loops only expected a
+  timeout.
+- Binary present values read `active`/`inactive` instead of `1`/`0`. Dates
+  and times with unspecified fields read `*` instead of year 2155. UCS-4
+  strings decode. CLI output is written as UTF-8 so unit symbols survive
+  redirection on Windows.
+- **The site-data guard test published what it guarded.** It listed the
+  site's name and street address in plain text, and used the real panel
+  names and controller serial as samples. It now checks SHA-256 digests and
+  synthetic samples, and only scans files git would publish — it used to
+  fail on any checkout with a virtualenv inside it.
+- GUI tests created a Tk interpreter per test, which on Windows eventually
+  fails ("Can't find a usable tk.tcl"), so they skipped at random in a full
+  run. They share one now.
+
+### Changed
+
+- **BACnet deep scans run in parallel** (`--bacnet-workers`, default 4).
+  `BACnetClient` no longer serializes every request behind one lock: waiting
+  threads take turns reading the shared socket and hand each reply to the
+  request it answers, matched on source address and invoke ID (now allocated
+  per device). Work is grouped by IP address, so no controller — and no
+  router fronting an MS/TP trunk — ever has two requests outstanding.
+  Results are kept in discovery order and each device's log is written as
+  one block.
+- **TCP sweeps use asyncio** (`netsweep.py`): a few hundred connection
+  attempts in flight for the cost of a few hundred sockets, targets taken
+  lazily, port-major so each host sees one attempt at a time. The connect
+  phase uses at most a 1 s timeout; banner probes keep the full one. Service
+  identification runs per host in parallel.
+- **Modbus** probes all unit IDs over one connection per host, and probes
+  hosts in parallel.
+- **SNMP** sends to every host from one socket and waits once, instead of a
+  thread per host each waiting out its own timeout.
+- **MS/TP discovery** skips networks that already answered the global
+  Who-Is, and sends the remaining directed Who-Is together with one
+  collection window instead of one timeout each.
+- The Modbus, service and SNMP passes sweep every target at once rather than
+  once per comma-separated target.
+- Fingerprinting indexes services by IP once instead of scanning the whole
+  result for every device.
+
+### Added
+
+- **Unicast discovery** (`--unicast auto|always|off`): a ReadProperty of the
+  wildcard device instance to each target address finds controllers on other
+  subnets and VLANs, where a broadcast never arrives. `auto` (the default)
+  probes only targets that are not on a local /24 and did not answer the
+  broadcast.
+- **A rebuilt GUI.** Summary counts and a progress bar while scanning; a
+  filter across every tab; a device details panel; double-click a device for
+  its points; copy rows as TSV; point-list export; an Advanced panel exposing
+  every engine option (parallel devices, unicast, BBMD, broadcast, max
+  objects, SNMP communities); settings remembered between runs; keyboard
+  shortcuts; an application icon. The worker thread now reports through a
+  queue the Tk thread drains, instead of calling into Tk.
+- **Siemens APOGEE P2 detection** (`p2.py`, `--no-p2` to skip). Firmware
+  2.x APOGEE panels speak P2 on TCP/5033, not BACnet/IP, so an APOGEE
+  building used to look empty. Each open 5033 gets one well-formed P2
+  identify frame (opcode 0x4640) carrying a fixed BLN name no site uses: a
+  field panel resets the connection, a supervisor listener closes it
+  gracefully, and anything else is not reported. Deliberately not a
+  handshake with the right BLN name, which would write a permanent
+  node-table entry for the scanner on the panel; and not BLN guessing —
+  one constant name, one attempt per panel. Protocol facts are from the
+  wire-verified reference in the companion P2 project. Panels found this
+  way are flagged in the log when they did not answer BACnet, shown in the
+  GUI and the report (with a finding: P2 has no authentication), and
+  simulated in `tools/sim_site.py`.
+- **Point status.** statusFlags is read wherever a point has a present
+  value, in the same RPM batches: points carry `status` (in-alarm, fault,
+  overridden, out-of-service) and devices `point_flags` counts. The GUI
+  shows a Status column with alarm/fault rows in red and overrides in
+  amber, plus a Flagged count.
+- **Multi-state text.** stateText is read for multi-state objects, so a
+  value reads "Occupied" rather than "2" (the number is kept as
+  `state_number`).
+- **HTML survey report** (`--html`, GUI Export, or
+  `python -m hvac_scanner.report scan.json`): one self-contained file with
+  findings ranked by severity — published default credentials on a
+  reachable login, cleartext management (Telnet, FTP, HTTP-only), SNMP
+  default communities, expired or expiring certificates, points in alarm
+  or overridden, Modbus exposure, BACnet routed across subnets — plus the
+  device inventory and open services. No scripts, prints cleanly. Built
+  from the JSON form, so it works on a saved export too.
+- **Point-list CSV** (`--points-csv`, `ScanResult.write_points_csv`): one
+  row per BACnet point and Modbus register, with status.
+- Exports record the scan `targets`.
+- **Hints when nothing answers** — Windows Firewall, VLAN boundaries.
+- `--snmp-community` (repeatable), `--version`, `location` read from the
+  Device object, the scanner version in exports and the HTTP User-Agent.
+- **`tools/sim_site.py`**, a simulated site on loopback; **`tools/gui_demo.py`**
+  drives the GUI through a scan of it and takes a screenshot.
+- The Windows executable carries an icon and version information.
+- [ROADMAP.md](ROADMAP.md), starting with Siemens APOGEE (P2) panel
+  detection.
+
+### Tests
+
+- 502 to 590, none skipped on Windows. New end-to-end tests run the engine
+  against the simulated site (relay, router, RPM-rejecting device, unicast
+  discovery, parallel vs sequential agreement); new unit tests cover the
+  unit and object tables, Forwarded-NPDU origin, concurrent requests to two
+  devices through one socket, Modbus gateway and any-unit handling, the TCP
+  sweep, SNMP communities, settings, and the GUI's filter, sort, details and
+  scan round trip. Unit tests no longer depend on the test machine's
+  routing table, and a guard fails any test whose TCP sweep would reach a
+  non-loopback address.
+
 ## [2.6.0] — 2026-08-19
 
 ### Added

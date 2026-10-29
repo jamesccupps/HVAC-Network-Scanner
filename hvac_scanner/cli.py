@@ -25,6 +25,7 @@ import sys
 import threading
 from datetime import datetime
 
+from . import __version__
 from .engine import ScanEngine, ScanOptions
 
 
@@ -71,6 +72,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
+    p.add_argument("--bacnet-workers", type=int, default=4, metavar="N",
+                   help="BACnet devices deep-scanned at once (default: 4). Each "
+                        "worker owns one IP address, so no device sees more "
+                        "than one request at a time either way; 1 scans "
+                        "strictly one device after another.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
 
     # Large-network probing
     d = p.add_argument_group("large-network probing")
@@ -94,6 +102,16 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--bbmd-ttl", type=int, default=60, metavar="SECONDS",
                    help="Foreign Device registration lease (default: 60). "
                         "Renewed automatically during long scans.")
+    d.add_argument("--unicast", choices=["auto", "always", "off"], default="auto",
+                   help="Unicast BACnet discovery for targets a broadcast "
+                        "cannot reach. 'auto' (default) probes target "
+                        "addresses on other subnets that did not answer the "
+                        "broadcast; 'always' probes every silent target; "
+                        "'off' relies on broadcast alone.")
+    d.add_argument("--snmp-community", action="append", metavar="NAME",
+                   help="SNMP community to try (repeatable; default: public). "
+                        "Each one is tried only against hosts that did not "
+                        "answer the previous.")
 
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
@@ -102,15 +120,24 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-modbus", action="store_true")
     g.add_argument("--no-services", action="store_true")
     g.add_argument("--no-snmp",   action="store_true")
+    g.add_argument("--no-p2",     action="store_true",
+                   help="Skip Siemens APOGEE P2 detection (TCP 5033)")
     g.add_argument("--no-deep",   action="store_true",
                    help="Skip deep-scan (object lists, register reads)")
     g.add_argument("--bacnet-only", action="store_true",
-                   help="Shortcut for --no-modbus --no-services --no-snmp")
+                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2")
 
     # Output
     o = p.add_argument_group("output")
     o.add_argument("--json", metavar="PATH", help="Write results to JSON file")
     o.add_argument("--csv",  metavar="PATH", help="Write results to CSV file")
+    o.add_argument("--html", metavar="PATH",
+                   help="Write a self-contained HTML survey report: findings "
+                        "(default credentials, cleartext logins, certificates, "
+                        "points in alarm or overridden), inventory, open services.")
+    o.add_argument("--points-csv", metavar="PATH",
+                   help="Write the point list: one row per BACnet point and "
+                        "Modbus register.")
     o.add_argument("--export-classification", metavar="PATH",
                    help="Write a classification report (v2.2). Useful for "
                         "submitting device profile contributions.")
@@ -154,7 +181,7 @@ def _print_summary(result) -> None:
     print()
     print(f"=== Scan Summary ({datetime.now():%Y-%m-%d %H:%M:%S}) ===")
     print(f"Duration:   {result.elapsed:.1f}s")
-    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp'):
+    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
     # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
@@ -224,7 +251,22 @@ def _handle_baseline(args, result) -> bool:
     return changed
 
 
+def _utf8_streams() -> None:
+    """Never let an encoding error kill a scan's output.
+
+    Unit labels (°F, m², Ω) and the log's punctuation are not all in the
+    Windows ANSI code page, which is what stdout/stderr use when redirected
+    to a file — the normal case under Task Scheduler. Write UTF-8 instead.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_streams()
     args = _build_parser().parse_args(argv)
     _configure_logging(args.verbose, args.quiet)
 
@@ -236,8 +278,19 @@ def main(argv: list[str] | None = None) -> int:
         if n not in networks:
             networks.append(n)
 
+    # A target that will not parse is a bad argument (exit 1), and should be
+    # reported before anything is sent rather than as a scan that "completed"
+    # with nothing in it.
+    from .netrange import parse_targets, InvalidTargetSyntaxError
+    for n in networks:
+        try:
+            parse_targets(n)
+        except InvalidTargetSyntaxError as e:
+            print(f"ERROR: invalid target {n!r}: {e}", file=sys.stderr)
+            return 1
+
     if args.bacnet_only:
-        args.no_modbus = args.no_services = args.no_snmp = True
+        args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = True
 
     opts = ScanOptions(
         networks=networks,
@@ -247,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         scan_modbus=not args.no_modbus,
         scan_services=not args.no_services,
         scan_snmp=not args.no_snmp,
+        scan_p2=not args.no_p2,
         deep_scan=not args.no_deep,
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,
@@ -258,6 +312,9 @@ def main(argv: list[str] | None = None) -> int:
         bbmd=args.bbmd,
         bbmd_ttl=args.bbmd_ttl,
         scan_depth=args.scan_depth,
+        bacnet_workers=max(1, args.bacnet_workers),
+        unicast_discovery=args.unicast,
+        snmp_communities=args.snmp_community or ["public"],
     )
 
     # Progress callback - streams log lines to stderr unless quiet
@@ -297,6 +354,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Wrote CSV:  {args.csv}", file=sys.stderr)
         except OSError as e:
             print(f"ERROR: could not write {args.csv}: {e}", file=sys.stderr)
+            return 3
+
+    for path, writer, label in ((args.html, result.write_html, "HTML report"),
+                                (args.points_csv, result.write_points_csv, "point list")):
+        if not path:
+            continue
+        try:
+            writer(path)
+            if not args.quiet:
+                print(f"Wrote {label}: {path}", file=sys.stderr)
+        except OSError as e:
+            print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
             return 3
 
     if args.export_classification:
