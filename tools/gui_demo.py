@@ -71,6 +71,9 @@ def main(argv: list[str]) -> int:
 
     tabs = {"devices": 0, "points": 1, "modbus": 2, "services": 3}
     app.notebook.select(tabs.get(tab, 0))
+    if "--filter" in " ".join(argv):
+        app.filter_var.set(next(a.split("=", 1)[1] for a in argv if a.startswith("--filter=")))
+        app._apply_filter()
     if tab == "devices":
         rows = app.device_tree.get_children()
         if rows:

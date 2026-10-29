@@ -479,3 +479,44 @@ def test_scan_runs_through_the_queue_to_completion(gui_app):
     assert gui_app.result is not None
     assert str(gui_app.scan_btn['state']) == 'normal'
     assert 'complete' in gui_app.status_var.get().lower()
+
+
+# ---------------------------------------------------------------------------
+# Point status and multi-state text
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw,flags", [
+    ("0400", []),
+    ("0480", ["in-alarm"]),
+    ("0440", ["fault"]),
+    ("0430", ["overridden", "out-of-service"]),
+    ("04f0", ["in-alarm", "fault", "overridden", "out-of-service"]),
+    ("04", []), ("zz", []), (None, []), (7, []),
+])
+def test_status_flags_decode(raw, flags):
+    from hvac_scanner.engine import _status_flags
+    assert _status_flags(raw) == flags
+
+
+def test_state_text_validation():
+    from hvac_scanner.bacnet import _validate_point_property as v
+    assert v('stateText', ['Off', 'On']) == ['Off', 'On']
+    assert v('stateText', 'Only') == ['Only']          # one-element array
+    assert v('stateText', [1, 2]) is None
+    assert v('stateText', []) is None
+
+
+def test_flagged_points_are_highlighted_and_counted(gui_app):
+    dev = _dev('10.0.0.2', 1, 'AHU-1', points=3)
+    dev['objects'][0]['status'] = 'in-alarm'
+    dev['objects'][1]['status'] = 'overridden'
+    gui_app._stream_device(dev)
+    rows = gui_app.points_tree.get_children()
+    assert 'alarm' in gui_app.points_tree.item(rows[0], 'tags')
+    assert 'flag' in gui_app.points_tree.item(rows[1], 'tags')
+    assert gui_app.points_tree.set(rows[0], 'status') == 'in-alarm'
+    assert gui_app.chips['flagged'].cget('text').endswith('2')
+    # highlighting survives filtering
+    gui_app.filter_var.set('ahu')
+    gui_app._apply_filter()
+    assert 'alarm' in gui_app.points_tree.item(rows[0], 'tags')

@@ -169,6 +169,7 @@ class ScanResult:
                 'Max APDU', 'Segmentation', 'Vendor ID',
                 'Banner', 'Page Title',
                 'TLS Certificate',
+                'Flagged Points',
             ])
             for dev in self.devices:
                 fp = dev.get('_fingerprint', {})
@@ -202,6 +203,7 @@ class ScanResult:
                     dev.get('banner', ''),
                     dev.get('title', ''),
                     dev.get('tls_summary', ''),
+                    ", ".join(f"{n} {f}" for f, n in (dev.get('point_flags') or {}).items()),
                 ])
 
     def write_points_csv(self, path: str) -> None:
@@ -216,7 +218,7 @@ class ScanResult:
             writer.writerow([
                 'Device IP', 'Device ID', 'Device Name', 'MSTP Network', 'MSTP MAC',
                 'Object Type', 'Instance', 'Name', 'Present Value', 'Units',
-                'Description',
+                'Description', 'Status',
             ])
             for dev in self.devices:
                 props = dev.get('properties', {}) or {}
@@ -227,7 +229,7 @@ class ScanResult:
                     writer.writerow(head + [
                         pt.get('type', ''), pt.get('instance', ''), pt.get('name', ''),
                         pt.get('present_value', ''), pt.get('units', ''),
-                        pt.get('description', ''),
+                        pt.get('description', ''), pt.get('status', ''),
                     ])
                 if dev.get('protocol') == 'Modbus TCP':
                     mb_head = [dev.get('ip', ''), f"unit {dev.get('unit_id', '')}", '', '', '']
@@ -236,7 +238,7 @@ class ScanResult:
                                             ('Coil', 'coils', 'coil')):
                         for reg in dev.get(key, []) or []:
                             writer.writerow(mb_head + [label, reg.get(idx, ''), '',
-                                                       reg.get('value', ''), '', ''])
+                                                       reg.get('value', ''), '', '', ''])
 
     def write_classification_report(self, path: str) -> None:
         """Write a plain-text classification report (v2.2).
@@ -1413,7 +1415,8 @@ class ScanEngine:
                 break
             obj_type_str = str(obj_type)
             point = {'type': obj_type_str, 'instance': int(obj_inst),
-                     'name': '', 'present_value': '', 'units': '', 'description': ''}
+                     'name': '', 'present_value': '', 'units': '', 'description': '',
+                     'status': ''}
             for key, val in raw.items():
                 if key == 'units':
                     # BACnet units enum → label. Anything weird gets stringified.
@@ -1433,15 +1436,30 @@ class ScanEngine:
                     point['name'] = _safe_str(val)
                 elif key == 'description':
                     point['description'] = _safe_str(val)
+                elif key == 'statusFlags':
+                    point['status'] = ", ".join(_status_flags(val))
                 # Any other returned property is intentionally dropped from
                 # the point row — we don't want it spilling into labeled slots.
+            # Multi-state values are 1-based indexes into stateText.
+            states = raw.get('stateText')
+            pv = raw.get('presentValue')
+            if (states and isinstance(pv, int) and not isinstance(pv, bool)
+                    and 1 <= pv <= len(states)):
+                point['present_value'] = _safe_str(states[pv - 1]) or str(pv)
+                point['state_number'] = pv
             objects.append(point)
         self._add_points(len(objects))
 
         props['object_list'] = objects
         dev['properties'] = props
         dev['objects'] = objects
-        self._log(f"    Read {len(objects)} points from device {instance}")
+        flagged = {f: sum(1 for o in objects if f in o.get('status', ''))
+                   for f in STATUS_FLAG_NAMES}
+        flagged = {f: n for f, n in flagged.items() if n}
+        if flagged:
+            dev['point_flags'] = flagged
+        note = ("; " + ", ".join(f"{n} {f}" for f, n in flagged.items())) if flagged else ""
+        self._log(f"    Read {len(objects)} points from device {instance}{note}")
 
     # -- Modbus ---------------------------------------------------------
 
@@ -1569,6 +1587,29 @@ class ScanEngine:
 # ---------------------------------------------------------------------------
 
 _MAX_CELL_LEN = 200  # cap any single cell so one rogue value can't eat the UI
+
+# BACnetStatusFlags, in bit order (ASHRAE 135 clause 21).
+STATUS_FLAG_NAMES = ('in-alarm', 'fault', 'overridden', 'out-of-service')
+
+
+def _status_flags(val: Any) -> list[str]:
+    """Names of the set flags in a statusFlags BIT STRING.
+
+    The codec hands bit strings over as hex of their contents: one octet
+    giving the number of unused trailing bits, then the bits, most
+    significant first. Anything unexpected yields no flags rather than a
+    guess.
+    """
+    if not isinstance(val, str):
+        return []
+    try:
+        data = bytes.fromhex(val)
+    except ValueError:
+        return []
+    if len(data) < 2:
+        return []
+    bits = data[1]
+    return [name for i, name in enumerate(STATUS_FLAG_NAMES) if bits & (0x80 >> i)]
 
 
 def _safe_str(val: Any) -> str:

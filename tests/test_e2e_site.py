@@ -111,6 +111,32 @@ def test_binary_points_read_active_or_inactive(full_scan):
     assert {p['present_value'] for p in binaries} <= {'active', 'inactive'}
 
 
+def test_status_flags_are_read_and_summarised(full_scan):
+    result, _ = full_scan
+    sc = _by_instance(result)[1001]
+    by_name = {p['name']: p for p in sc['objects']}
+    assert by_name['AHU-2:FRZ-STAT']['status'] == 'in-alarm'
+    assert by_name['AHU-3:SF-C']['status'] == 'overridden'
+    assert by_name['VAV-07:ZN-T']['status'] == 'fault'
+    assert by_name['AHU-4:RA-H']['status'] == 'out-of-service'
+    assert by_name['AHU-1:SA-T']['status'] == ''
+    assert sc['point_flags'] == {'in-alarm': 1, 'fault': 1, 'overridden': 2,
+                                 'out-of-service': 1}
+    pxc = _by_instance(result)[2000]
+    assert {p['name']: p for p in pxc['objects']}['HHW:CH1-KW']['status'] == \
+        'fault, out-of-service'
+
+
+def test_multi_state_values_read_as_their_state_text(full_scan):
+    result, _ = full_scan
+    sc = _by_instance(result)[1001]
+    modes = [p for p in sc['objects'] if p['name'].endswith('AHU-MODE')]
+    assert modes
+    for p in modes:
+        assert p['present_value'] in ("Off", "Heating", "Cooling", "Economizer")
+        assert 1 <= p['state_number'] <= 4
+
+
 def test_mstp_points_are_read_through_the_router(full_scan):
     result, _ = full_scan
     fec = _by_instance(result)[500007]
