@@ -129,6 +129,13 @@ def _build_parser() -> argparse.ArgumentParser:
     o = p.add_argument_group("output")
     o.add_argument("--json", metavar="PATH", help="Write results to JSON file")
     o.add_argument("--csv",  metavar="PATH", help="Write results to CSV file")
+    o.add_argument("--html", metavar="PATH",
+                   help="Write a self-contained HTML survey report: findings "
+                        "(default credentials, cleartext logins, certificates, "
+                        "points in alarm or overridden), inventory, open services.")
+    o.add_argument("--points-csv", metavar="PATH",
+                   help="Write the point list: one row per BACnet point and "
+                        "Modbus register.")
     o.add_argument("--export-classification", metavar="PATH",
                    help="Write a classification report (v2.2). Useful for "
                         "submitting device profile contributions.")
@@ -344,6 +351,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Wrote CSV:  {args.csv}", file=sys.stderr)
         except OSError as e:
             print(f"ERROR: could not write {args.csv}: {e}", file=sys.stderr)
+            return 3
+
+    for path, writer, label in ((args.html, result.write_html, "HTML report"),
+                                (args.points_csv, result.write_points_csv, "point list")):
+        if not path:
+            continue
+        try:
+            writer(path)
+            if not args.quiet:
+                print(f"Wrote {label}: {path}", file=sys.stderr)
+        except OSError as e:
+            print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
             return 3
 
     if args.export_classification:

@@ -141,6 +141,8 @@ class ScanResult:
     counts: dict[str, int] = field(default_factory=lambda: {
         'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'points': 0,
     })
+    # What was asked for, so an export says what it is a survey of.
+    targets: list[str] = field(default_factory=list)
 
     # -- export helpers -------------------------------------------------
 
@@ -149,6 +151,7 @@ class ScanResult:
             'scan_time': self.started_at,
             'elapsed_seconds': round(self.elapsed, 2),
             'scanner': f'HVAC Network Scanner v{__version__}',
+            'targets': self.targets,
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
         }
@@ -205,6 +208,12 @@ class ScanResult:
                     dev.get('tls_summary', ''),
                     ", ".join(f"{n} {f}" for f, n in (dev.get('point_flags') or {}).items()),
                 ])
+
+    def write_html(self, path: str) -> None:
+        """A self-contained HTML survey report: findings, inventory, flagged
+        points and open services. See report.py."""
+        from .report import write_html
+        write_html(self.to_dict(), path)
 
     def write_points_csv(self, path: str) -> None:
         """One row per BACnet point and Modbus register — a point list.
@@ -413,6 +422,7 @@ class ScanEngine:
 
     def run(self) -> ScanResult:
         start = time.time()
+        self.result.targets = list(self.opts.networks)
 
         if not self.opts.networks:
             self._log("No networks specified")

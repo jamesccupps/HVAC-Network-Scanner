@@ -347,6 +347,8 @@ class HVACNetworkScannerGUI:
         self.export_btn = ttk.Menubutton(row2, text="Export", style="Ghost.TMenubutton",
                                          state='disabled')
         export_menu = self._menu(self.export_btn)
+        export_menu.add_command(label="Survey report (HTML)…", command=lambda: self._export('html'))
+        export_menu.add_separator()
         export_menu.add_command(label="Devices (CSV)…", command=lambda: self._export('csv'))
         export_menu.add_command(label="Point list (CSV)…", command=lambda: self._export('points'))
         export_menu.add_command(label="Full results (JSON)…", command=lambda: self._export('json'))
@@ -1609,6 +1611,7 @@ class HVACNetworkScannerGUI:
             'points': ("Point list CSV", ".csv", f"hvac_scan_{stamp}_points",
                        self.result.write_points_csv),
             'json': ("Scan JSON", ".json", f"hvac_scan_{stamp}", self.result.write_json),
+            'html': ("Survey report", ".html", f"hvac_survey_{stamp}", self.result.write_html),
             'txt': ("Classification report", ".txt", f"hvac_scan_{stamp}_classification",
                     self.result.write_classification_report),
         }[kind]
@@ -1626,6 +1629,8 @@ class HVACNetworkScannerGUI:
             return
         self.log_message(f"Exported {label.lower()}: {path}")
         self._set_status(f"Saved {Path(path).name}", Colors.GREEN)
+        if kind == 'html':
+            webbrowser.open(Path(path).resolve().as_uri())
 
     def export_results(self) -> None:
         """Pick the format from the file name (kept for older callers)."""

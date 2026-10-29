@@ -103,8 +103,25 @@ units.
   objects, SNMP communities); settings remembered between runs; keyboard
   shortcuts; an application icon. The worker thread now reports through a
   queue the Tk thread drains, instead of calling into Tk.
-- **Point-list CSV** (`ScanResult.write_points_csv`): one row per BACnet
-  point and Modbus register.
+- **Point status.** statusFlags is read wherever a point has a present
+  value, in the same RPM batches: points carry `status` (in-alarm, fault,
+  overridden, out-of-service) and devices `point_flags` counts. The GUI
+  shows a Status column with alarm/fault rows in red and overrides in
+  amber, plus a Flagged count.
+- **Multi-state text.** stateText is read for multi-state objects, so a
+  value reads "Occupied" rather than "2" (the number is kept as
+  `state_number`).
+- **HTML survey report** (`--html`, GUI Export, or
+  `python -m hvac_scanner.report scan.json`): one self-contained file with
+  findings ranked by severity — published default credentials on a
+  reachable login, cleartext management (Telnet, FTP, HTTP-only), SNMP
+  default communities, expired or expiring certificates, points in alarm
+  or overridden, Modbus exposure, BACnet routed across subnets — plus the
+  device inventory and open services. No scripts, prints cleanly. Built
+  from the JSON form, so it works on a saved export too.
+- **Point-list CSV** (`--points-csv`, `ScanResult.write_points_csv`): one
+  row per BACnet point and Modbus register, with status.
+- Exports record the scan `targets`.
 - **Hints when nothing answers** — Windows Firewall, VLAN boundaries.
 - `--snmp-community` (repeatable), `--version`, `location` read from the
   Device object, the scanner version in exports and the HTTP User-Agent.
@@ -116,7 +133,7 @@ units.
 
 ### Tests
 
-- 502 to 567, none skipped on Windows. New end-to-end tests run the engine
+- 502 to 584, none skipped on Windows. New end-to-end tests run the engine
   against the simulated site (relay, router, RPM-rejecting device, unicast
   discovery, parallel vs sequential agreement); new unit tests cover the
   unit and object tables, Forwarded-NPDU origin, concurrent requests to two

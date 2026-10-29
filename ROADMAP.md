@@ -5,7 +5,8 @@ section. Nothing here is a promise of a date. If something you need is
 missing, open an issue — that is how items get onto this list and how they
 move up it.
 
-Shipped work moves to [CHANGELOG.md](CHANGELOG.md).
+Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently point
+status flags, multi-state text and the HTML survey report (2.7.0).
 
 ## Next
 
@@ -43,11 +44,6 @@ vendor software, and never a write to a panel.
   finds IP devices on other subnets, but the MS/TP devices behind a remote
   router still need a BBMD. Asking each discovered router directly
   (Who-Is-Router-To-Network, then a routed Who-Is per network) would cover it.
-- **Multi-state text.** Read `stateText` for multi-state points so a value
-  reads "Occupied" rather than "2".
-- **Status flags and out-of-service.** Surface points that are in alarm,
-  overridden, or out of service — the things a commissioning walk-through
-  looks for first.
 - **Trend log and schedule inventory**, as metadata only (what is trended,
   at what interval; which schedules exist), without pulling history.
 - **BACnet/SC.** Detect BACnet Secure Connect hubs (TLS/WebSocket on 47820)
@@ -57,11 +53,6 @@ vendor software, and never a write to a panel.
 
 - **Saved site profiles** in the GUI: named target lists with their own
   options, for people who audit the same few buildings regularly.
-- **HTML report** export: a single self-contained file with the device table,
-  default-credential findings and certificate expiries, suitable for handing
-  to a building owner.
-- **Credential-change check list**: one view of every device whose vendor
-  ships a known default, for the owner to work through.
 
 ## Later / under consideration
 

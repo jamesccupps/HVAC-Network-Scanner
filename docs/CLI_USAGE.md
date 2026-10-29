@@ -60,6 +60,8 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 |------|-------------|
 | `--json PATH` | Write structured results to a JSON file. |
 | `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). |
+| `--points-csv PATH` | Write the point list: one row per BACnet point and Modbus register, with value, units and status. |
+| `--html PATH` | Write a self-contained HTML survey report: findings ranked by severity, device inventory, open services. `python -m hvac_scanner.report scan.json -o out.html` builds the same report from a saved JSON export. |
 | `--export-classification PATH` | Write a plain-text report of how each BACnet device was classified: which profile matched, the cap applied, and the observed object count. Contains no point values. Intended for submitting a device profile when you scan hardware the project has not seen. |
 | `--print FORMAT` | Stdout: `summary` (default), `table`, `json`, `none`. |
 | `--quiet` / `-q` | Suppress progress log on stderr. |
