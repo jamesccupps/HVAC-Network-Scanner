@@ -269,6 +269,8 @@ Exit codes:
 
 ## What's new in v2.7
 
+### v2.7.0 (2026-10-29)
+
 A review-and-polish release. Highlights; the full list is in
 [CHANGELOG.md](CHANGELOG.md).
 

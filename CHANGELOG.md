@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.7.0] — unreleased
+## [2.7.0] — 2026-10-29
 
 A full review of the code and the program in use, run against a new simulated
 site (`tools/sim_site.py`) as well as the unit tests. Measured end to end on
