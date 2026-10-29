@@ -520,3 +520,83 @@ def test_flagged_points_are_highlighted_and_counted(gui_app):
     gui_app.filter_var.set('ahu')
     gui_app._apply_filter()
     assert 'alarm' in gui_app.points_tree.item(rows[0], 'tags')
+
+
+# ---------------------------------------------------------------------------
+# HTML survey report
+# ---------------------------------------------------------------------------
+
+def _survey_scan():
+    return {
+        'scan_time': '2026-10-29T10:00:00', 'elapsed_seconds': 12.3,
+        'scanner': 'HVAC Network Scanner v2.7.0', 'targets': ['10.0.0.0/24'],
+        'counts': {'bacnet': 1, 'mstp': 0, 'modbus': 1, 'services': 4, 'snmp': 1, 'points': 2},
+        'devices': [
+            {'protocol': 'BACnet/IP', 'ip': '10.0.0.2', 'instance': 1001,
+             'properties': {'object_name': 'SC-1 <script>alert(1)</script>',
+                            'model_name': 'Tracer SC+'},
+             'default_creds': 'admin / Tracer1$', 'web_url': 'https://10.0.0.2',
+             'objects': [{'type': 'Binary Input', 'instance': 5, 'name': 'FRZ',
+                          'present_value': 'active', 'units': '', 'status': 'in-alarm'},
+                         {'type': 'Analog Output', 'instance': 3, 'name': 'VLV',
+                          'present_value': '40', 'units': '%', 'status': 'overridden'}],
+             'point_flags': {'in-alarm': 1, 'overridden': 1}},
+            {'protocol': 'BACnet/IP', 'ip': '10.0.0.9', 'instance': 7,
+             'default_creds': 'admin / (set at install)', 'web_url': 'http://10.0.0.9',
+             'objects': []},
+            {'protocol': 'Modbus TCP', 'ip': '10.0.0.20', 'unit_id': 1, 'vendor': 'Acme'},
+            {'protocol': 'SNMP', 'ip': '10.0.0.30', 'sys_descr': 'JACE', 'community': 'public'},
+            {'protocol': 'Service', 'ip': '10.0.0.2', 'port': 443, 'service': 'HTTPS',
+             'tls': {'subject_cn': 'SC-1', 'not_after': '2020-01-01T00:00:00+00:00'}},
+            {'protocol': 'Service', 'ip': '10.0.0.2', 'port': 80, 'service': 'HTTP'},
+            {'protocol': 'Service', 'ip': '10.0.0.40', 'port': 23, 'service': 'Telnet'},
+            {'protocol': 'Service', 'ip': '10.0.0.9', 'port': 80, 'service': 'HTTP'},
+        ],
+    }
+
+
+def test_report_findings_cover_the_survey():
+    from hvac_scanner.report import build_findings
+    findings = {f.title: f for f in build_findings(_survey_scan())}
+    creds = findings['Products with published default credentials and a reachable login']
+    assert [r[0] for r in creds.rows] == ['10.0.0.2']        # "(set at install)" is not a password
+    assert creds.severity == 'high'
+    clear = findings['Management interfaces without encryption']
+    assert ['10.0.0.9', 'HTTP only (TCP 80)'] == clear.rows[0][:2]
+    assert any(r[0] == '10.0.0.40' and 'Telnet' in r[1] for r in clear.rows)
+    assert not any(r[0] == '10.0.0.2' for r in clear.rows)     # has HTTPS too
+    assert 'SNMP answering a default community string' in findings
+    assert findings['Expired TLS certificates'].rows[0][0] == '10.0.0.2'
+    assert findings['Points in alarm or fault'].rows[0][3] == 'FRZ'
+    assert findings['Points overridden or out of service'].rows[0][3] == 'VLV'
+    assert 'Modbus TCP devices' in findings
+    severities = [f.severity for f in build_findings(_survey_scan())]
+    assert severities == sorted(severities, key=['high', 'medium', 'low', 'info'].index)
+
+
+def test_report_html_escapes_device_data():
+    from hvac_scanner.report import render_html
+    page = render_html(_survey_scan())
+    assert '<script>alert(1)</script>' not in page
+    assert '&lt;script&gt;' in page
+    assert '<script' not in page.lower().replace('&lt;script', '')
+
+
+def test_report_from_saved_json(tmp_path):
+    from hvac_scanner import report
+    src = tmp_path / 'scan.json'
+    src.write_text(json.dumps(_survey_scan()), encoding='utf-8')
+    assert report.main([str(src)]) == 0
+    out = (tmp_path / 'scan.html').read_text(encoding='utf-8')
+    assert 'Building automation network survey' in out and '10.0.0.0/24' in out
+    bad = tmp_path / 'bad.json'
+    bad.write_text('{"nope": 1}', encoding='utf-8')
+    assert report.main([str(bad)]) == 1
+
+
+def test_scan_result_records_its_targets():
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    r = ScanEngine(ScanOptions(networks=['127.0.0.1'], scan_bacnet=False, scan_mstp=False,
+                               scan_modbus=False, scan_services=False, scan_snmp=False),
+                   callback=lambda m: None).run()
+    assert r.to_dict()['targets'] == ['127.0.0.1']

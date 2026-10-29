@@ -157,8 +157,10 @@ Ctrl+Enter). Results appear as each device finishes, not at the end:
   for that product. Select a row for everything the scan learned about it in
   the details panel; double-click it (or **Show points**) to list its points.
   Right-click for web UI, copy, ping.
-- **BACnet Points** — every object read, with present value and engineering
-  units. Double-click a point for its full name and description.
+- **BACnet Points** — every object read, with present value, engineering
+  units and status. Points in alarm or fault are red, overridden or out of
+  service amber, and multi-state values read as their state text
+  ("Occupied"). Double-click a point for its full name and description.
 - **Modbus Registers**, **Services** (open ports, banners, page titles, TLS
   certificates) and **Raw JSON**.
 
@@ -167,9 +169,11 @@ name or an IP. Column headers sort; IP addresses sort numerically. Ctrl+C
 copies the selected rows as tab-separated text that pastes straight into a
 spreadsheet.
 
-**Export** writes the device list (CSV), a **point list** (CSV, one row per
-point and register — the thing you take away from a site survey), the full
-results (JSON, also Ctrl+S) or a classification report. **Compare** diffs this
+**Export** writes a **survey report** (HTML — findings, inventory and open
+services in one file you can hand to the building owner), the device list
+(CSV), a **point list** (CSV, one row per point and register — the thing you
+take away from a site survey), the full results (JSON, also Ctrl+S) or a
+classification report. **Compare** diffs this
 scan against an earlier JSON export.
 
 **Advanced** holds the timeout, the per-device rate limit (use 20-50 ms on
@@ -226,6 +230,12 @@ python -m hvac_scanner.cli 10.50.20.0/24 --unicast always
 
 # Several SNMP communities, tried in turn
 python -m hvac_scanner.cli 10.0.0.0/24 --snmp-community public --snmp-community bas
+
+# Survey report and point list for the building owner
+python -m hvac_scanner.cli 10.0.0.0/24 --html survey.html --points-csv points.csv
+
+# ...or build the report later from a saved scan
+python -m hvac_scanner.report scan.json -o survey.html
 
 # Power-user: override the auto-computed broadcast
 python -m hvac_scanner.cli 10.0.0.0/24 --broadcast 255.255.255.255
@@ -285,6 +295,12 @@ timeout, gain more:
 - **A rebuilt GUI**: live summary and progress, a filter across every tab, a
   device details panel, point-list export, remembered settings, keyboard
   shortcuts, and an icon.
+- **Point status**: points in alarm, fault, overridden or out of service
+  are flagged, and multi-state values read as their state text.
+- **An HTML survey report**: findings ranked by severity (default
+  credentials on a reachable login, cleartext logins, SNMP defaults,
+  certificates, flagged points), the inventory and open services, in one
+  file for the building owner.
 - A point-list CSV export, multiple SNMP communities, `--version`, and a
   hint when nothing answers (usually Windows Firewall, or a VLAN boundary).
 - `tools/sim_site.py`, a simulated site to try the scanner on, which the
@@ -336,6 +352,7 @@ hvac_scanner/
 ├── engine.py          # ScanEngine orchestrator + result/export
 ├── certs.py           # Minimal X.509 parsing for HTTPS probes
 ├── diff.py            # Baseline comparison (what changed since last scan)
+├── report.py          # HTML survey report (findings, inventory, services)
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
@@ -349,7 +366,7 @@ tools/
 
 packaging/             # PyInstaller spec, icon, entry point for the Windows exe
 
-tests/                 # 567 tests
+tests/                 # 584 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions

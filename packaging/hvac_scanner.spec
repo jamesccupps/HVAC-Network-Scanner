@@ -74,6 +74,7 @@ a = Analysis(
         'hvac_scanner.modbus',
         'hvac_scanner.netrange',
         'hvac_scanner.netsweep',
+        'hvac_scanner.report',
         'hvac_scanner.services',
         'hvac_scanner.settings',
         'hvac_scanner.snmp',
