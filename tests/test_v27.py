@@ -281,7 +281,8 @@ def test_engine_messages_are_not_logged_at_info(caplog):
     from hvac_scanner.engine import ScanEngine, ScanOptions
     caplog.set_level("INFO", logger="hvac_scanner")
     ScanEngine(ScanOptions(networks=["127.0.0.1"], scan_bacnet=False, scan_mstp=False,
-                           scan_modbus=False, scan_services=False, scan_snmp=False),
+                           scan_modbus=False, scan_services=False, scan_snmp=False,
+                           scan_p2=False),
                callback=lambda m: None).run()
     assert not [r for r in caplog.records if r.name == "hvac_scanner.engine"]
 
@@ -468,7 +469,7 @@ def test_scan_runs_through_the_queue_to_completion(gui_app):
     gui_app.network_entry.delete(0, 'end')
     gui_app.network_entry.insert(0, '127.0.0.1')
     for var in (gui_app.scan_bacnet, gui_app.scan_mstp, gui_app.scan_modbus,
-                gui_app.scan_services, gui_app.scan_snmp):
+                gui_app.scan_services, gui_app.scan_snmp, gui_app.scan_p2):
         var.set(False)
     gui_app.scan_btn.invoke()
     deadline = time.time() + 20
@@ -597,6 +598,108 @@ def test_report_from_saved_json(tmp_path):
 def test_scan_result_records_its_targets():
     from hvac_scanner.engine import ScanEngine, ScanOptions
     r = ScanEngine(ScanOptions(networks=['127.0.0.1'], scan_bacnet=False, scan_mstp=False,
-                               scan_modbus=False, scan_services=False, scan_snmp=False),
+                               scan_modbus=False, scan_services=False, scan_snmp=False,
+                               scan_p2=False),
                    callback=lambda m: None).run()
     assert r.to_dict()['targets'] == ['127.0.0.1']
+
+
+# ---------------------------------------------------------------------------
+# Siemens APOGEE P2 detection
+# ---------------------------------------------------------------------------
+
+def test_p2_probe_frame_follows_the_wire_rules():
+    from hvac_scanner import p2
+    frame = p2.build_probe(seq=7, now=0x6A000000)
+    total, msg_type, seq = struct.unpack('>III', frame[:12])
+    assert total == len(frame)                         # self-inclusive length
+    assert seq == 7 and frame[12] == 0x00              # request direction
+    slots = frame[13:].split(b'\x00')[:4]
+    assert [s.decode() for s in slots] == [p2.PROBE_BLN, p2.PROBE_NODE,
+                                          p2.PROBE_BLN, p2.PROBE_IDENTITY]
+    slot_bytes = sum(len(s) + 1 for s in slots)
+    assert msg_type == 13 + slot_bytes                 # a header length
+    op_at = 13 + slot_bytes
+    assert struct.unpack('>H', frame[op_at:op_at + 2])[0] == 0x4640
+    body = frame[op_at + 2:]
+    names = (p2.PROBE_IDENTITY, p2.PROBE_SITE, p2.PROBE_BLN)
+    assert len(body) == 25 + sum(len(n) for n in names)   # 3 TLV headers + 16-byte tail
+    assert body[-16:-11] == b'\x00\x01\x01\x00\x00'
+    assert struct.unpack('>I', body[-7:-3])[0] == 0x6A000000
+
+
+def test_p2_probe_name_is_a_legal_bln_name():
+    from hvac_scanner import p2
+    assert p2.PROBE_BLN.isalnum() and len(p2.PROBE_BLN) <= 30
+
+
+@pytest.fixture
+def p2_nodes():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import sim_site
+    nodes = []
+    try:
+        nodes.append(sim_site.P2Node('127.0.1.43', 'SIMBLN', 'PXC43'))
+        nodes.append(sim_site.P2Node('127.0.1.44', 'SIMBLN', 'INSIGHT', supervisor=True))
+    except OSError as e:
+        for n in nodes:
+            n.close()
+        pytest.skip(f"cannot bind simulated P2 nodes: {e}")
+    yield nodes
+    for n in nodes:
+        n.close()
+
+
+def test_p2_panel_and_supervisor_are_told_apart(p2_nodes):
+    from hvac_scanner.p2 import P2Scanner
+    found = P2Scanner(timeout=2.0).scan_network('127.0.1.42-45')
+    roles = {d['ip']: d['p2_role'] for d in found}
+    assert roles == {'127.0.1.43': 'field panel', '127.0.1.44': 'supervisor listener'}
+    assert all(d['protocol'] == 'APOGEE P2' for d in found)
+
+
+def test_p2_probe_is_one_attempt_with_one_fixed_name(p2_nodes):
+    """Not enumeration: each node sees a single attempt, always the same name,
+    and never its own BLN — so nothing is registered on it."""
+    from hvac_scanner import p2
+    from hvac_scanner.p2 import P2Scanner
+    P2Scanner(timeout=2.0).scan_network('127.0.1.43-44')
+    P2Scanner(timeout=2.0).scan_network('127.0.1.43-44')
+    for node in p2_nodes:
+        assert node.attempts == [p2.PROBE_BLN, p2.PROBE_BLN]
+
+
+def test_an_open_port_that_is_not_p2_is_not_reported():
+    from hvac_scanner.p2 import probe
+    srv = socket.socket()
+    try:
+        srv.bind(('127.0.1.46', 0))
+    except OSError as e:
+        pytest.skip(str(e))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def answer():
+        conn, _ = srv.accept()
+        conn.recv(256)
+        conn.sendall(b'HTTP/1.0 400 Bad Request\r\n\r\n')
+        conn.close()
+    threading.Thread(target=answer, daemon=True).start()
+    try:
+        assert probe('127.0.1.46', port, timeout=2.0) is None
+    finally:
+        srv.close()
+
+
+def test_p2_devices_are_fingerprinted_and_reported():
+    from hvac_scanner.fingerprint import fingerprint_device
+    from hvac_scanner.report import build_findings
+    dev = {'protocol': 'APOGEE P2', 'ip': '10.0.0.5', 'port': 5033,
+           'p2_role': 'field panel', 'p2_evidence': 'reset'}
+    fp = fingerprint_device(dev, [])
+    assert fp['model'] == 'Siemens APOGEE field panel (P2)'
+    assert 'BACnet/IP' in fp['description']
+    titles = [f.title for f in build_findings({'devices': [dev]})]
+    assert 'Siemens APOGEE P2 nodes' in titles

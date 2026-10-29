@@ -65,6 +65,7 @@ class Colors:
 PROTOCOL_COLORS = {
     'BACnet': Colors.GREEN, 'MS/TP': Colors.CYAN, 'Modbus': Colors.YELLOW,
     'Services': Colors.ORANGE, 'SNMP': Colors.PURPLE, 'Points': Colors.ACCENT,
+    'APOGEE': Colors.TEAL,
 }
 
 # Settings the GUI remembers between runs (see settings.py).
@@ -117,7 +118,7 @@ class HVACNetworkScannerGUI:
         self._raw_dirty = False
         self._filter_after: Optional[str] = None
         self._pump_id: Optional[str] = None
-        self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp')}
+        self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2')}
 
         self.ui_font = _pick_font(["Segoe UI", "SF Pro Text", "Cantarell", "DejaVu Sans"],
                                   "TkDefaultFont")
@@ -273,7 +274,7 @@ class HVACNetworkScannerGUI:
             tk.Label(hdr, image=self._icons[1], bg=C.BG_DARK).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Label(hdr, text="HVAC Network Scanner", style="Title.TLabel").pack(side=tk.LEFT)
         ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · Modbus TCP · "
-                            f"services · SNMP",
+                            f"services · SNMP · APOGEE P2",
                   style="Version.TLabel").pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
         ttk.Button(hdr, text="About", style="Ghost.TButton",
                    command=self._show_about).pack(side=tk.RIGHT)
@@ -313,6 +314,7 @@ class HVACNetworkScannerGUI:
         self.scan_modbus    = tk.BooleanVar(value=True)
         self.scan_services  = tk.BooleanVar(value=False)  # v2.1.1: default off (TVs/printers flood)
         self.scan_snmp      = tk.BooleanVar(value=True)
+        self.scan_p2        = tk.BooleanVar(value=True)
         self.deep_scan      = tk.BooleanVar(value=True)
         self.use_rpm        = tk.BooleanVar(value=True)
 
@@ -320,7 +322,7 @@ class HVACNetworkScannerGUI:
         self.mstp_cb = None
         for text, var in [("BACnet/IP", self.scan_bacnet), ("MS/TP", self.scan_mstp),
                           ("Modbus TCP", self.scan_modbus), ("Services", self.scan_services),
-                          ("SNMP", self.scan_snmp)]:
+                          ("SNMP", self.scan_snmp), ("APOGEE P2", self.scan_p2)]:
             cb = ttk.Checkbutton(row2, text=text, variable=var)
             cb.pack(side=tk.LEFT, padx=(4, 10))
             if text == "MS/TP":
@@ -365,8 +367,8 @@ class HVACNetworkScannerGUI:
         summary.pack(fill=tk.X, padx=18, pady=(0, 4))
         self.chips: dict[str, tk.Label] = {}
         for key, label in (('bacnet', 'BACnet'), ('mstp', 'MS/TP'), ('modbus', 'Modbus'),
-                           ('services', 'Services'), ('snmp', 'SNMP'), ('points', 'Points'),
-                           ('flagged', 'Flagged')):
+                           ('services', 'Services'), ('snmp', 'SNMP'), ('p2', 'APOGEE'),
+                           ('points', 'Points'), ('flagged', 'Flagged')):
             chip = tk.Label(summary, text=f"{label}  –", bg=C.BG_PANEL,
                             fg=PROTOCOL_COLORS.get(label, C.YELLOW), padx=12, pady=4,
                             font=self._f(9, "bold"))
@@ -1040,6 +1042,7 @@ class HVACNetworkScannerGUI:
             scan_modbus=self.scan_modbus.get(),
             scan_services=self.scan_services.get(),
             scan_snmp=self.scan_snmp.get(),
+            scan_p2=self.scan_p2.get(),
             deep_scan=self.deep_scan.get(),
             use_rpm=self.use_rpm.get(),
             whois_chunk_size=self._read_number(self.whois_chunk_entry, "Who-Is chunk", 0,
@@ -1245,7 +1248,8 @@ class HVACNetworkScannerGUI:
                 self._streamed_points += self._add_points_for(dev)
                 self._add_registers_for(dev)
                 bucket = {'BACnet/IP': 'bacnet', 'BACnet/MSTP': 'mstp',
-                          'Modbus TCP': 'modbus', 'SNMP': 'snmp'}.get(proto)
+                          'Modbus TCP': 'modbus', 'SNMP': 'snmp',
+                          'APOGEE P2': 'p2'}.get(proto)
                 if bucket:
                     self._live_counts[bucket] += 1
         except tk.TclError:
@@ -1260,8 +1264,8 @@ class HVACNetworkScannerGUI:
     def _update_chips(self, counts: Optional[dict] = None, points: Optional[int] = None) -> None:
         counts = counts or self._live_counts
         labels = {'bacnet': 'BACnet', 'mstp': 'MS/TP', 'modbus': 'Modbus',
-                  'services': 'Services', 'snmp': 'SNMP', 'points': 'Points',
-                  'flagged': 'Flagged'}
+                  'services': 'Services', 'snmp': 'SNMP', 'p2': 'APOGEE',
+                  'points': 'Points', 'flagged': 'Flagged'}
         for key, chip in self.chips.items():
             n = points if key == 'points' else counts.get(key)
             if key == 'points' and points is None:
@@ -1326,7 +1330,8 @@ class HVACNetworkScannerGUI:
         # it also has HTTP/HTTPS/FTP/Telnet. The service detail still shows in
         # the Services tab; this just keeps the primary device view clean.
         primary_ips = {d.get('ip') for d in self.result.devices
-                       if d.get('protocol') in ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP')}
+                       if d.get('protocol') in ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP',
+                                                'SNMP', 'APOGEE P2')}
         # One row per service-only host, so a gateway with four open ports
         # shows once, not four times.
         seen_service_ips: set[str] = set()
@@ -1374,6 +1379,7 @@ class HVACNetworkScannerGUI:
         self.stats_var.set(
             f"Hosts {unique_ips}   ·   BACnet {c['bacnet']}   MS/TP {c['mstp']}   "
             f"Modbus {c['modbus']}   Service ports {c['services']}   SNMP {c['snmp']}   "
+            f"APOGEE {c.get('p2', 0)}   "
             f"·   Points {c['points']:,}   ·   {self.result.elapsed:.1f}s"
         )
         self._show_selected_details()
@@ -1402,6 +1408,9 @@ class HVACNetworkScannerGUI:
         elif protocol == 'SNMP':
             address = ''
             vendor = dev.get('vendor', '')
+        elif protocol == 'APOGEE P2':
+            address = f"TCP {dev.get('port', '?')}"
+            vendor = dev.get('vendor', 'Siemens')
         else:
             address = f":{dev.get('port', '?')}"
             vendor = dev.get('vendor', '') or fp.get('vendor', '')
@@ -1503,6 +1512,11 @@ class HVACNetworkScannerGUI:
         if dev.get('sys_descr'):
             out.append(('h', "SNMP", ''))
             kv("sysDescr", dev.get('sys_descr'))
+        if dev.get('p2_role'):
+            out.append(('h', "APOGEE P2", ''))
+            kv("Role", dev.get('p2_role'))
+            kv("Evidence", dev.get('p2_evidence'))
+            kv("Note", "Detected without a handshake: nothing was registered on it")
         if self.result:
             others = [d for d in self.result.devices
                       if d.get('ip') == dev.get('ip') and d.get('protocol') == 'Service']
@@ -1657,7 +1671,7 @@ class HVACNetworkScannerGUI:
     # -- settings ---------------------------------------------------------
 
     _PROTOCOL_VARS = ('scan_bacnet', 'scan_mstp', 'scan_modbus', 'scan_services',
-                      'scan_snmp', 'deep_scan', 'use_rpm')
+                      'scan_snmp', 'scan_p2', 'deep_scan', 'use_rpm')
 
     def _collect_settings(self) -> dict[str, Any]:
         data = {

@@ -44,6 +44,7 @@ from .constants import (
 )
 from .fingerprint import fingerprint_device
 from .modbus import ModbusScanner
+from .p2 import P2Scanner
 from .services import HVACServiceScanner
 from .snmp import SNMPScanner
 
@@ -63,6 +64,9 @@ class ScanOptions:
     scan_modbus: bool = True
     scan_services: bool = True
     scan_snmp: bool = True
+    # Siemens APOGEE P2 panels (TCP/5033). Read-only and registration-free;
+    # see p2.py for exactly what is sent.
+    scan_p2: bool = True
     deep_scan: bool = True
     # v2.1.2: scan depth preset. "quick" samples ~5% of objects per device
     # (useful for fast inventory), "normal" honors vendor-aware caps,
@@ -139,7 +143,8 @@ class ScanResult:
     elapsed: float = 0.0
     devices: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=lambda: {
-        'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'points': 0,
+        'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'p2': 0,
+        'points': 0,
     })
     # What was asked for, so an export says what it is a survey of.
     targets: list[str] = field(default_factory=list)
@@ -461,6 +466,11 @@ class ScanEngine:
                     self._scan_modbus()
                 except Exception:
                     log.exception("Modbus scan pass failed")
+            if self.opts.scan_p2 and not self._stopped():
+                try:
+                    self._scan_p2()
+                except Exception:
+                    log.exception("APOGEE P2 scan pass failed")
             if self.opts.scan_services and not self._stopped():
                 try:
                     self._scan_services()
@@ -496,6 +506,8 @@ class ScanEngine:
         self._log(f"  Modbus TCP:  {self.result.counts['modbus']}")
         self._log(f"  Service ports: {self.result.counts['services']}")
         self._log(f"  SNMP:        {self.result.counts['snmp']}")
+        if self.opts.scan_p2:
+            self._log(f"  APOGEE P2:   {self.result.counts['p2']}")
         self._log(f"  Total:       {len(unique_ips)} unique IP(s), "
                   f"{self.result.counts['points']} points/registers")
         self._log("=" * 65)
@@ -1513,6 +1525,28 @@ class ScanEngine:
 
             self.result.devices.append(dev)
             self.result.counts['modbus'] += 1
+            self._emit_device(dev)
+
+    # -- APOGEE P2 ------------------------------------------------------
+
+    def _scan_p2(self) -> None:
+        self._log("\n" + "=" * 65)
+        self._log("SIEMENS APOGEE P2 DISCOVERY")
+        self._log("=" * 65)
+        scanner = P2Scanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
+        bacnet_ips = {d.get('ip') for d in self.result.devices
+                      if str(d.get('protocol', '')).startswith('BACnet')}
+        for dev in scanner.scan_network(
+                self._all_targets(), max_workers=self.opts.modbus_workers,
+                stop_event=self.stop_event,
+                progress=lambda done, total: self._progress("APOGEE P2", done, total)):
+            if self._stopped():
+                break
+            if dev['p2_role'] == 'field panel' and dev['ip'] not in bacnet_ips:
+                self._log(f"    {dev['ip']} speaks P2 and not BACnet/IP: an APOGEE "
+                          f"panel on firmware 2.x (3.x adds BACnet/IP).")
+            self.result.devices.append(dev)
+            self.result.counts['p2'] += 1
             self._emit_device(dev)
 
     # -- Services -------------------------------------------------------

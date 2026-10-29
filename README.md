@@ -21,6 +21,8 @@ Works against:
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
 - **HVAC services** — Niagara Fox, OPC UA, Siemens S7, EtherNet/IP CIP, KNXnet/IP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
 - **SNMP v1/v2c** — raw UDP `sysDescr` probe, no pysnmp dependency.
+- **Siemens APOGEE P2** — detects firmware 2.x APOGEE field panels and P2
+  supervisors on TCP/5033 without registering on them (see below).
 
 Model identification combines signals from multiple protocols:
 
@@ -59,14 +61,21 @@ so future users can benefit from verified classification.
 
 **Known out-of-scope:**
 
-- Panels running proprietary firmware that doesn't include BACnet/IP.
-  For example, Siemens APOGEE PXC panels running firmware revision 2.x
-  speak Apogee P2 Ethernet rather than BACnet/IP. These panels may have
-  IP addresses and be actively managed by Siemens Desigo CC, but they
-  don't answer BACnet/IP. The same hardware upgraded to firmware
-  revision 3.x or later would be scannable. If you're affected, check
-  with your Siemens representative about a firmware upgrade path — or
-  use commercial P2 gateways like PurpleSwift BACnetP2 for integration.
+- Reading points from panels running proprietary firmware without
+  BACnet/IP. Siemens APOGEE PXC panels on firmware revision 2.x speak P2
+  rather than BACnet/IP: the scanner **detects** them (and P2 supervisors)
+  and tells you so, but does not read their points — that needs a P2
+  session with the site's BLN name, which registers the client on the
+  panel. For that, use the
+  [P2 scanner](https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner),
+  a commercial gateway such as PurpleSwift BACnetP2, or upgrade the panels
+  to firmware 3.x, which speaks BACnet/IP.
+
+  How detection works: each host with TCP/5033 open gets one well-formed P2
+  identify frame carrying a BLN name no site uses. A field panel resets the
+  connection at its access gate, a supervisor listener closes it, both
+  before any processing and without writing to the node table. One
+  attempt, one fixed name — not a handshake and not BLN-name guessing.
 - Proprietary BMS protocols that are not BACnet or Modbus TCP
   (JCI N2, LonTalk, Honeywell C-Bus, various others).
 
@@ -92,7 +101,8 @@ Requires Python 3.10 or newer. No extra packages.
 `tools/sim_site.py` stands up a small simulated site on loopback addresses —
 a Trane SC+, Siemens PXC and DXR2 controllers, an MS/TP router with three
 JCI field controllers behind it, a workstation that rejects
-ReadPropertyMultiple, Modbus meters and a gateway, a Niagara JACE with SNMP
+ReadPropertyMultiple, Modbus meters and a gateway, an APOGEE P2 panel and
+supervisor, a Niagara JACE with SNMP
 and Fox, and web UIs. Real sockets on the real ports, so the whole scanner
 runs against it:
 
@@ -306,8 +316,11 @@ timeout, gain more:
 - `tools/sim_site.py`, a simulated site to try the scanner on, which the
   end-to-end tests also run against.
 
-Up next — including **Siemens APOGEE (P2) panel detection** — is in
-[ROADMAP.md](ROADMAP.md).
+- **Siemens APOGEE P2 detection**: firmware 2.x panels and P2 supervisors
+  are found on TCP/5033 and identified, without a handshake and without
+  registering on them, so an APOGEE building no longer looks empty.
+
+Up next is in [ROADMAP.md](ROADMAP.md).
 
 ## Troubleshooting
 
@@ -323,8 +336,10 @@ not on a local /24; set it to `always` (Advanced, or `--unicast always`) to
 force it, or register with a BBMD to reach MS/TP devices behind remote
 routers too. UDP 47808 has to be routed between the two networks either way.
 
-**Siemens APOGEE panels don't show up.** Firmware 2.x panels speak P2, not
-BACnet/IP — see *Known out-of-scope* above and the [roadmap](ROADMAP.md).
+**Siemens APOGEE panels don't show up on BACnet.** Firmware 2.x panels speak
+P2, not BACnet/IP. Keep *APOGEE P2* ticked and they are detected on TCP/5033
+and listed as such; reading their points needs a P2 tool (see *Known
+out-of-scope* above).
 
 **Small controllers misbehave during a scan.** Set a rate limit of 20-50 ms
 and lower Parallel devices to 1.
@@ -345,7 +360,8 @@ hvac_scanner/
 ├── modbus.py          # Modbus TCP: per-host sessions, unit-ID probing, register reads
 ├── services.py        # TCP service probes, banners, TLS certificates
 ├── snmp.py            # Raw UDP SNMP sysDescr fan-out
-├── netsweep.py        # asyncio TCP connect sweep shared by Modbus and services
+├── netsweep.py        # asyncio TCP connect sweep shared by Modbus, P2 and services
+├── p2.py              # Siemens APOGEE P2 detection (registration-free probe)
 ├── fingerprint.py     # Cross-protocol model identification
 ├── device_profiles.py # Per-vendor enumeration caps + scan-depth presets
 ├── netrange.py        # Target syntax: CIDR, ranges, host lists
@@ -366,7 +382,7 @@ tools/
 
 packaging/             # PyInstaller spec, icon, entry point for the Windows exe
 
-tests/                 # 584 tests
+tests/                 # 590 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions

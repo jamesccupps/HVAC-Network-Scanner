@@ -120,10 +120,12 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-modbus", action="store_true")
     g.add_argument("--no-services", action="store_true")
     g.add_argument("--no-snmp",   action="store_true")
+    g.add_argument("--no-p2",     action="store_true",
+                   help="Skip Siemens APOGEE P2 detection (TCP 5033)")
     g.add_argument("--no-deep",   action="store_true",
                    help="Skip deep-scan (object lists, register reads)")
     g.add_argument("--bacnet-only", action="store_true",
-                   help="Shortcut for --no-modbus --no-services --no-snmp")
+                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2")
 
     # Output
     o = p.add_argument_group("output")
@@ -179,7 +181,7 @@ def _print_summary(result) -> None:
     print()
     print(f"=== Scan Summary ({datetime.now():%Y-%m-%d %H:%M:%S}) ===")
     print(f"Duration:   {result.elapsed:.1f}s")
-    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp'):
+    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
     # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
@@ -288,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.bacnet_only:
-        args.no_modbus = args.no_services = args.no_snmp = True
+        args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = True
 
     opts = ScanOptions(
         networks=networks,
@@ -298,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         scan_modbus=not args.no_modbus,
         scan_services=not args.no_services,
         scan_snmp=not args.no_snmp,
+        scan_p2=not args.no_p2,
         deep_scan=not args.no_deep,
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,
