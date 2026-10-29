@@ -51,8 +51,9 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 | `--no-modbus` | Skip Modbus TCP sweep. |
 | `--no-services` | Skip the HVAC-services TCP port scan. |
 | `--no-snmp` | Skip SNMP `sysDescr` probe. |
+| `--no-p2` | Skip Siemens APOGEE P2 detection on TCP/5033 (one identify frame with a foreign BLN name per open port; no handshake, nothing registered). |
 | `--no-deep` | Skip deep-scan. Discovery only — no object lists, no register reads. |
-| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp`. |
+| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp --no-p2`. |
 
 ### Output
 

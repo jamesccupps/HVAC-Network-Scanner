@@ -10,7 +10,8 @@ hvac_scanner/
 ├── modbus.py         Modbus TCP — per-host sessions, unit-ID probing, register/coil reads
 ├── services.py       TCP service probes: HTTP(S) banners and certificates, Fox, S7, CIP, ...
 ├── snmp.py           Raw UDP SNMP sysDescr, one socket fanned out to every host
-├── netsweep.py       asyncio TCP connect sweep used by modbus.py and services.py
+├── netsweep.py       asyncio TCP connect sweep used by modbus.py, p2.py and services.py
+├── p2.py             Siemens APOGEE P2 detection: TCP/5033 sweep + one foreign-BLN identify frame
 ├── certs.py          Minimal X.509 (DER) parsing for the HTTPS probe
 ├── fingerprint.py    Cross-protocol model identification (pure function)
 ├── device_profiles.py Vendor-aware object caps and scan-depth presets
@@ -124,7 +125,7 @@ hosts that stayed silent.
 
 `run()` executes on one thread (the GUI's worker or the CLI's main thread).
 Protocol passes are sequential: BACnet (discovery, unicast discovery, deep
-scans, MS/TP), Modbus, services, SNMP, then fingerprinting. A
+scans, MS/TP), Modbus, APOGEE P2, services, SNMP, then fingerprinting. A
 `threading.Event` (`stop_event`) is checked between passes, between devices
 and between batches for cooperative abort; partial results are always
 fingerprinted and returned.
@@ -156,6 +157,7 @@ ScanEngine.run()
     │     └── _scan_mstp()                  → routers, directed Who-Is, deep scans
     │
     ├── _scan_modbus()      → ModbusScanner (netsweep + per-host sessions)
+    ├── _scan_p2()          → P2Scanner (netsweep + one probe per open TCP/5033)
     ├── _scan_services()    → HVACServiceScanner (netsweep + per-host probes)
     ├── _scan_snmp()        → SNMPScanner (one-socket fan-out)
     └── _refingerprint()    → fingerprint_device() with same-IP services

@@ -28,7 +28,7 @@ from typing import Any, Optional
 from . import __version__
 
 SEVERITIES = ("high", "medium", "low", "info")
-_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP')
+_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2')
 _CLEARTEXT = {21: "FTP", 23: "Telnet"}
 _HTTPS_PORTS = {443, 8443}
 _HTTP_PORTS = {80, 8080, 8000, 8888, 9090}
@@ -194,6 +194,18 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "commissioning or a service call. Confirm each is intended.",
             cols, override_rows))
 
+    # APOGEE P2 has no authentication either
+    rows = [[d.get('ip'), d.get('p2_role', ''), d.get('p2_evidence', '')]
+            for d in devices if d.get('protocol') == 'APOGEE P2']
+    if rows:
+        out.append(Finding(
+            "medium", "Siemens APOGEE P2 nodes",
+            "P2 has no authentication or encryption. Its only admission check is the "
+            "network (BLN) name, which travels in cleartext in every frame, and a peer "
+            "past it can read, command and reprogram panels. Keep P2 on an isolated "
+            "automation network. Firmware 3.x panels can move to BACnet/IP.",
+            ["Address", "Role", "Evidence"], rows))
+
     # Modbus has no authentication
     rows = [[d.get('ip'), f"unit {d.get('unit_id')}",
              " ".join(x for x in (d.get('vendor'), d.get('product')) if x and x != 'Unknown')]
@@ -304,6 +316,7 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     cards = [("Hosts", hosts), ("BACnet/IP", counts.get('bacnet', 0)),
              ("MS/TP", counts.get('mstp', 0)), ("Modbus", counts.get('modbus', 0)),
              ("Service ports", counts.get('services', 0)), ("SNMP", counts.get('snmp', 0)),
+             ("APOGEE P2", counts.get('p2', 0)),
              ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged)]
     cards_html = "".join(f'<div class="card"><b>{_e(v)}</b><span>{_e(k)}</span></div>'
                          for k, v in cards)
@@ -323,7 +336,8 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     for d in sorted(primary, key=lambda d: (_ip_key(d.get('ip')), str(d.get('instance')))):
         props = d.get('properties') or {}
         ident = d.get('instance') if str(d.get('protocol', '')).startswith('BACnet') \
-            else (f"unit {d.get('unit_id')}" if d.get('protocol') == 'Modbus TCP' else '')
+            else (f"unit {d.get('unit_id')}" if d.get('protocol') == 'Modbus TCP'
+                  else (f"TCP {d.get('port')}" if d.get('protocol') == 'APOGEE P2' else ''))
         if d.get('source_network'):
             ident = f"{ident} (MS/TP {d.get('source_network')}:{d.get('source_address')})"
         flags = d.get('point_flags') or {}

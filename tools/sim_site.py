@@ -784,6 +784,67 @@ class BannerService:
         self.sock.close()
 
 
+class P2Node:
+    """A Siemens APOGEE P2 listener on TCP/5033 that knows its BLN name.
+
+    It answers the way the P2 reference documents a real node answering a
+    frame from outside its network: a field panel resets the connection, a
+    supervisor listener closes it gracefully, both before any processing.
+    A frame carrying the right BLN name is acknowledged with a bare success
+    response (not that the scanner ever sends one).
+    """
+
+    def __init__(self, ip: str, bln: str, node_name: str, supervisor: bool = False):
+        self.bln, self.node_name, self.supervisor = bln, node_name, supervisor
+        self.attempts: list[str] = []          # BLN names presented, for tests
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((ip, 5033))
+        self.sock.listen(16)
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+
+    def _client(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(5)
+            hdr = _recv_exact(conn, 4)
+            if len(hdr) < 4:
+                return
+            frame = hdr + _recv_exact(conn, struct.unpack('!I', hdr)[0] - 4)
+            slots = frame[13:].split(b'\x00', 4)
+            presented = slots[0].decode('ascii', 'replace') if slots else ''
+            self.attempts.append(presented)
+            if presented != self.bln:
+                time.sleep(0.05)
+                if not self.supervisor:          # panel: RST
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                    struct.pack('ii', 1, 0))
+                return                           # supervisor: FIN on close
+            src = slots[3] if len(slots) > 3 else b''
+            reply_slots = (self.bln.encode() + b'\x00' + self.node_name.encode() + b'\x00'
+                           + self.bln.encode() + b'\x00' + src + b'\x00')
+            payload = b'\x01' + reply_slots
+            conn.sendall(struct.pack('!III', 12 + len(payload), 13 + len(reply_slots),
+                                     struct.unpack('!I', frame[8:12])[0]) + payload)
+        except OSError:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.sock.close()
+
+
 def _self_signed_cert(cn: str, org: str, workdir: str) -> Optional[tuple[str, str]]:
     """Make a throwaway certificate with openssl, if it is installed."""
     openssl = shutil.which('openssl')
@@ -911,6 +972,10 @@ class Site:
                       2: ModbusUnit("Carrier", "30XA Chiller", "4.2"),
                   }))
 
+        self._try(f"{net}.23  P2      APOGEE field panel (firmware 2.x, no BACnet)",
+                  lambda: P2Node(f"{net}.23", "SIMBLN", "PXC23"))
+        self._try(f"{net}.24  P2      Insight / Desigo CC P2 listener",
+                  lambda: P2Node(f"{net}.24", "SIMBLN", "INSIGHT", supervisor=True))
         self._try(f"{net}.22  SNMP    Niagara JACE",
                   lambda: SNMPAgent(f"{net}.22", "Tridium JACE-8000 Niagara 4.13.1.16 "
                                                   "QNX 7.0 (supervisor for building B)"))

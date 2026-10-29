@@ -35,7 +35,7 @@ def loopback_engine(monkeypatch):
     def _make(**kw):
         opts = ScanOptions(networks=["127.0.0.1"], timeout=1.0,
                            scan_modbus=False, scan_services=False,
-                           scan_snmp=False, scan_mstp=False,
+                           scan_snmp=False, scan_mstp=False, scan_p2=False,
                            bacnet_broadcast="127.0.0.1", **kw)
         return opts
     return _make

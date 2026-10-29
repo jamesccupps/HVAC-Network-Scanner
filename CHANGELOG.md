@@ -103,6 +103,19 @@ units.
   objects, SNMP communities); settings remembered between runs; keyboard
   shortcuts; an application icon. The worker thread now reports through a
   queue the Tk thread drains, instead of calling into Tk.
+- **Siemens APOGEE P2 detection** (`p2.py`, `--no-p2` to skip). Firmware
+  2.x APOGEE panels speak P2 on TCP/5033, not BACnet/IP, so an APOGEE
+  building used to look empty. Each open 5033 gets one well-formed P2
+  identify frame (opcode 0x4640) carrying a fixed BLN name no site uses: a
+  field panel resets the connection, a supervisor listener closes it
+  gracefully, and anything else is not reported. Deliberately not a
+  handshake with the right BLN name, which would write a permanent
+  node-table entry for the scanner on the panel; and not BLN guessing —
+  one constant name, one attempt per panel. Protocol facts are from the
+  wire-verified reference in the companion P2 project. Panels found this
+  way are flagged in the log when they did not answer BACnet, shown in the
+  GUI and the report (with a finding: P2 has no authentication), and
+  simulated in `tools/sim_site.py`.
 - **Point status.** statusFlags is read wherever a point has a present
   value, in the same RPM batches: points carry `status` (in-alarm, fault,
   overridden, out-of-service) and devices `point_flags` counts. The GUI
@@ -133,14 +146,15 @@ units.
 
 ### Tests
 
-- 502 to 584, none skipped on Windows. New end-to-end tests run the engine
+- 502 to 590, none skipped on Windows. New end-to-end tests run the engine
   against the simulated site (relay, router, RPM-rejecting device, unicast
   discovery, parallel vs sequential agreement); new unit tests cover the
   unit and object tables, Forwarded-NPDU origin, concurrent requests to two
   devices through one socket, Modbus gateway and any-unit handling, the TCP
   sweep, SNMP communities, settings, and the GUI's filter, sort, details and
   scan round trip. Unit tests no longer depend on the test machine's
-  routing table.
+  routing table, and a guard fails any test whose TCP sweep would reach a
+  non-loopback address.
 
 ## [2.6.0] — 2026-08-19
 

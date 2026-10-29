@@ -47,6 +47,29 @@ def gui_app(tk_root):
 
 
 @pytest.fixture(autouse=True)
+def _sweeps_stay_on_loopback(monkeypatch):
+    """Fail any test whose TCP sweep would leave the machine.
+
+    The example addresses in these tests (10.0.0.x and the like) are real
+    addresses on somebody's network. A test that forgets to switch a
+    protocol off would otherwise send connection attempts to them — which is
+    how adding the APOGEE pass briefly made the suite sweep TCP/5033 across
+    whatever 10.0.0.0/24 the test machine could reach.
+    """
+    import ipaddress
+    from hvac_scanner import modbus, netsweep, p2, services
+    real = netsweep.tcp_sweep
+
+    def guarded(targets, **kw):
+        targets = list(targets)
+        stray = [ip for ip, _port in targets if not ipaddress.ip_address(ip).is_loopback]
+        assert not stray, f"test would sweep non-loopback addresses: {stray[:5]}"
+        return real(targets, **kw)
+    for mod in (netsweep, modbus, p2, services):
+        monkeypatch.setattr(mod, "tcp_sweep", guarded)
+
+
+@pytest.fixture(autouse=True)
 def _targets_are_on_link(monkeypatch, request):
     """Treat every target as on a directly attached subnet.
 
