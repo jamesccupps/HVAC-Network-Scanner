@@ -171,6 +171,17 @@ class SimPoint:
     units: Optional[int]
     description: str
     value: float
+    flags: int = 0                     # statusFlags bits: 0x80 alarm .. 0x10 OOS
+    states: Optional[list[str]] = None # stateText, multi-state objects only
+
+
+# stateText for the multi-state points in the templates above.
+_STATE_TEXT = {
+    "AHU-MODE": ["Off", "Heating", "Cooling", "Economizer"],
+    "OCC-MODE": ["Occupied", "Unoccupied", "Standby"],
+    "PLANT-MODE": ["Off", "Normal", "Free cooling"],
+}
+STATUS_IN_ALARM, STATUS_FAULT, STATUS_OVERRIDDEN, STATUS_OUT_OF_SERVICE = 0x80, 0x40, 0x20, 0x10
 
 
 @dataclass
@@ -203,7 +214,16 @@ class SimDevice:
             else:
                 value = round(random.uniform(lo, hi), 1)
             self.points.append(SimPoint(obj_type, inst, f"{prefix}:{base}" if prefix else base,
-                                        units, desc, value))
+                                        units, desc, value,
+                                        states=_STATE_TEXT.get(base) if obj_type == 19 else None))
+
+    def flag(self, name: str, flags: int) -> None:
+        """Set statusFlags on the point called `name`."""
+        for p in self.points:
+            if p.name == name:
+                p.flags |= flags
+                return
+        raise KeyError(name)
 
     # -- property access ---------------------------------------------------
 
@@ -241,6 +261,18 @@ class SimDevice:
             return app_real(round(p.value + drift, 2))
         if prop == 117 and p.units is not None:
             return app_enum(p.units)
+        if prop == 111:                          # statusFlags: 4 bits used
+            return _tag(8, bytes([4, p.flags]))
+        if prop == 81:                           # outOfService
+            return bytes([0x11 if p.flags & STATUS_OUT_OF_SERVICE else 0x10])
+        if prop == 110 and p.states:             # stateText
+            if index is None:
+                return b''.join(app_string(s) for s in p.states)
+            if index == 0:
+                return app_unsigned(len(p.states))
+            if 1 <= index <= len(p.states):
+                return app_string(p.states[index - 1])
+            return (2, 42)
         return (2, 32)                           # property / unknown-property
 
     def _read_device(self, prop: int, index: Optional[int]) -> "bytes | tuple[int, int]":
@@ -812,6 +844,13 @@ def build_bacnet_devices(network: str = DEFAULT_NETWORK,
                       firmware="10.1", max_apdu=480, latency=0.025)
         d.add_equipment("", _VAV_POINTS, {})
         mstp[5][mac] = d
+
+    sc.flag("AHU-2:FRZ-STAT", STATUS_IN_ALARM)
+    sc.flag("AHU-3:SF-C", STATUS_OVERRIDDEN)
+    sc.flag("VAV-07:ZN-T", STATUS_FAULT)
+    sc.flag("VAV-12:DMPR-POS", STATUS_OVERRIDDEN)
+    sc.flag("AHU-4:RA-H", STATUS_OUT_OF_SERVICE)
+    pxc.flag("HHW:CH1-KW", STATUS_FAULT | STATUS_OUT_OF_SERVICE)
 
     return [
         (f"{network}.2", sc, {}),

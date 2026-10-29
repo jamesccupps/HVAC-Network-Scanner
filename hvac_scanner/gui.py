@@ -111,6 +111,8 @@ class HVACNetworkScannerGUI:
         self._sort_state: dict[str, tuple[str, bool]] = {}
         self._rows: dict[str, list[str]] = {}          # tree -> every row, in order
         self._shown: dict[str, int] = {}               # tree -> rows currently visible
+        self._row_tags: dict[str, tuple] = {}           # iid -> tags besides striping
+        self._flagged_points = 0
         self._dev_by_iid: dict[str, dict] = {}
         self._raw_dirty = False
         self._filter_after: Optional[str] = None
@@ -361,9 +363,10 @@ class HVACNetworkScannerGUI:
         summary.pack(fill=tk.X, padx=18, pady=(0, 4))
         self.chips: dict[str, tk.Label] = {}
         for key, label in (('bacnet', 'BACnet'), ('mstp', 'MS/TP'), ('modbus', 'Modbus'),
-                           ('services', 'Services'), ('snmp', 'SNMP'), ('points', 'Points')):
+                           ('services', 'Services'), ('snmp', 'SNMP'), ('points', 'Points'),
+                           ('flagged', 'Flagged')):
             chip = tk.Label(summary, text=f"{label}  –", bg=C.BG_PANEL,
-                            fg=PROTOCOL_COLORS.get(label, C.TEXT), padx=12, pady=4,
+                            fg=PROTOCOL_COLORS.get(label, C.YELLOW), padx=12, pady=4,
                             font=self._f(9, "bold"))
             chip.pack(side=tk.LEFT, padx=(0, 6))
             self.chips[key] = chip
@@ -576,8 +579,12 @@ class HVACNetworkScannerGUI:
             ("device", "Device", 170), ("type", "Object Type", 140),
             ("address", "Instance", 80), ("name", "Name", 300),
             ("value", "Present Value", 120), ("units", "Units", 80),
-            ("description", "Description", 320),
+            ("status", "Status", 150), ("description", "Description", 320),
         ])
+        # Points needing attention stand out: alarm and fault in red,
+        # overridden and out of service in amber.
+        self.points_tree.tag_configure("alarm", foreground=Colors.RED)
+        self.points_tree.tag_configure("flag", foreground=Colors.YELLOW)
         # Double-click a point for its full name / description / value.
         self.points_tree.bind("<Double-Button-1>", self._on_point_double_click)
         self.points_menu = self._menu(self.root)
@@ -590,9 +597,9 @@ class HVACNetworkScannerGUI:
         if not sel:
             return
         vals = self.points_tree.item(sel[0]).get('values', [])
-        if len(vals) < 7:
+        if len(vals) < 8:
             return
-        device, obj_type, instance, name, value, units, description = vals
+        device, obj_type, instance, name, value, units, status, description = vals
 
         popup = tk.Toplevel(self.root)
         popup.title(f"Point — {obj_type} {instance}")
@@ -603,6 +610,7 @@ class HVACNetworkScannerGUI:
         for label, val in [("Device", device), ("Object Type", obj_type),
                            ("Instance", instance), ("Name", name),
                            ("Present Value", f"{value} {units}".strip()),
+                           ("Status", status or "normal"),
                            ("Description", description)]:
             row = tk.Frame(popup, bg=Colors.BG_DARK)
             row.pack(fill=tk.X, padx=14, pady=4)
@@ -665,22 +673,26 @@ class HVACNetworkScannerGUI:
 
     # -- rows, sorting and filtering -------------------------------------
 
-    def _insert(self, tree: ttk.Treeview, values) -> str:
+    def _insert(self, tree: ttk.Treeview, values, tags: tuple = ()) -> str:
         name = tree._hvac_name                       # type: ignore[attr-defined]
-        iid = tree.insert("", tk.END, values=values)
+        iid = tree.insert("", tk.END, values=values, tags=tags)
         self._rows[name].append(iid)
+        if tags:
+            self._row_tags[iid] = tuple(tags)
         terms = self._filter_terms()
         if terms and not self._matches(values, terms):
             tree.detach(iid)
         else:
             if self._shown[name] % 2:
-                tree.item(iid, tags=("alt",))
+                tree.item(iid, tags=tuple(tags) + ("alt",))
             self._shown[name] += 1
         return iid
 
     def _clear_tree(self, tree: ttk.Treeview) -> None:
         name = tree._hvac_name                       # type: ignore[attr-defined]
         tree.delete(*self._rows[name])
+        for iid in self._rows[name]:
+            self._row_tags.pop(iid, None)
         self._rows[name] = []
         self._shown[name] = 0
         self._sort_state.pop(name, None)
@@ -748,7 +760,7 @@ class HVACNetworkScannerGUI:
         for iid in self._rows[name]:
             if not terms or self._matches(tree.item(iid, 'values'), terms):
                 tree.move(iid, "", shown)
-                tree.item(iid, tags=("alt",) if shown % 2 else ())
+                tree.item(iid, tags=self._row_tags.get(iid, ()) + (("alt",) if shown % 2 else ()))
                 shown += 1
             else:
                 tree.detach(iid)
@@ -936,6 +948,7 @@ class HVACNetworkScannerGUI:
         self.compare_btn.configure(state='disabled')
         self._set_status("Scanning…", Colors.ACCENT)
         self._live_counts = {k: 0 for k in self._live_counts}
+        self._flagged_points = 0
         self._update_chips()
 
         for tree in (self.device_tree, self.points_tree, self.reg_tree, self.svc_tree):
@@ -1245,11 +1258,15 @@ class HVACNetworkScannerGUI:
     def _update_chips(self, counts: Optional[dict] = None, points: Optional[int] = None) -> None:
         counts = counts or self._live_counts
         labels = {'bacnet': 'BACnet', 'mstp': 'MS/TP', 'modbus': 'Modbus',
-                  'services': 'Services', 'snmp': 'SNMP', 'points': 'Points'}
+                  'services': 'Services', 'snmp': 'SNMP', 'points': 'Points',
+                  'flagged': 'Flagged'}
         for key, chip in self.chips.items():
             n = points if key == 'points' else counts.get(key)
             if key == 'points' and points is None:
                 n = counts.get('points')
+            if key == 'flagged':
+                seen = self.scan_running or self.result is not None or self._flagged_points
+                n = self._flagged_points if seen else None
             chip.configure(text=f"{labels[key]}  {n:,}" if n is not None else f"{labels[key]}  –")
 
     def _device_label(self, dev: dict) -> str:
@@ -1263,11 +1280,16 @@ class HVACNetworkScannerGUI:
         label = self._device_label(dev)
         count = 0
         for pt in dev.get('objects', []) or []:
+            status = pt.get('status', '')
+            tags = ()
+            if status:
+                self._flagged_points += 1
+                tags = ("alarm",) if ('alarm' in status or 'fault' in status) else ("flag",)
             self._insert(self.points_tree, (
                 label, pt.get('type', '?'), pt.get('instance', '?'),
                 pt.get('name', ''), pt.get('present_value', ''),
-                pt.get('units', ''), pt.get('description', ''),
-            ))
+                pt.get('units', ''), status, pt.get('description', ''),
+            ), tags)
             count += 1
         return count
 
@@ -1464,6 +1486,9 @@ class HVACNetworkScannerGUI:
             kv("Segmentation", dev.get('segmentation'))
             kv("Protocol rev", props.get('protocol_revision'))
             kv("Points read", len(dev.get('objects') or []))
+            flags = dev.get('point_flags') or {}
+            kv("Point status", ", ".join(f"{n} {f}" for f, n in flags.items()) or "all normal"
+               if dev.get('objects') else None)
             c = dev.get('_classification') or {}
             kv("Profile", c.get('explanation'))
         if dev.get('banner') or dev.get('title') or dev.get('tls_summary'):

@@ -1132,6 +1132,8 @@ _POINT_PROPERTY_TYPES = {
     'modelName':    ('string',),
     'firmwareRevision': ('string',),
     'applicationSoftwareVersion': ('string',),
+    'statusFlags':  ('string',),           # BIT STRING, decoded to hex by the codec
+    'stateText':    ('string_list',),      # BACnetARRAY of CharacterString
 }
 
 
@@ -1160,6 +1162,13 @@ def _validate_point_property(name: str, val: Any) -> Any:
         # Numeric values masquerading as string-typed props are almost always
         # a sign of packet misalignment (vendor RPM quirk) — drop them rather
         # than let them leak into the Name/Description column.
+        return None
+
+    if expected == 'string_list':
+        # A one-element array decodes as a bare value, not a list of one.
+        items = [val] if isinstance(val, str) else val
+        if isinstance(items, list) and items and all(isinstance(s, str) for s in items):
+            return items
         return None
 
     if expected == 'int_or_str':

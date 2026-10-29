@@ -863,6 +863,9 @@ PROP_IDS = {
     'systemStatus':                 112,
     'databaseRevision':             155,
     'location':                     58,
+    'outOfService':                 81,
+    'stateText':                    110,
+    'statusFlags':                  111,
     'maxApduLengthAccepted':        62,
     'segmentationSupported':        107,
     'vendorIdentifier':             120,
@@ -906,53 +909,57 @@ DEFAULT_POINT_PROPERTIES = [
 # actually exist for which object types. Any object type not in this map falls
 # back to DEFAULT_POINT_PROPERTIES.
 # Reference: ASHRAE 135 property-list-per-object-type tables.
+# statusFlags (in-alarm, fault, overridden, out-of-service) is read wherever
+# there is a present value: it is what a commissioning walk-through looks at
+# first. Multi-state objects also read stateText so a value can be shown as
+# "Occupied" rather than "2".
 POINT_PROPERTIES_BY_TYPE = {
     # Analog points: have present value, units, name, description
-    'Analog Input':         ['objectName', 'presentValue', 'units', 'description'],
-    'Analog Output':        ['objectName', 'presentValue', 'units', 'description'],
-    'Analog Value':         ['objectName', 'presentValue', 'units', 'description'],
-    'Loop':                 ['objectName', 'presentValue', 'units', 'description'],
-    'Accumulator':          ['objectName', 'presentValue', 'units', 'description'],
-    'Pulse Converter':      ['objectName', 'presentValue', 'units', 'description'],
-    'Averaging':            ['objectName', 'presentValue', 'units', 'description'],
-    'Integer Value':        ['objectName', 'presentValue', 'units', 'description'],
-    'Positive Integer Value': ['objectName', 'presentValue', 'units', 'description'],
-    'Large Analog Value':   ['objectName', 'presentValue', 'units', 'description'],
-    'Lighting Output':      ['objectName', 'presentValue', 'units', 'description'],
+    'Analog Input':         ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Analog Output':        ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Analog Value':         ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Loop':                 ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Accumulator':          ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Pulse Converter':      ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Averaging':            ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Integer Value':        ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Positive Integer Value': ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Large Analog Value':   ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
+    'Lighting Output':      ['objectName', 'presentValue', 'units', 'description', 'statusFlags'],
 
     # Binary points: have present value, name, description — but NO units
-    'Binary Input':         ['objectName', 'presentValue', 'description'],
-    'Binary Output':        ['objectName', 'presentValue', 'description'],
-    'Binary Value':         ['objectName', 'presentValue', 'description'],
-    'Binary Lighting Output': ['objectName', 'presentValue', 'description'],
+    'Binary Input':         ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Output':        ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Value':         ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Binary Lighting Output': ['objectName', 'presentValue', 'description', 'statusFlags'],
 
     # Multi-state: have present value, name, description — NO units
-    'Multi-State Input':    ['objectName', 'presentValue', 'description'],
-    'Multi-State Output':   ['objectName', 'presentValue', 'description'],
-    'Multi-State Value':    ['objectName', 'presentValue', 'description'],
+    'Multi-State Input':    ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
+    'Multi-State Output':   ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
+    'Multi-State Value':    ['objectName', 'presentValue', 'description', 'statusFlags', 'stateText'],
 
     # Character string / date / time values
-    'CharacterString Value': ['objectName', 'presentValue', 'description'],
-    'DateTime Value':       ['objectName', 'presentValue', 'description'],
-    'Date Value':           ['objectName', 'presentValue', 'description'],
-    'Time Value':           ['objectName', 'presentValue', 'description'],
-    'BitString Value':      ['objectName', 'presentValue', 'description'],
-    'OctetString Value':    ['objectName', 'presentValue', 'description'],
+    'CharacterString Value': ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'DateTime Value':       ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Date Value':           ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Time Value':           ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'BitString Value':      ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'OctetString Value':    ['objectName', 'presentValue', 'description', 'statusFlags'],
 
     # Access control / life safety: have present value but rarely units
-    'Access Door':          ['objectName', 'presentValue', 'description'],
-    'Life Safety Point':    ['objectName', 'presentValue', 'description'],
-    'Life Safety Zone':     ['objectName', 'presentValue', 'description'],
+    'Access Door':          ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Life Safety Point':    ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Life Safety Zone':     ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Command':              ['objectName', 'description'],
 
     # Config/navigational objects — name + description only, no present value
     'Group':                ['objectName', 'description'],
     'Global Group':         ['objectName', 'description'],
     'Network Port':         ['objectName', 'description'],
-    'Timer':                ['objectName', 'presentValue', 'description'],
+    'Timer':                ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Elevator Group':       ['objectName', 'description'],
     'Escalator':            ['objectName', 'description'],
     'Event Enrollment':     ['objectName', 'description'],
-    'Load Control':         ['objectName', 'presentValue', 'description'],
+    'Load Control':         ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Channel':              ['objectName', 'description'],
 }
