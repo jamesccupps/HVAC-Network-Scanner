@@ -282,7 +282,7 @@ def test_engine_messages_are_not_logged_at_info(caplog):
     caplog.set_level("INFO", logger="hvac_scanner")
     ScanEngine(ScanOptions(networks=["127.0.0.1"], scan_bacnet=False, scan_mstp=False,
                            scan_modbus=False, scan_services=False, scan_snmp=False,
-                           scan_p2=False),
+                           scan_p2=False, scan_knx=False),
                callback=lambda m: None).run()
     assert not [r for r in caplog.records if r.name == "hvac_scanner.engine"]
 
@@ -599,7 +599,7 @@ def test_scan_result_records_its_targets():
     from hvac_scanner.engine import ScanEngine, ScanOptions
     r = ScanEngine(ScanOptions(networks=['127.0.0.1'], scan_bacnet=False, scan_mstp=False,
                                scan_modbus=False, scan_services=False, scan_snmp=False,
-                               scan_p2=False),
+                               scan_p2=False, scan_knx=False),
                    callback=lambda m: None).run()
     assert r.to_dict()['targets'] == ['127.0.0.1']
 

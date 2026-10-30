@@ -34,17 +34,23 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from . import __version__
+from . import __version__, codec
 from .bacnet import BACnetClient
 from .constants import (
+    BACNET_LOGGING_TYPES,
+    BACNET_NETWORK_TYPES,
     BACNET_UNITS,
     DEFAULT_POINT_PROPERTIES,
+    METADATA_PROPERTIES_BY_TYPE,
     POINT_PROPERTIES_BY_TYPE,
+    PROP_IDS,
     HTTP_FINGERPRINTS,
 )
 from .fingerprint import fingerprint_device
 from .modbus import ModbusScanner
+from .knx import KNXScanner
 from .p2 import P2Scanner
+from .report import trend_stopped_full
 from .services import HVACServiceScanner
 from .snmp import SNMPScanner
 
@@ -67,6 +73,9 @@ class ScanOptions:
     # Siemens APOGEE P2 panels (TCP/5033). Read-only and registration-free;
     # see p2.py for exactly what is sent.
     scan_p2: bool = True
+    # KNXnet/IP interfaces and routers (UDP 3671): one description request
+    # per target, nothing connected. See knx.py.
+    scan_knx: bool = True
     deep_scan: bool = True
     # v2.1.2: scan depth preset. "quick" samples ~5% of objects per device
     # (useful for fast inventory), "normal" honors vendor-aware caps,
@@ -130,6 +139,17 @@ class ScanOptions:
     # target that did not answer; "off" never probes.
     unicast_discovery: str = "auto"
     snmp_communities: list[str] = field(default_factory=lambda: ["public"])
+    # Read the broadcast and foreign-device tables of any BBMD found. Two
+    # read-only BVLL requests per BACnet/IP address; nothing is registered.
+    read_bbmd_tables: bool = True
+    # Trend logs, schedules, calendars and network ports, read as metadata
+    # during the deep scan (never trend records).
+    read_metadata: bool = True
+    # MS/TP networks behind a router on another subnet whose devices do not
+    # answer a routed Who-Is: ask each MS/TP address in turn. Off by default —
+    # it costs the trunk a reply timeout per empty address and takes about a
+    # minute per network. See BACnetClient.probe_mstp_macs.
+    mstp_mac_probe: bool = False
 
 
 # Hosts "auto" unicast discovery will probe without being told to. A /22's
@@ -144,6 +164,7 @@ class ScanResult:
     devices: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=lambda: {
         'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'p2': 0,
+        'knx': 0,
         'points': 0,
     })
     # What was asked for, so an export says what it is a survey of.
@@ -365,6 +386,12 @@ class ScanEngine:
                  stop_event: Optional[threading.Event] = None,
                  device_callback: Optional[Callable[[dict[str, Any]], None]] = None,
                  progress_callback: Optional[Callable[[str, int, int], None]] = None):
+        # One entry per target spec, so each /24 gets its own broadcast: a
+        # comma list given as one entry (a quoted CLI argument) used to be
+        # treated as a single multi-subnet target and sent a limited
+        # broadcast, which reaches only the local segment.
+        from .netrange import split_targets
+        options = replace(options, networks=split_targets(options.networks))
         self.opts = options
         self.callback = callback or (lambda msg: None)
         # Fired as each device finishes, so a UI can show results while the
@@ -471,6 +498,11 @@ class ScanEngine:
                     self._scan_p2()
                 except Exception:
                     log.exception("APOGEE P2 scan pass failed")
+            if self.opts.scan_knx and not self._stopped():
+                try:
+                    self._scan_knx()
+                except Exception:
+                    log.exception("KNXnet/IP scan pass failed")
             if self.opts.scan_services and not self._stopped():
                 try:
                     self._scan_services()
@@ -508,6 +540,8 @@ class ScanEngine:
         self._log(f"  SNMP:        {self.result.counts['snmp']}")
         if self.opts.scan_p2:
             self._log(f"  APOGEE P2:   {self.result.counts['p2']}")
+        if self.opts.scan_knx:
+            self._log(f"  KNXnet/IP:   {self.result.counts['knx']}")
         self._log(f"  Total:       {len(unique_ips)} unique IP(s), "
                   f"{self.result.counts['points']} points/registers")
         self._log("=" * 65)
@@ -760,6 +794,9 @@ class ScanEngine:
             if not heard_any and not self.opts.bbmd and not self._stopped():
                 self._explain_silence()
 
+            if self.opts.read_bbmd_tables and not self._stopped():
+                self._inventory_bbmds(client, to_scan)
+
             self._deep_scan_devices(client, to_scan)
 
             if self.opts.scan_mstp and not self._stopped():
@@ -870,6 +907,54 @@ class ScanEngine:
             kept.append(dev)
         self._log(f"  Unicast discovery found {len(kept)} device(s).")
         return kept
+
+    # -- BBMDs --------------------------------------------------------------
+
+    def _inventory_bbmds(self, client: BACnetClient,
+                         devices: list[dict[str, Any]]) -> None:
+        """Read the tables of every BBMD among the discovered IP devices.
+
+        The broadcast table lists the other subnets a BBMD links into one
+        BACnet network — often parts of the site nobody asked the scanner to
+        look at — and the foreign-device table lists who has registered to
+        hear the site's broadcasts. See BACnetClient.read_bbmd_tables.
+        """
+        ips = list(dict.fromkeys(d['ip'] for d in devices
+                                 if d.get('protocol') == 'BACnet/IP'))
+        if self.opts.bbmd and self.opts.bbmd not in ips:
+            ips.append(self.opts.bbmd)
+        if not ips:
+            return
+        tables = client.read_bbmd_tables(ips, stop_fn=self._stopped)
+        if not tables:
+            return
+        self._log(f"\nBBMDs: {len(tables)} of {len(ips)} BACnet/IP address(es)")
+        targets = set(self._target_ips_in_order())
+        outside: set[str] = set()
+        for ip, table in tables.items():
+            peers = [e['address'].rsplit(':', 1)[0] for e in table['bdt']]
+            others = [p for p in peers if p != ip]
+            outside.update(p for p in others if p not in targets)
+            line = (f"  BBMD at {ip}: links {len(others)} other subnet(s) "
+                    f"({', '.join(others)})" if others
+                    else f"  BBMD at {ip}: no peer BBMDs")
+            fdt = table.get('fdt')
+            if fdt is None:
+                line += "; foreign device table not readable"
+            elif fdt:
+                line += (f"; {len(fdt)} foreign device(s) registered: "
+                         + ", ".join(f"{e['address']} ({e['remaining']} s left)"
+                                     for e in fdt))
+            else:
+                line += "; no foreign devices registered"
+            self._log(line)
+            for dev in devices:
+                if dev['ip'] == ip and dev.get('protocol') == 'BACnet/IP':
+                    dev['bbmd'] = table
+        if outside and targets:
+            self._log(f"  Peer BBMD(s) outside the scanned targets: "
+                      f"{', '.join(sorted(outside, key=_ip_key))} — other BACnet "
+                      f"subnets on this site.")
 
     def _target_ips_in_order(self) -> list[str]:
         from .netrange import parse_targets, InvalidTargetSyntaxError
@@ -1118,6 +1203,134 @@ class ScanEngine:
             if not new_devs:
                 self._log("    No MS/TP devices beyond those already found.")
             self._deep_scan_devices(client, new_devs)
+
+        if not self._stopped():
+            self._scan_remote_mstp(client)
+
+    def _scan_remote_mstp(self, client: BACnetClient) -> None:
+        """MS/TP networks behind routers on another subnet, without a BBMD.
+
+        Broadcast router discovery cannot see these routers, and the routers
+        and the devices behind them broadcast their answers on their own
+        subnet, where the scanner is not. So, for the routers unicast
+        discovery found:
+
+        1. Network numbers come from the routers' Network Port objects (read
+           in the deep scan), or from routers that answer a Who-Is-Router-To-
+           Network sent to them directly.
+        2. A routed Who-Is goes to each router for each network. Devices that
+           answer the requester directly are found here.
+        3. A network that stays silent is, with `mstp_mac_probe`, asked one
+           MS/TP address at a time with a confirmed read, whose reply is
+           always routed back. Without it, the log says how to reach it.
+        """
+        remote = [d for d in self.result.devices
+                  if d.get('discovered_via') == 'unicast'
+                  and d.get('protocol') == 'BACnet/IP']
+        if not remote:
+            return
+        heard = {d.get('source_network') for d in self.result.devices
+                 if d.get('source_network') is not None}
+        routes: dict[int, dict[str, Any]] = {}
+        ip_nets: set[int] = set()
+        for dev in remote:
+            for port in dev.get('network_ports') or []:
+                net = port.get('network')
+                if not net:
+                    continue
+                if port.get('type') == 'MS/TP':
+                    routes.setdefault(net, {'ip': dev['ip'], 'type': 'MS/TP',
+                                            'mac': port.get('mac'),
+                                            'max_master': port.get('max_master')})
+                else:
+                    ip_nets.add(net)
+        # Only devices whose Network Ports were not read need asking: the
+        # ports already say which networks a router serves, and that a plain
+        # controller serves none. A router that answers does so at once.
+        unknown = list(dict.fromkeys(d['ip'] for d in remote if not d.get('network_ports')))
+        for router in (client.discover_routers_unicast(
+                unknown, wait=min(self.opts.timeout, 2.0)) if unknown else []):
+            for net in router['networks']:
+                routes.setdefault(net, {'ip': router['ip'], 'type': None})
+        todo = {n: r for n, r in sorted(routes.items())
+                if n not in heard and n not in ip_nets}
+        if not todo or self._stopped():
+            return
+
+        self._log("\nMS/TP behind routers on other subnets")
+        by_router: "OrderedDict[str, list[int]]" = OrderedDict()
+        for net, route in todo.items():
+            by_router.setdefault(route['ip'], []).append(net)
+        found: list[dict[str, Any]] = []
+        for ip, nets in by_router.items():
+            if self._stopped():
+                return
+            self._log(f"  Router {ip}: routed Who-Is to network(s) "
+                      f"{', '.join(str(n) for n in nets)}")
+            for dev in client.discover_who_is_networks(
+                    target_ip=ip, dnets=nets, extra_wait=2.0, unicast=True):
+                if dev['ip'] == ip:
+                    dev['discovered_via'] = 'routed who-is'
+                    found.append(dev)
+        answered = {d.get('source_network') for d in found}
+        silent = [n for n in todo if n not in answered]
+        # With the probe on, every network gets it: a network where some
+        # devices answered the routed Who-Is may still hold devices that only
+        # ever broadcast.
+        for net, route in (todo.items() if self.opts.mstp_mac_probe else ()):
+            if self._stopped():
+                return
+            if route.get('type') != 'MS/TP':
+                self._log(f"  Network {net} via {route['ip']}: not known to be "
+                          f"MS/TP (the router has no Network Port for it), so its "
+                          f"addresses are not probed.")
+                continue
+            top = route.get('max_master')
+            top = top if isinstance(top, int) and 0 <= top <= 127 else 127
+            known = {_mac_int(route.get('mac'))} | {
+                _mac_int(d.get('source_address')) for d in found
+                if d.get('source_network') == net}
+            macs = [m for m in range(top + 1) if m not in known]
+            self._log(f"  Network {net} via {route['ip']}: asking MS/TP addresses "
+                      f"0–{top} a few at a time...")
+            self._progress(f"MS/TP address probe (network {net})", 0, len(macs))
+            devs = client.probe_mstp_macs(
+                route['ip'], net, macs, stop_fn=self._stopped,
+                timeout=min(self.opts.timeout, 2.0),
+                progress=lambda done, total, net=net: self._progress(
+                    f"MS/TP address probe (network {net})", done, total))
+            if not devs:
+                self._log(f"    No further devices on network {net}.")
+            found.extend(devs)
+        if not self.opts.mstp_mac_probe:
+            bbmds = [d['ip'] for d in remote if d.get('bbmd')]
+            via = (f"register with the BBMD at {bbmds[0]} (--bbmd {bbmds[0]})" if bbmds
+                   else "register with a BBMD on that subnet (--bbmd)")
+            how = (f"turn on the MS/TP address probe (--mstp-probe; about a minute "
+                   f"per network) or {via}")
+            if silent:
+                self._log(f"  Network(s) {', '.join(str(n) for n in silent)} did not "
+                          f"answer a routed Who-Is: their devices broadcast I-Am on "
+                          f"the router's subnet, which this scanner is not on. To "
+                          f"list them, {how}.")
+            if answered:
+                self._log(f"  Devices on network(s) {', '.join(str(n) for n in sorted(answered))} "
+                          f"that only broadcast their I-Am cannot answer from here; "
+                          f"to be sure of finding every one, {how}.")
+
+        existing = {(d['ip'], d.get('instance')) for d in self.result.devices}
+        new_devs = []
+        for dev in found:
+            key = (dev['ip'], dev.get('instance'))
+            if key in existing:
+                continue
+            existing.add(key)
+            dev['protocol'] = 'BACnet/MSTP'
+            self._log(f"    Device {dev.get('instance', '?')} on MSTP net "
+                      f"{dev.get('source_network')} mac {dev.get('source_address')} "
+                      f"via {dev['ip']} ({dev['discovered_via']})")
+            new_devs.append(dev)
+        self._deep_scan_devices(client, new_devs)
 
     def _stride_sample_indices(self, total_count: int, cap: int) -> list[int]:
         """Evenly spaced indices across the whole objectList, no reads needed.
@@ -1403,7 +1616,7 @@ class ScanEngine:
         _NON_POINT_TYPES = {
             'Device', 'File', 'Schedule', 'Calendar',
             'Notification Class', 'Trend Log', 'Trend Log Multiple',
-            'Event Log', 'Structured View', 'Program',
+            'Event Log', 'Structured View', 'Program', 'Network Port',
         }
 
         # v2.1.1: choose properties that actually exist for this object type.
@@ -1483,6 +1696,110 @@ class ScanEngine:
         note = ("; " + ", ".join(f"{n} {f}" for f, n in flagged.items())) if flagged else ""
         self._log(f"    Read {len(objects)} points from device {instance}{note}")
 
+        if self.opts.read_metadata and not self._stopped():
+            meta_wanted = [(t, i, METADATA_PROPERTIES_BY_TYPE[str(t)])
+                           for t, i in obj_list if str(t) in METADATA_PROPERTIES_BY_TYPE]
+            if meta_wanted:
+                try:
+                    meta = client.read_points_batched(
+                        ip, instance, meta_wanted,
+                        prefer_multiple=self.opts.use_rpm,
+                        dnet=dnet, dadr=dadr, stop_fn=self._stopped)
+                except Exception as e:
+                    log.debug("metadata read %s failed: %s", ip, e)
+                    meta = []
+                self._apply_metadata(dev, meta)
+
+    def _apply_metadata(self, dev: dict[str, Any],
+                        meta: "list[tuple[str, int, dict[str, Any]]]") -> None:
+        """File trend logs, schedules, calendars and network ports on `dev`."""
+        names = {(o['type'], o['instance']): o['name'] for o in dev.get('objects', [])}
+        own = dev.get('instance')
+        trends, schedules, ports = [], [], []
+        for obj_type, inst, raw in meta:
+            obj_type = str(obj_type)
+            name = _safe_str(raw.get('objectName', ''))
+            if obj_type == 'Network Port':
+                ntype = raw.get('networkType')
+                ports.append({
+                    'instance': inst, 'name': name,
+                    'type': (BACNET_NETWORK_TYPES.get(ntype, f"type {ntype}")
+                             if ntype is not None else ''),
+                    'network': raw.get('networkNumber'),
+                    'mac': _format_mac(raw.get('macAddress'), ntype),
+                    'max_master': raw.get('maxMaster'),
+                    'accepts_fd_registrations': raw.get('bbmdAcceptFDRegistrations'),
+                    # BACnet/SC: where this device's hub is, and whether it
+                    # is a hub itself (and on which URIs it accepts nodes).
+                    'sc_primary_hub': raw.get('scPrimaryHubUri', ''),
+                    'sc_failover_hub': raw.get('scFailoverHubUri', ''),
+                    'sc_hub_function': raw.get('scHubFunctionEnable'),
+                    'sc_accept_uris': raw.get('scHubFunctionAcceptUris') or [],
+                })
+            elif obj_type.startswith('Trend Log'):
+                refs = codec.decode_property_references(
+                    raw.get('logDeviceObjectProperty') or b'')
+                interval = raw.get('logInterval')
+                ltype = raw.get('loggingType')
+                trends.append({
+                    'type': obj_type, 'instance': inst, 'name': name,
+                    'description': _safe_str(raw.get('description', '')),
+                    'logs': [_describe_reference(r, names, own) for r in refs],
+                    'interval_s': interval / 100 if interval else None,
+                    'logging_type': (BACNET_LOGGING_TYPES.get(ltype, str(ltype))
+                                     if ltype is not None else ''),
+                    'enabled': raw.get('enable'),
+                    'records': raw.get('recordCount'),
+                    'buffer_size': raw.get('bufferSize'),
+                    'stop_when_full': raw.get('stopWhenFull'),
+                    'status': ", ".join(_status_flags(raw.get('statusFlags'))),
+                })
+            elif obj_type in ('Schedule', 'Calendar'):
+                refs = codec.decode_property_references(
+                    raw.get('listOfObjectPropertyReferences') or b'')
+                binary = bool(refs) and all(
+                    r['object'][0].startswith('Binary') for r in refs)
+                entry = {
+                    'type': obj_type, 'instance': inst, 'name': name,
+                    'description': _safe_str(raw.get('description', '')),
+                    'present_value': _schedule_value(raw.get('presentValue'), binary),
+                    'status': ", ".join(_status_flags(raw.get('statusFlags'))),
+                }
+                if obj_type == 'Schedule':
+                    period = raw.get('effectivePeriod')
+                    weekly = codec.decode_weekly_schedule(raw.get('weeklySchedule') or b'')
+                    entry.update({
+                        'default': (_schedule_value(raw['scheduleDefault'], binary)
+                                    if 'scheduleDefault' in raw else ''),
+                        'effective': _date_range(period),
+                        'controls': [_describe_reference(r, names, own) for r in refs],
+                        'weekly': {day: ", ".join(f"{str(t)[:5]} {_schedule_value(v, binary)}"
+                                                  for t, v in changes)
+                                   for day, changes in zip(_WEEKDAYS, weekly) if changes},
+                    })
+                schedules.append(entry)
+        if ports:
+            dev['network_ports'] = ports
+        if trends:
+            dev['trend_logs'] = trends
+        if schedules:
+            dev['schedules'] = schedules
+        parts = []
+        if trends:
+            off = sum(1 for t in trends if t['enabled'] is False)
+            full = sum(1 for t in trends if trend_stopped_full(t))
+            extra = ", ".join(x for x in (f"{off} disabled" if off else "",
+                                          f"{full} full and stopped" if full else "") if x)
+            parts.append(f"{len(trends)} trend log(s)" + (f" ({extra})" if extra else ""))
+        if schedules:
+            parts.append(f"{len(schedules)} schedule(s)/calendar(s)")
+        if ports:
+            parts.append("network ports: " + ", ".join(
+                f"{p['type'] or '?'}" + (f" net {p['network']}" if p['network'] else "")
+                for p in ports))
+        if parts:
+            self._log("    " + "; ".join(parts))
+
     # -- Modbus ---------------------------------------------------------
 
     def _all_targets(self) -> str:
@@ -1527,6 +1844,22 @@ class ScanEngine:
             self.result.counts['modbus'] += 1
             self._emit_device(dev)
 
+    # -- KNXnet/IP -------------------------------------------------------
+
+    def _scan_knx(self) -> None:
+        self._log("\n" + "=" * 65)
+        self._log("KNXNET/IP DISCOVERY")
+        self._log("=" * 65)
+        scanner = KNXScanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
+        for dev in scanner.scan_network(
+                self._all_targets(), stop_event=self.stop_event,
+                progress=lambda done, total: self._progress("KNXnet/IP", done, total)):
+            if self._stopped():
+                break
+            self.result.devices.append(dev)
+            self.result.counts['knx'] += 1
+            self._emit_device(dev)
+
     # -- APOGEE P2 ------------------------------------------------------
 
     def _scan_p2(self) -> None:
@@ -1566,12 +1899,49 @@ class ScanEngine:
             stop_event=self.stop_event,
             progress=lambda done, total: self._progress("Services", done, total),
         )
+        services.extend(self._probe_named_sc_hubs(scanner, services))
         for svc in services:
             if self._stopped():
                 break
             self.result.devices.append(svc)
             self.result.counts['services'] += 1
             self._emit_device(svc)
+
+    def _probe_named_sc_hubs(self, scanner: HVACServiceScanner,
+                             services: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """BACnet/SC hubs that devices name in their Network Ports.
+
+        A BACnet/SC hub can listen on any port. A device that also has a
+        BACnet/IP port says where its hub is (and a hub says where it accepts
+        nodes), so those addresses are probed even when the port is not one
+        the sweep covers. Only hosts among the targets are probed.
+        """
+        from urllib.parse import urlsplit
+        targets = set(self._target_ips_in_order())
+        seen = {(s.get('ip'), s.get('port')) for s in services}
+        named: dict[tuple[str, int], str] = {}
+        for dev in self.result.devices:
+            for port in dev.get('network_ports') or []:
+                for uri in ([port.get('sc_primary_hub'), port.get('sc_failover_hub')]
+                            + list(port.get('sc_accept_uris') or [])):
+                    try:
+                        parts = urlsplit(str(uri or ''))
+                        host, num = parts.hostname, parts.port or 443
+                    except ValueError:
+                        continue
+                    if host in targets and (host, num) not in seen:
+                        named.setdefault((host, num), str(uri))
+        out = []
+        for (host, num), uri in named.items():
+            if self._stopped():
+                break
+            info = scanner.probe_bacnet_sc(host, num)
+            if info:
+                info['sc_named_by'] = uri
+                self._log(f"  {host}:{num} - {info.get('product')} (named by a "
+                          f"device as {uri})")
+                out.append(info)
+        return out
 
     # -- SNMP -----------------------------------------------------------
 
@@ -1654,6 +2024,86 @@ def _status_flags(val: Any) -> list[str]:
         return []
     bits = data[1]
     return [name for i, name in enumerate(STATUS_FLAG_NAMES) if bits & (0x80 >> i)]
+
+
+_WEEKDAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+_PROP_NAMES = {num: name for name, num in PROP_IDS.items() if '-' not in name}
+
+
+def _describe_reference(ref: dict[str, Any], names: dict, own_instance: Any) -> str:
+    """'AHU-1:SA-T (Analog Input 3) presentValue' for a decoded
+    BACnetDeviceObjectPropertyReference. `names` maps this device's
+    (type, instance) to object names; a reference into another device is
+    shown by number, since its names are not known here."""
+    obj = ref.get('object')
+    if not obj:
+        return ''
+    obj_type, inst = obj
+    dev = ref.get('device')
+    elsewhere = dev is not None and dev != own_instance
+    label = None if elsewhere else names.get((obj_type, inst))
+    text = f"{label} ({obj_type} {inst})" if label else f"{obj_type} {inst}"
+    if elsewhere:
+        text = f"device {dev} {text}"
+    if 'property' in ref:
+        text += " " + _PROP_NAMES.get(ref['property'], f"property {ref['property']}")
+    if 'index' in ref:
+        text += f"[{ref['index']}]"
+    return text
+
+
+def _schedule_value(val: Any, binary: bool) -> str:
+    """A scheduled value as the controlled object would show it."""
+    if val is None:
+        return 'relinquish'
+    if (binary and isinstance(val, int) and not isinstance(val, bool)
+            and val in (0, 1)):
+        return ('inactive', 'active')[val]
+    return _format_present_value(val)
+
+
+def _date_range(period: Any) -> str:
+    """A BACnetDateRange as words; an all-wildcard date is an open end."""
+    if not (isinstance(period, list) and len(period) == 2):
+        return ''
+    start, end = (None if str(d) == '*-*-*' else str(d) for d in period)
+    if start and end:
+        return f"{start} to {end}"
+    if start:
+        return f"from {start}"
+    if end:
+        return f"until {end}"
+    return 'always'
+
+
+def _format_mac(mac: Any, network_type: Any) -> str:
+    """A Network Port macAddress (hex from the codec) in its network's own
+    notation: an MS/TP station number, an IPv4 address:port, else hex."""
+    if not isinstance(mac, str) or not mac:
+        return ''
+    try:
+        data = bytes.fromhex(mac)
+    except ValueError:
+        return mac
+    if network_type == 2 and len(data) == 1:
+        return str(data[0])
+    if network_type == 5 and len(data) == 6:
+        return f"{'.'.join(str(b) for b in data[:4])}:{int.from_bytes(data[4:], 'big')}"
+    return ':'.join(f"{b:02X}" for b in data)
+
+
+def _mac_int(mac: Any) -> Optional[int]:
+    try:
+        return int(mac)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ip_key(ip: str) -> tuple:
+    try:
+        return tuple(int(p) for p in ip.split('.'))
+    except ValueError:
+        return (999, ip)
 
 
 def _safe_str(val: Any) -> str:

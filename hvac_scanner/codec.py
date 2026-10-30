@@ -57,6 +57,7 @@ class RpmEntry:
     prop_id: int
     array_index: Optional[int]
     value: Any
+    raw: bytes = b''           # the encoded value; see decode_tagged
 
 
 @dataclass
@@ -349,12 +350,16 @@ def build_npdu(expecting_reply: bool = True,
 # ---------------------------------------------------------------------------
 
 def build_whois(low: Optional[int] = None, high: Optional[int] = None,
-                dnet: Optional[int] = None) -> bytes:
+                dnet: Optional[int] = None, unicast: bool = False) -> bytes:
     """Build a Who-Is BVLC packet (Original-Broadcast-NPDU).
 
     If `dnet` is supplied, targets a specific remote BACnet network for
     MSTP probing (broadcast on that network — DADR is not included).
     If `low`/`high` supplied, filters responders by device instance range.
+
+    `unicast` wraps it as an Original-Unicast-NPDU, for a Who-Is sent straight
+    to one router's address. Sent to a BBMD as Original-Broadcast-NPDU, the
+    BBMD would pass it on to every peer subnet as a broadcast.
     """
     if dnet is not None:
         # Routed broadcast: dest-specifier set, DADR omitted (DLEN=0).
@@ -369,16 +374,19 @@ def build_whois(low: Optional[int] = None, high: Optional[int] = None,
         apdu += encode_context_unsigned(0, low)
         apdu += encode_context_unsigned(1, high)
 
-    return build_bvlc(0x0B, npdu + bytes(apdu))  # 0x0B = Original-Broadcast-NPDU
+    function = BVLC_ORIGINAL_UNICAST_NPDU if unicast else BVLC_ORIGINAL_BROADCAST_NPDU
+    return build_bvlc(function, npdu + bytes(apdu))
 
 
-def build_whois_router_to_network(dnet: Optional[int] = None) -> bytes:
+def build_whois_router_to_network(dnet: Optional[int] = None,
+                                  unicast: bool = False) -> bytes:
     """Who-Is-Router-To-Network (NPDU network message type 0x00)."""
     if dnet is None:
         npdu = b'\x01\x80\x00'  # ver, control(network-msg=1), msg type 0
     else:
         npdu = b'\x01\x80\x00' + struct.pack('!H', dnet)
-    return build_bvlc(0x0B, npdu)
+    function = BVLC_ORIGINAL_UNICAST_NPDU if unicast else BVLC_ORIGINAL_BROADCAST_NPDU
+    return build_bvlc(function, npdu)
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +465,63 @@ def forwarded_origin(data: bytes) -> Optional[tuple[str, int]]:
         return None
     ip = '.'.join(str(b) for b in data[4:8])
     return ip, struct.unpack('!H', data[8:10])[0]
+
+
+# ---------------------------------------------------------------------------
+# BBMD tables (Annex J.2.2–J.2.4, J.2.7–J.2.8)
+#
+# Read-Broadcast-Distribution-Table and Read-Foreign-Device-Table are pure
+# reads: a BBMD answers with a copy of the table, anything else answers with
+# a NAK or not at all. The BDT names every subnet the BBMD links broadcasts
+# to — usually the rest of the site's BACnet network — and the FDT names
+# every address currently registered to receive them, which is who else is
+# listening in.
+# ---------------------------------------------------------------------------
+
+def build_read_bdt() -> bytes:
+    return struct.pack('!BBH', BACNET_BVLC_TYPE, BVLC_READ_BDT, 4)
+
+
+def build_read_fdt() -> bytes:
+    return struct.pack('!BBH', BACNET_BVLC_TYPE, BVLC_READ_FDT, 4)
+
+
+def _bvll_body(data: bytes, function: int) -> Optional[bytes]:
+    if len(data) < 4 or data[0] != BACNET_BVLC_TYPE or data[1] != function:
+        return None
+    length = struct.unpack('!H', data[2:4])[0]
+    return data[4:max(4, min(length, len(data)))]
+
+
+def parse_read_bdt_ack(data: bytes) -> Optional[list[dict[str, Any]]]:
+    """Entries of a Read-BDT-Ack: ``[{'address': 'ip:port', 'mask': ...}]``.
+
+    None when `data` is not a Read-BDT-Ack. An empty list is a real answer: a
+    BBMD with no peers configured.
+    """
+    body = _bvll_body(data, BVLC_READ_BDT_ACK)
+    if body is None:
+        return None
+    out = []
+    for i in range(0, len(body) - 9, 10):
+        ip = '.'.join(str(b) for b in body[i:i + 4])
+        port = struct.unpack('!H', body[i + 4:i + 6])[0]
+        out.append({'address': f"{ip}:{port}",
+                    'mask': '.'.join(str(b) for b in body[i + 6:i + 10])})
+    return out
+
+
+def parse_read_fdt_ack(data: bytes) -> Optional[list[dict[str, Any]]]:
+    """Entries of a Read-FDT-Ack: address, registered TTL, seconds remaining."""
+    body = _bvll_body(data, BVLC_READ_FDT_ACK)
+    if body is None:
+        return None
+    out = []
+    for i in range(0, len(body) - 9, 10):
+        ip = '.'.join(str(b) for b in body[i:i + 4])
+        port, ttl, remaining = struct.unpack('!HHH', body[i + 4:i + 10])
+        out.append({'address': f"{ip}:{port}", 'ttl': ttl, 'remaining': remaining})
+    return out
 
 
 def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
@@ -736,10 +801,10 @@ def build_read_property(obj_type: int | str, obj_instance: int,
 
     # Context tag 1: Property Identifier (1 or 2 bytes)
     prop_val = resolve_property_id(prop_id)
-    if prop_val < 0x100:
-        apdu += bytes([0x19, prop_val])
-    else:
-        apdu += bytes([0x1A, (prop_val >> 8) & 0xFF, prop_val & 0xFF])
+    # Property identifiers run to 22 bits: the BACnet/SC properties of a
+    # Network Port (4194316 and up) take three octets, which a one-or-two
+    # octet encoding silently truncated into a different property.
+    apdu += encode_context_unsigned(1, prop_val)
 
     # Context tag 2: Array Index (optional)
     if array_index is not None:
@@ -757,11 +822,11 @@ def build_read_property(obj_type: int | str, obj_instance: int,
     return build_bvlc(0x0A, npdu + bytes(apdu))  # 0x0A = Original-Unicast-NPDU
 
 
-def parse_read_property_ack(data: bytes) -> Any:
-    """Parse a ReadProperty-ACK and return the decoded value.
+def _rp_ack_value_start(data: bytes) -> Optional[int]:
+    """Where the value of a ReadProperty-ACK starts (just past opening tag 3).
 
-    Returns None if the packet is an error response or can't be parsed.
-    For lists (e.g. objectList without array_index) returns a Python list.
+    None for anything that is not a ReadProperty-ACK carrying a value: an
+    error, reject or abort, a Simple-ACK, another service's ACK.
     """
     try:
         if len(data) < 4 or data[0] != BACNET_BVLC_TYPE:
@@ -829,8 +894,21 @@ def parse_read_property_ack(data: bytes) -> Any:
         # Opening tag 3
         if idx >= len(data) or data[idx] != 0x3E:
             return None
-        idx += 1
+        return idx + 1
+    except (BACnetParseError, IndexError, struct.error):
+        return None
 
+
+def parse_read_property_ack(data: bytes) -> Any:
+    """Parse a ReadProperty-ACK and return the decoded value.
+
+    Returns None if the packet is an error response or can't be parsed.
+    For lists (e.g. objectList without array_index) returns a Python list.
+    """
+    idx = _rp_ack_value_start(data)
+    if idx is None:
+        return None
+    try:
         # Collect application-tagged values until closing tag 3 (0x3F)
         values: list[Any] = []
         while idx < len(data) and data[idx] != 0x3F:
@@ -845,6 +923,142 @@ def parse_read_property_ack(data: bytes) -> Any:
         return None
     except (IndexError, struct.error):
         return None
+
+
+def parse_read_property_ack_raw(data: bytes) -> Optional[bytes]:
+    """The encoded value of a ReadProperty-ACK, tags and all.
+
+    For constructed values — a trend log's logged property, a schedule's
+    weekly program — whose meaning lives in their context tags, which the
+    flat decoding of `parse_read_property_ack` drops. See `decode_tagged`.
+    """
+    start = _rp_ack_value_start(data)
+    if start is None:
+        return None
+    try:
+        return data[start:_value_end(data, start)]
+    except (BACnetParseError, IndexError, struct.error):
+        return None
+
+
+def _value_end(data: bytes, idx: int) -> int:
+    """Index of the closing tag that ends the value starting at `idx`.
+
+    Walks tag by tag, so a closing-tag byte value inside a string or a nested
+    construct of its own does not end the value early.
+    """
+    depth = 0
+    while idx < len(data):
+        _num, tag_class, length, _vstart, nxt = _read_tag(data, idx)
+        if tag_class == 1 and length == 6:
+            depth += 1
+        elif tag_class == 1 and length == 7:
+            if depth == 0:
+                return idx
+            depth -= 1
+        idx = nxt
+    raise BACnetParseError("value has no closing tag")
+
+
+# ---------------------------------------------------------------------------
+# Constructed values
+#
+# The flat decoding above keeps application-tagged values and reduces context
+# tags to bare hex, which is right for a point's present value and loses the
+# structure of anything built from context tags. These keep it.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Ctx:
+    """A context-tagged element: `value` is the raw contents of a primitive,
+    or the decoded elements of a constructed one."""
+    tag: int
+    value: Any
+
+
+def decode_tagged(data: bytes) -> list:
+    """Decode an encoded value, keeping context tags. Application-tagged
+    elements decode as `_parse_app_value` decodes them."""
+    out, _ = _decode_tagged(data, 0, len(data))
+    return out
+
+
+def _decode_tagged(data: bytes, idx: int, end: int) -> tuple[list, int]:
+    out: list = []
+    while idx < end:
+        tag_num, tag_class, length, vstart, nxt = _read_tag(data, idx)
+        if tag_class == 1:
+            if length == 6:
+                close = _value_end(data, nxt)
+                children, _ = _decode_tagged(data, nxt, close)
+                out.append(Ctx(tag_num, children))
+                idx = _read_tag(data, close)[4]
+                continue
+            if length == 7:
+                raise BACnetParseError("unbalanced closing tag")
+            out.append(Ctx(tag_num, data[vstart:nxt]))
+            idx = nxt
+            continue
+        val, idx = _parse_app_value(data, idx)
+        out.append(val)
+    return out, idx
+
+
+def decode_object_id(raw: bytes) -> Optional[tuple[str, int]]:
+    if len(raw) != 4:
+        return None
+    oid = struct.unpack('!I', raw)[0]
+    obj_type = (oid >> 22) & 0x3FF
+    return BACNET_OBJ_TYPES.get(obj_type, f"type-{obj_type}"), oid & 0x3FFFFF
+
+
+def decode_property_references(raw: bytes) -> list[dict[str, Any]]:
+    """BACnetDeviceObjectPropertyReference values, one or a list of them.
+
+    Each is ``{[0] object, [1] property, [2] array index, [3] device}`` with
+    the last two optional. Returns ``[{'object': (type, instance),
+    'property': id, 'index': n, 'device': instance}]`` with absent parts left
+    out. A trend log's logged property, a Trend Log Multiple's members and a
+    schedule's controlled objects all take this shape.
+    """
+    refs: list[dict[str, Any]] = []
+    try:
+        items = decode_tagged(raw)
+    except (BACnetParseError, IndexError, struct.error):
+        return refs
+    for item in items:
+        if not isinstance(item, Ctx) or not isinstance(item.value, bytes):
+            continue
+        if item.tag == 0:
+            obj = decode_object_id(item.value)
+            if obj is not None:
+                refs.append({'object': obj})
+        elif not refs:
+            continue
+        elif item.tag == 1:
+            refs[-1]['property'] = int.from_bytes(item.value, 'big')
+        elif item.tag == 2:
+            refs[-1]['index'] = int.from_bytes(item.value, 'big')
+        elif item.tag == 3:
+            dev = decode_object_id(item.value)
+            if dev is not None:
+                refs[-1]['device'] = dev[1]
+    return refs
+
+
+def decode_weekly_schedule(raw: bytes) -> list[list[tuple[str, Any]]]:
+    """A Schedule's weeklySchedule: seven days, Monday first, each a list of
+    ``(time, value)`` changes. A value of None is a relinquish (Null)."""
+    days: list[list[tuple[str, Any]]] = []
+    try:
+        items = decode_tagged(raw)
+    except (BACnetParseError, IndexError, struct.error):
+        return days
+    for item in items:
+        if isinstance(item, Ctx) and item.tag == 0 and isinstance(item.value, list):
+            vals = item.value
+            days.append([(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)])
+    return days
 
 
 def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
@@ -969,10 +1183,7 @@ def build_read_property_multiple_objects(
             else:
                 prop_id, array_index = entry, None
             pval = resolve_property_id(prop_id)
-            if pval < 0x100:
-                apdu += bytes([0x09, pval])
-            else:
-                apdu += bytes([0x0A, (pval >> 8) & 0xFF, pval & 0xFF])
+            apdu += encode_context_unsigned(0, pval)
             if array_index is not None:
                 apdu += encode_context_array_index(1, array_index)
         # Closing tag 1
@@ -1025,10 +1236,7 @@ def build_read_property_multiple(obj_type: int | str, obj_instance: int,
             prop_id, array_index = entry, None
         pval = resolve_property_id(prop_id)
         # Context tag 0 = property identifier (within listOfPropertyReferences)
-        if pval < 0x100:
-            apdu += bytes([0x09, pval])
-        else:
-            apdu += bytes([0x0A, (pval >> 8) & 0xFF, pval & 0xFF])
+        apdu += encode_context_unsigned(0, pval)
         # Context tag 1 = property array index (optional)
         if array_index is not None:
             apdu += encode_context_array_index(1, array_index)
@@ -1130,13 +1338,16 @@ def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
                     break
 
                 if data[idx] == 0x4E:  # Opening tag 4
-                    idx += 1
+                    start = idx + 1
+                    # Found by walking tags, so a nested construct that uses
+                    # context tag 4 itself does not end the value early.
+                    end = _value_end(data, start)
                     values: list[Any] = []
-                    while idx < len(data) and data[idx] != 0x4F:
+                    idx = start
+                    while idx < end:
                         val, idx = _parse_app_value(data, idx)
                         values.append(val)
-                    if idx < len(data) and data[idx] == 0x4F:
-                        idx += 1  # closing tag 4
+                    idx = end + 1  # closing tag 4
                     if values:
                         out.append(RpmEntry(
                             obj_type=obj_type,
@@ -1144,6 +1355,7 @@ def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
                             prop_id=prop_id,
                             array_index=array_index,
                             value=values[0] if len(values) == 1 else values,
+                            raw=data[start:end],
                         ))
                 elif data[idx] == 0x5E:  # Opening tag 5 (access error)
                     idx += 1

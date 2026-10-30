@@ -71,7 +71,7 @@ class TestNavigationalObjectsDontAskPresentValue:
     should not request one."""
 
     @pytest.mark.parametrize("obj_type", [
-        "Group", "Global Group", "Network Port", "Elevator Group",
+        "Group", "Global Group", "Elevator Group",
         "Escalator", "Event Enrollment", "Channel", "Command",
     ])
     def test_no_present_value_request(self, obj_type):
@@ -79,6 +79,13 @@ class TestNavigationalObjectsDontAskPresentValue:
         assert "presentValue" not in props, (
             f"{obj_type} has no presentValue — shouldn't ask for it"
         )
+
+    def test_network_port_is_metadata_without_present_value(self):
+        # Since 2.8 a Network Port is read as metadata (network number, type,
+        # MAC), not as a point.
+        from hvac_scanner.constants import METADATA_PROPERTIES_BY_TYPE
+        assert "Network Port" not in POINT_PROPERTIES_BY_TYPE
+        assert "presentValue" not in METADATA_PROPERTIES_BY_TYPE["Network Port"]
 
 
 class TestVendorRegistryGrew:

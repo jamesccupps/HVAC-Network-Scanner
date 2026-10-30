@@ -3,6 +3,103 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.8.0] — unreleased
+
+The rest of the BACnet roadmap and saved sites. Everything new is read-only:
+nothing registers with a BBMD, joins a BACnet/SC hub or writes to a device
+unless asked.
+
+### Added
+
+- **MS/TP behind routers on other subnets, without a BBMD.** Unicast
+  discovery (2.7) found the routers but not the trunks behind them, because
+  routers and MS/TP devices answer by broadcast on their own subnet. The
+  network numbers now come from the routers' Network Port objects (or from
+  routers that answer Who-Is-Router-To-Network directly); each network gets
+  a Who-Is routed through its router, which finds devices that answer the
+  requester. `--mstp-probe` (GUI: Advanced) goes further and asks each MS/TP
+  address with a confirmed read, whose reply always comes back: it finds
+  every device, at the cost of about a minute per network, a few requests at
+  a time, bounded by the port's max master. Without it, the log says which
+  networks went unanswered and how to reach them.
+- **BBMD tables.** Every BACnet/IP address is asked for its
+  Broadcast Distribution Table; the BBMDs among them are also asked for their
+  Foreign Device Table. Both are plain reads. The scan reports which subnets
+  each BBMD links (and flags peers outside the targets: the rest of the
+  site's BACnet network) and who is registered to hear the site's
+  broadcasts. `--no-bbmd-tables` to skip.
+- **Trend log and schedule inventory**, as metadata: what each trend log
+  records, how often, how full it is and whether it is still recording;
+  each schedule's weekly programme, default, effective period and the
+  objects it writes; calendars. Never trend records. New
+  **Trends & Schedules** tab, report section and findings. `--no-metadata`
+  to skip.
+- **Network Port objects** are read as metadata (type, network number, MAC,
+  max master, whether a BBMD accepts foreign devices) instead of being
+  listed as nameless points.
+- **BACnet/SC detection.** BACnet Secure Connect is BACnet over a WebSocket
+  over TLS 1.3 with mutual authentication, on no fixed port. TCP 47808 and
+  47820, and any HTTPS port that refuses the probe or serves no web page,
+  are checked: a hub that demands a client certificate is reported as
+  BACnet/SC (mutual TLS), with its certificate; one that accepts the
+  BACnet/SC WebSocket without a certificate is reported as a high-severity
+  finding, because anyone on the network can then join. The connection is
+  closed before any BACnet/SC message is sent.
+- **Saved site profiles.** Name the current targets and options in the GUI
+  (Site, Save…) and pick them again later. The CLI runs them:
+  `hvac-scanner --profile "Building A"`, with any targets or flags given on
+  the command line taking precedence. `--list-profiles` lists them.
+- **BACnet/SC hubs named by devices.** A device with both a BACnet/IP and a
+  BACnet/SC port names its primary and failover hubs in its Network Port
+  (and a hub names the URIs it accepts nodes on). Those addresses are probed
+  too, so a hub on a port no sweep covers is still found.
+- **KNXnet/IP gateways** (UDP 3671): one description request per target, as
+  nmap's knx-gateway-info sends. Reports the gateway's name, KNX address,
+  medium, serial and MAC, and which services it offers. A gateway offering
+  tunnelling or routing without KNX IP Secure is a medium finding: anything
+  that reaches it can switch whatever is on the bus. `--no-knx` to skip.
+- **Niagara Fox identity.** The probe now sends a complete Fox hello (the
+  form nmap's fox-info and zgrab2 use, naming this scanner rather than
+  posing as Workbench) and keeps the whole reply: station name, Niagara
+  version, host OS, Java VM, host ID and OEM brand. Fox over TLS on 4911 is
+  spoken as TLS, with its certificate kept. Niagara AX (3.x) stations are a
+  medium finding: Tridium's fixes for them have ended.
+- **Modbus Report Server ID** (FC 17) identifies devices that reject Read
+  Device Identification (FC 43), before falling back to a register read.
+- Report findings: BACnet/SC without client certificates (high), KNX
+  gateways without KNX Secure (medium), Niagara AX stations (medium),
+  foreign devices registered with a BBMD (low), trend logs not recording
+  (low), BBMDs linking subnets (info), BACnet/SC endpoints (info).
+- Simulator: a second building on another /24 behind a router and BBMD
+  (`--remote 127.0.4`), Network Port objects (one naming BACnet/SC hubs),
+  trend logs, schedules and a calendar, BBMD tables, two BACnet/SC hubs (one
+  on a port only a device names), a KNXnet/IP interface, a Niagara AX
+  station alongside the Niagara 4 JACE, and a drive that answers only
+  Report Server ID.
+- Tests: the UDP passes (SNMP, KNX) are held to loopback like the TCP
+  sweeps.
+
+### Fixed
+
+- **Property identifiers above 65535 were encoded in two octets**, so a
+  request for one (all the BACnet/SC Network Port properties are above
+  4194303) asked for a different property. Found while checking the
+  constants against bacnet-stack.
+- **Any page or banner mentioning "BACnet" was attributed to KMC
+  Controls.** The KMC pattern matched the word itself; it now matches KMC's
+  model numbers (BAC-5051 and so on).
+- The Niagara Fox probe sent only the first line of a hello, which a
+  station need not answer, and spoke plaintext to the TLS port 4911.
+- **A comma list given as one CLI argument** (`"10.0.0.2-30, 10.0.4.5"`)
+  failed to parse inside the engine, so unicast discovery silently had no
+  targets, and the list's subnets shared one limited broadcast instead of a
+  directed broadcast each. Each spec is now its own target, as in the GUI.
+- A ReadPropertyMultiple value that itself contained context tag 4 ended at
+  its first closing-tag byte, losing the rest of the value and every
+  property after it in the reply.
+- TCP 47808 was excluded from the service scan as if it were BACnet/IP,
+  which is UDP.
+
 ## [2.7.0] — 2026-10-29
 
 A full review of the code and the program in use, run against a new simulated

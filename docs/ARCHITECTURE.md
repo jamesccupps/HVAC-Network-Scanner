@@ -153,12 +153,20 @@ ScanEngine.run()
     ├── _scan_bacnet()
     │     ├── Who-Is per broadcast domain   → codec.parse_iam() (Forwarded-NPDU aware)
     │     ├── _discover_unicast()           → BACnetClient.discover_unicast()
+    │     ├── _inventory_bbmds()            → BACnetClient.read_bbmd_tables() (Read-BDT/FDT)
     │     ├── _deep_scan_devices()          → _deep_read() per device, grouped by IP
+    │     │                                   (points, then trend logs / schedules /
+    │     │                                   network ports via _apply_metadata())
     │     └── _scan_mstp()                  → routers, directed Who-Is, deep scans
+    │           └── _scan_remote_mstp()     → routers found by unicast: Network Port
+    │                                         networks, unicast routed Who-Is,
+    │                                         optional probe_mstp_macs()
     │
     ├── _scan_modbus()      → ModbusScanner (netsweep + per-host sessions)
     ├── _scan_p2()          → P2Scanner (netsweep + one probe per open TCP/5033)
-    ├── _scan_services()    → HVACServiceScanner (netsweep + per-host probes)
+    ├── _scan_knx()         → KNXScanner (one-socket description requests, UDP 3671)
+    ├── _scan_services()    → HVACServiceScanner (netsweep + per-host probes,
+    │                          then BACnet/SC hubs named in Network Ports)
     ├── _scan_snmp()        → SNMPScanner (one-socket fan-out)
     └── _refingerprint()    → fingerprint_device() with same-IP services
     │

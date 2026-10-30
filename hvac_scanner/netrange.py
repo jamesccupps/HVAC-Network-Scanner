@@ -121,6 +121,16 @@ def _parse_token(token: str) -> list[str]:
     )
 
 
+def split_targets(raw: str | Iterable[str]) -> list[str]:
+    """The individual target specs in `raw`: split on commas OR whitespace,
+    so both "10.0.0.0/24, 10.0.1.5" and "10.0.0.0/24 10.0.1.5" work — and
+    so does a list whose entries are themselves comma lists (one quoted CLI
+    argument). A list entry used to be taken as a single spec, so
+    ["10.0.0.2-30, 10.0.4.5"] failed to parse at all."""
+    items = [raw] if isinstance(raw, str) else list(raw)
+    return [t for item in items for t in re.split(r"[,\s]+", str(item)) if t]
+
+
 def parse_targets(raw: str | Iterable[str]) -> list[str]:
     """Parse one or more target specs to a deduplicated list of IP strings.
 
@@ -128,13 +138,7 @@ def parse_targets(raw: str | Iterable[str]) -> list[str]:
     iterable of strings. Order is preserved; duplicates within and across
     tokens are collapsed.
     """
-    if isinstance(raw, str):
-        # Split on commas OR whitespace so both "10.0.0.0/24, 10.0.1.5" and
-        # "10.0.0.0/24 10.0.1.5" work.
-        tokens: Iterable[str] = [t for t in re.split(r"[,\s]+", raw) if t]
-    else:
-        tokens = raw
-
+    tokens = split_targets(raw)
     seen: set[str] = set()
     out: list[str] = []
     for token in tokens:
@@ -154,10 +158,7 @@ def iter_parse_targets(raw: str | Iterable[str]) -> Iterator[str]:
     Deduplication still needs a set of what has been seen, but the IP list
     itself is never held whole.
     """
-    if isinstance(raw, str):
-        tokens: Iterable[str] = [t for t in re.split(r"[,\s]+", raw) if t]
-    else:
-        tokens = raw
+    tokens = split_targets(raw)
     seen: set[str] = set()
     for token in tokens:
         for ip in _parse_token(token):
