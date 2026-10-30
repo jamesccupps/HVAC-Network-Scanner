@@ -176,6 +176,7 @@ HVAC_SERVICES = [
     (11001, "Metasys ADX",        "tcp"),
     (44818, "EtherNet/IP CIP",    "tcp"),
     (47808, "BACnet/IP",          "udp"),
+    (47808, "BACnet/SC (TCP)",    "tcp"),
     (47820, "BACnet/SC",          "tcp"),
 ]
 
@@ -799,7 +800,9 @@ HTTP_FINGERPRINTS = [
     (r"distech",                                        "Distech Controls"),
     (r"delta.?controls",                                "Delta Controls"),
     (r"reliable.?controls",                             "Reliable Controls"),
-    (r"kmc|flexstat|bac-?net",                          "KMC Controls"),
+    # KMC model numbers are BAC-5051, BAC-9001 and so on. A bare "bacnet" is
+    # every BAS vendor's word, not KMC's.
+    (r"kmc|flexstat|\bbac-\d{3,}",                     "KMC Controls"),
     (r"carel|pco",                                      "Carel"),
     (r"belimo",                                         "Belimo"),
     (r"easyio",                                         "EasyIO"),
@@ -869,6 +872,30 @@ PROP_IDS = {
     'maxApduLengthAccepted':        62,
     'segmentationSupported':        107,
     'vendorIdentifier':             120,
+    # Trend Log / Trend Log Multiple
+    'bufferSize':                   126,
+    'logDeviceObjectProperty':      132,
+    'enable':                       133,
+    'logInterval':                  134,
+    'recordCount':                  141,
+    'stopWhenFull':                 144,
+    'loggingType':                  197,
+    # Schedule / Calendar
+    'effectivePeriod':              32,
+    'listOfObjectPropertyReferences': 54,
+    'weeklySchedule':               123,
+    'scheduleDefault':              174,
+    # Network Port (protocol revision 17+)
+    'maxMaster':                    64,
+    'bbmdAcceptFDRegistrations':    413,
+    'macAddress':                   423,
+    'networkNumber':                425,
+    'networkType':                  427,
+    # Network Port, BACnet/SC (Annex AB; 22-bit identifiers)
+    'scFailoverHubUri':             4194317,
+    'scHubFunctionAcceptUris':      4194319,
+    'scHubFunctionEnable':          4194322,
+    'scPrimaryHubUri':              4194325,
     # hyphenated aliases for convenience
     'object-name':                  77,
     'object-list':                  76,
@@ -955,11 +982,43 @@ POINT_PROPERTIES_BY_TYPE = {
     # Config/navigational objects — name + description only, no present value
     'Group':                ['objectName', 'description'],
     'Global Group':         ['objectName', 'description'],
-    'Network Port':         ['objectName', 'description'],
-    'Timer':                ['objectName', 'presentValue', 'description', 'statusFlags'],
+    'Timer':              ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Elevator Group':       ['objectName', 'description'],
     'Escalator':            ['objectName', 'description'],
     'Event Enrollment':     ['objectName', 'description'],
     'Load Control':         ['objectName', 'presentValue', 'description', 'statusFlags'],
     'Channel':              ['objectName', 'description'],
 }
+
+# Objects that describe the system rather than measure it: what is trended
+# and how often, which schedules and calendars exist, and how the device is
+# attached to the network. Read as metadata only — never a trend log's
+# records, which can run to megabytes on a supervisory controller.
+METADATA_PROPERTIES_BY_TYPE = {
+    'Trend Log':          ['objectName', 'description', 'enable', 'logDeviceObjectProperty',
+                           'logInterval', 'loggingType', 'recordCount', 'bufferSize',
+                           'stopWhenFull', 'statusFlags'],
+    'Trend Log Multiple': ['objectName', 'description', 'enable', 'logDeviceObjectProperty',
+                           'logInterval', 'loggingType', 'recordCount', 'bufferSize',
+                           'stopWhenFull', 'statusFlags'],
+    'Schedule':           ['objectName', 'description', 'presentValue', 'scheduleDefault',
+                           'effectivePeriod', 'listOfObjectPropertyReferences',
+                           'weeklySchedule', 'statusFlags'],
+    'Calendar':           ['objectName', 'description', 'presentValue'],
+    'Network Port':       ['objectName', 'networkType', 'networkNumber', 'macAddress',
+                           'maxMaster', 'bbmdAcceptFDRegistrations',
+                           'scPrimaryHubUri', 'scFailoverHubUri',
+                           'scHubFunctionEnable', 'scHubFunctionAcceptUris'],
+}
+
+# BACnetNetworkType (Network Port networkType).
+BACNET_NETWORK_TYPES = {
+    0: 'Ethernet', 1: 'ARCNET', 2: 'MS/TP', 3: 'PTP', 4: 'LonTalk', 5: 'IPv4',
+    6: 'Zigbee', 7: 'Virtual', 9: 'IPv6', 10: 'Serial', 11: 'BACnet/SC',
+    # Before protocol revision 24 a BACnet/SC port had no standard type;
+    # bacnet-stack and others used this first proprietary value for it.
+    64: 'BACnet/SC (interim)',
+}
+
+# BACnetLoggingType (Trend Log loggingType).
+BACNET_LOGGING_TYPES = {0: 'polled', 1: 'COV', 2: 'triggered'}

@@ -42,9 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    p.add_argument("networks", nargs="+",
+    p.add_argument("networks", nargs="*",
                    help="Targets to scan: CIDR (192.168.1.0/24), single host, "
-                        "range (10.0.0.2-100), or a mix")
+                        "range (10.0.0.2-100), or a mix. Optional with --profile.")
     # Alternate spelling. It shares `dest` with the positional, so argparse
     # applies it second and the positional's value is discarded - passing both
     # used to silently scan only the flag's networks. Collected separately and
@@ -80,6 +80,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
 
+    s = p.add_argument_group("site profiles (saved from the GUI)")
+    s.add_argument("--profile", metavar="NAME",
+                   help="Scan a site profile saved in the GUI: its targets and "
+                        "options. Targets and flags given here override it.")
+    s.add_argument("--list-profiles", action="store_true",
+                   help="List the saved site profiles and exit")
+    s.add_argument("--settings-file", metavar="PATH", default=None,
+                   help="Settings file holding the profiles (default: the GUI's)")
+
     # Large-network probing
     d = p.add_argument_group("large-network probing")
     d.add_argument("--whois-chunk", type=int, default=0, metavar="SIZE",
@@ -112,6 +121,16 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="SNMP community to try (repeatable; default: public). "
                         "Each one is tried only against hosts that did not "
                         "answer the previous.")
+    d.add_argument("--mstp-probe", action="store_true",
+                   help="For MS/TP networks behind a router on another subnet, "
+                        "ask each MS/TP address in turn (about a minute per "
+                        "network). Finds devices whose I-Am broadcasts cannot "
+                        "reach this subnet, without a BBMD.")
+    d.add_argument("--no-bbmd-tables", action="store_true",
+                   help="Do not read BBMDs' broadcast and foreign-device tables")
+    d.add_argument("--no-metadata", action="store_true",
+                   help="Do not read trend log, schedule, calendar and network "
+                        "port metadata")
 
     # Protocol toggles
     g = p.add_argument_group("protocols (all enabled by default)")
@@ -122,10 +141,12 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-snmp",   action="store_true")
     g.add_argument("--no-p2",     action="store_true",
                    help="Skip Siemens APOGEE P2 detection (TCP 5033)")
+    g.add_argument("--no-knx",    action="store_true",
+                   help="Skip KNXnet/IP gateway detection (UDP 3671)")
     g.add_argument("--no-deep",   action="store_true",
                    help="Skip deep-scan (object lists, register reads)")
     g.add_argument("--bacnet-only", action="store_true",
-                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2")
+                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2 --no-knx")
 
     # Output
     o = p.add_argument_group("output")
@@ -181,7 +202,7 @@ def _print_summary(result) -> None:
     print()
     print(f"=== Scan Summary ({datetime.now():%Y-%m-%d %H:%M:%S}) ===")
     print(f"Duration:   {result.elapsed:.1f}s")
-    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2'):
+    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2', 'knx'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
     # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
@@ -265,10 +286,52 @@ def _utf8_streams() -> None:
             pass
 
 
+# ScanOptions field -> the argument that sets it, for letting flags given on
+# the command line override a saved profile.
+_ARG_FOR_OPTION = {
+    'timeout': 'timeout', 'scan_bacnet': 'no_bacnet', 'scan_mstp': 'no_mstp',
+    'scan_modbus': 'no_modbus', 'scan_services': 'no_services', 'scan_snmp': 'no_snmp',
+    'scan_p2': 'no_p2', 'scan_knx': 'no_knx', 'deep_scan': 'no_deep', 'use_rpm': 'no_rpm',
+    'rate_limit_ms': 'rate_limit', 'max_objects_per_device': 'max_objects',
+    'whois_chunk_size': 'whois_chunk', 'bacnet_broadcast': 'broadcast', 'bbmd': 'bbmd',
+    'scan_depth': 'scan_depth', 'bacnet_workers': 'bacnet_workers',
+    'unicast_discovery': 'unicast', 'snmp_communities': 'snmp_community',
+    'read_bbmd_tables': 'no_bbmd_tables', 'read_metadata': 'no_metadata',
+    'mstp_mac_probe': 'mstp_probe',
+}
+
+
+def _load_profiles(args) -> dict:
+    from . import settings
+    from pathlib import Path
+    path = Path(args.settings_file) if args.settings_file else settings.default_path()
+    return settings.profiles(settings.load(path))
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_streams()
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
     _configure_logging(args.verbose, args.quiet)
+
+    if args.list_profiles:
+        saved = _load_profiles(args)
+        if not saved:
+            print("No saved site profiles. Save one from the GUI (Site > Save).")
+        for name, prof in sorted(saved.items(), key=lambda kv: kv[0].lower()):
+            print(f"{name}\t{prof.get('targets', '')}")
+        return 0
+
+    profile_kw: dict = {}
+    if args.profile:
+        from .settings import profile_options
+        saved = _load_profiles(args)
+        if args.profile not in saved:
+            known = ", ".join(sorted(saved)) or "none saved"
+            print(f"ERROR: no site profile named {args.profile!r} ({known})",
+                  file=sys.stderr)
+            return 1
+        profile_kw = profile_options(saved[args.profile])
 
     # Merge the positional targets with the --networks alternate spelling,
     # preserving order and dropping duplicates, rather than letting one
@@ -277,6 +340,11 @@ def main(argv: list[str] | None = None) -> int:
     for n in (args.networks_flag or []):
         if n not in networks:
             networks.append(n)
+    if not networks:
+        networks = list(profile_kw.get('networks') or [])
+    if not networks:
+        parser.error("the following arguments are required: networks "
+                     "(or --profile NAME)")
 
     # A target that will not parse is a bad argument (exit 1), and should be
     # reported before anything is sent rather than as a scan that "completed"
@@ -290,9 +358,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.bacnet_only:
-        args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = True
+        args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = args.no_knx = True
 
-    opts = ScanOptions(
+    kw = dict(
         networks=networks,
         timeout=args.timeout,
         scan_bacnet=not args.no_bacnet,
@@ -301,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         scan_services=not args.no_services,
         scan_snmp=not args.no_snmp,
         scan_p2=not args.no_p2,
+        scan_knx=not args.no_knx,
         deep_scan=not args.no_deep,
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,
@@ -315,7 +384,16 @@ def main(argv: list[str] | None = None) -> int:
         bacnet_workers=max(1, args.bacnet_workers),
         unicast_discovery=args.unicast,
         snmp_communities=args.snmp_community or ["public"],
+        read_bbmd_tables=not args.no_bbmd_tables,
+        read_metadata=not args.no_metadata,
+        mstp_mac_probe=args.mstp_probe,
     )
+    # The profile fills in whatever was not given on the command line.
+    for option, value in profile_kw.items():
+        dest = _ARG_FOR_OPTION.get(option)
+        if dest is not None and getattr(args, dest) == parser.get_default(dest):
+            kw[option] = value
+    opts = ScanOptions(**kw)
 
     # Progress callback - streams log lines to stderr unless quiet
     def cb(msg: str) -> None:

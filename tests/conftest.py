@@ -70,6 +70,31 @@ def _sweeps_stay_on_loopback(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _udp_probes_stay_on_loopback(monkeypatch):
+    """The same for the UDP passes, which the TCP sweep guard cannot see.
+
+    Adding the KNX pass, on by default, briefly sent description requests to
+    the example 10.0.0.x targets of tests written before it existed.
+    """
+    import ipaddress
+    from hvac_scanner import knx, snmp
+    from hvac_scanner.netrange import parse_targets
+
+    def guard(cls):
+        real = cls.scan_network
+
+        def guarded(self, targets, *a, **kw):
+            stray = [ip for ip in parse_targets(targets)
+                     if not ipaddress.ip_address(ip).is_loopback]
+            assert not stray, (f"test would send {cls.__name__} probes to non-loopback "
+                               f"addresses: {stray[:5]}")
+            return real(self, targets, *a, **kw)
+        monkeypatch.setattr(cls, "scan_network", guarded)
+    guard(knx.KNXScanner)
+    guard(snmp.SNMPScanner)
+
+
+@pytest.fixture(autouse=True)
 def _targets_are_on_link(monkeypatch, request):
     """Treat every target as on a directly attached subnet.
 

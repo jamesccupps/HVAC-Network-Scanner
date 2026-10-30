@@ -28,13 +28,14 @@ import tkinter as tk
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 from typing import Any, Optional
 
 from . import __version__
 from . import settings as settings_mod
 from .engine import ScanEngine, ScanOptions
+from .report import trend_interval, trend_records, trend_state, week_summary
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,8 @@ class HVACNetworkScannerGUI:
         self._raw_dirty = False
         self._filter_after: Optional[str] = None
         self._pump_id: Optional[str] = None
-        self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2')}
+        self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp',
+                                            'p2', 'knx')}
 
         self.ui_font = _pick_font(["Segoe UI", "SF Pro Text", "Cantarell", "DejaVu Sans"],
                                   "TkDefaultFont")
@@ -273,8 +275,8 @@ class HVACNetworkScannerGUI:
         if self._icons:
             tk.Label(hdr, image=self._icons[1], bg=C.BG_DARK).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Label(hdr, text="HVAC Network Scanner", style="Title.TLabel").pack(side=tk.LEFT)
-        ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · Modbus TCP · "
-                            f"services · SNMP · APOGEE P2",
+        ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · BACnet/SC · Modbus TCP · "
+                            f"services · SNMP · APOGEE P2 · KNX",
                   style="Version.TLabel").pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
         ttk.Button(hdr, text="About", style="Ghost.TButton",
                    command=self._show_about).pack(side=tk.RIGHT)
@@ -305,6 +307,20 @@ class HVACNetworkScannerGUI:
         ttk.Label(hint, text="CIDR, host, or range — mix freely, comma-separated:   "
                              "10.0.0.0/24   10.0.0.5   10.0.0.2-100   10.0.0.2-10.0.0.12",
                   style="Dim.TLabel").pack(side=tk.LEFT, padx=(64, 0))
+        # Saved sites: targets plus options under a name, for buildings that
+        # get audited again and again. The CLI runs them with --profile.
+        self._profiles: dict[str, dict[str, Any]] = {}
+        ttk.Button(hint, text="Delete", style="Link.TButton",
+                   command=self._delete_profile).pack(side=tk.RIGHT)
+        ttk.Button(hint, text="Save…", style="Link.TButton",
+                   command=self._save_profile).pack(side=tk.RIGHT)
+        self.profile_var = tk.StringVar()
+        self.profile_combo = ttk.Combobox(hint, textvariable=self.profile_var, width=24,
+                                          state="readonly", values=())
+        self.profile_combo.pack(side=tk.RIGHT, padx=(0, 2))
+        self.profile_combo.bind("<<ComboboxSelected>>",
+                                lambda _e: self._load_profile(self.profile_var.get()))
+        ttk.Label(hint, text="Site", style="Info.TLabel").pack(side=tk.RIGHT, padx=(0, 6))
 
         row2 = ttk.Frame(cfg, style="Card.TFrame")
         row2.pack(fill=tk.X, padx=14, pady=(8, 10))
@@ -315,14 +331,19 @@ class HVACNetworkScannerGUI:
         self.scan_services  = tk.BooleanVar(value=False)  # v2.1.1: default off (TVs/printers flood)
         self.scan_snmp      = tk.BooleanVar(value=True)
         self.scan_p2        = tk.BooleanVar(value=True)
+        self.scan_knx       = tk.BooleanVar(value=True)
         self.deep_scan      = tk.BooleanVar(value=True)
         self.use_rpm        = tk.BooleanVar(value=True)
+        self.read_bbmd_tables = tk.BooleanVar(value=True)
+        self.read_metadata  = tk.BooleanVar(value=True)
+        self.mstp_mac_probe = tk.BooleanVar(value=False)
 
         ttk.Label(row2, text="Protocols", style="Header.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         self.mstp_cb = None
         for text, var in [("BACnet/IP", self.scan_bacnet), ("MS/TP", self.scan_mstp),
                           ("Modbus TCP", self.scan_modbus), ("Services", self.scan_services),
-                          ("SNMP", self.scan_snmp), ("APOGEE P2", self.scan_p2)]:
+                          ("SNMP", self.scan_snmp), ("APOGEE P2", self.scan_p2),
+                          ("KNX", self.scan_knx)]:
             cb = ttk.Checkbutton(row2, text=text, variable=var)
             cb.pack(side=tk.LEFT, padx=(4, 10))
             if text == "MS/TP":
@@ -368,6 +389,7 @@ class HVACNetworkScannerGUI:
         self.chips: dict[str, tk.Label] = {}
         for key, label in (('bacnet', 'BACnet'), ('mstp', 'MS/TP'), ('modbus', 'Modbus'),
                            ('services', 'Services'), ('snmp', 'SNMP'), ('p2', 'APOGEE'),
+                           ('knx', 'KNX'),
                            ('points', 'Points'), ('flagged', 'Flagged')):
             chip = tk.Label(summary, text=f"{label}  –", bg=C.BG_PANEL,
                             fg=PROTOCOL_COLORS.get(label, C.YELLOW), padx=12, pady=4,
@@ -403,6 +425,7 @@ class HVACNetworkScannerGUI:
 
         self._build_devices_tab()
         self._build_points_tab()
+        self._build_meta_tab()
         self._build_registers_tab()
         self._build_services_tab()
         self._build_raw_tab()
@@ -482,7 +505,13 @@ class HVACNetworkScannerGUI:
         ttk.Checkbutton(chk, text="Deep scan (read points and registers)",
                         variable=self.deep_scan).pack(side=tk.LEFT, padx=(0, 18))
         ttk.Checkbutton(chk, text="ReadPropertyMultiple",
-                        variable=self.use_rpm).pack(side=tk.LEFT)
+                        variable=self.use_rpm).pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Checkbutton(chk, text="Trend logs & schedules",
+                        variable=self.read_metadata).pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Checkbutton(chk, text="BBMD tables",
+                        variable=self.read_bbmd_tables).pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Checkbutton(chk, text="Probe MS/TP addresses behind remote routers (slow)",
+                        variable=self.mstp_mac_probe).pack(side=tk.LEFT)
         self._adv_open = False
 
     def _toggle_advanced(self, show: Optional[bool] = None) -> None:
@@ -631,6 +660,40 @@ class HVACNetworkScannerGUI:
                    command=popup.destroy).pack(pady=10)
         popup.bind("<Escape>", lambda _e: popup.destroy())
 
+    def _build_meta_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, style="Dark.TFrame")
+        self.notebook.add(tab, text="Trends & Schedules")
+        self.meta_tree = self._make_tree(tab, "meta", [
+            ("device", "Device", 170), ("type", "Object Type", 130),
+            ("address", "Instance", 70), ("name", "Name", 220),
+            ("what", "Logs / Controls", 320), ("when", "Interval / Weekly Programme", 300),
+            ("records", "Records / Period", 130), ("state", "State", 160),
+        ])
+        # Trend logs that record nothing stand out.
+        self.meta_tree.tag_configure("flag", foreground=Colors.YELLOW)
+        self.meta_menu = self._menu(self.root)
+        self.meta_menu.add_command(label="Copy row(s)", command=lambda: self._copy_rows(self.meta_tree))
+        self.meta_tree.bind("<Button-3>", lambda e: self._popup_for(self.meta_tree, self.meta_menu, e))
+
+    def _add_meta_for(self, dev: dict) -> None:
+        label = self._device_label(dev)
+        for t in dev.get('trend_logs') or []:
+            state = trend_state(t)
+            self._insert(self.meta_tree, (
+                label, t.get('type', ''), t.get('instance', ''), t.get('name', ''),
+                "; ".join(t.get('logs') or []), trend_interval(t), trend_records(t), state,
+            ), ("flag",) if state in ('disabled', 'full, stopped') else ())
+        for sch in dev.get('schedules') or []:
+            when = week_summary(sch.get('weekly'))
+            if sch.get('default'):
+                when = f"{when}; otherwise {sch['default']}" if when else f"default {sch['default']}"
+            now = sch.get('present_value')
+            self._insert(self.meta_tree, (
+                label, sch.get('type', ''), sch.get('instance', ''), sch.get('name', ''),
+                "; ".join(sch.get('controls') or []), when, sch.get('effective', ''),
+                f"now {now}" if now else '',
+            ))
+
     def _build_registers_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Dark.TFrame")
         self.notebook.add(tab, text="Modbus Registers")
@@ -745,7 +808,8 @@ class HVACNetworkScannerGUI:
             idx = self.notebook.index(self.notebook.select())
         except tk.TclError:
             return None
-        return [self.device_tree, self.points_tree, self.reg_tree, self.svc_tree, None][idx]
+        return [self.device_tree, self.points_tree, self.meta_tree, self.reg_tree,
+                self.svc_tree, None][idx]
 
     def _schedule_filter(self) -> None:
         if self._filter_after:
@@ -754,7 +818,8 @@ class HVACNetworkScannerGUI:
 
     def _apply_filter(self) -> None:
         self._filter_after = None
-        for tree in (self.device_tree, self.points_tree, self.reg_tree, self.svc_tree):
+        for tree in (self.device_tree, self.points_tree, self.meta_tree, self.reg_tree,
+                     self.svc_tree):
             self._apply_filter_to(tree)
 
     def _apply_filter_to(self, tree: ttk.Treeview) -> None:
@@ -955,7 +1020,8 @@ class HVACNetworkScannerGUI:
         self._flagged_points = 0
         self._update_chips()
 
-        for tree in (self.device_tree, self.points_tree, self.reg_tree, self.svc_tree):
+        for tree in (self.device_tree, self.points_tree, self.meta_tree, self.reg_tree,
+                     self.svc_tree):
             self._clear_tree(tree)
         self._dev_by_iid.clear()
         self._set_details(None)
@@ -1043,6 +1109,7 @@ class HVACNetworkScannerGUI:
             scan_services=self.scan_services.get(),
             scan_snmp=self.scan_snmp.get(),
             scan_p2=self.scan_p2.get(),
+            scan_knx=self.scan_knx.get(),
             deep_scan=self.deep_scan.get(),
             use_rpm=self.use_rpm.get(),
             whois_chunk_size=self._read_number(self.whois_chunk_entry, "Who-Is chunk", 0,
@@ -1057,6 +1124,9 @@ class HVACNetworkScannerGUI:
             bacnet_broadcast=broadcast,
             max_objects_per_device=max_objects,
             snmp_communities=communities,
+            read_bbmd_tables=self.read_bbmd_tables.get(),
+            read_metadata=self.read_metadata.get(),
+            mstp_mac_probe=self.mstp_mac_probe.get(),
         )
 
     def _reject(self, reason: str, widget=None) -> None:
@@ -1246,10 +1316,11 @@ class HVACNetworkScannerGUI:
             else:
                 self._add_device_to_tree(dev)
                 self._streamed_points += self._add_points_for(dev)
+                self._add_meta_for(dev)
                 self._add_registers_for(dev)
                 bucket = {'BACnet/IP': 'bacnet', 'BACnet/MSTP': 'mstp',
                           'Modbus TCP': 'modbus', 'SNMP': 'snmp',
-                          'APOGEE P2': 'p2'}.get(proto)
+                          'APOGEE P2': 'p2', 'KNXnet/IP': 'knx'}.get(proto)
                 if bucket:
                     self._live_counts[bucket] += 1
         except tk.TclError:
@@ -1264,7 +1335,7 @@ class HVACNetworkScannerGUI:
     def _update_chips(self, counts: Optional[dict] = None, points: Optional[int] = None) -> None:
         counts = counts or self._live_counts
         labels = {'bacnet': 'BACnet', 'mstp': 'MS/TP', 'modbus': 'Modbus',
-                  'services': 'Services', 'snmp': 'SNMP', 'p2': 'APOGEE',
+                  'services': 'Services', 'snmp': 'SNMP', 'p2': 'APOGEE', 'knx': 'KNX',
                   'points': 'Points', 'flagged': 'Flagged'}
         for key, chip in self.chips.items():
             n = points if key == 'points' else counts.get(key)
@@ -1331,7 +1402,7 @@ class HVACNetworkScannerGUI:
         # the Services tab; this just keeps the primary device view clean.
         primary_ips = {d.get('ip') for d in self.result.devices
                        if d.get('protocol') in ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP',
-                                                'SNMP', 'APOGEE P2')}
+                                                'SNMP', 'APOGEE P2', 'KNXnet/IP')}
         # One row per service-only host, so a gateway with four open ports
         # shows once, not four times.
         seen_service_ips: set[str] = set()
@@ -1350,6 +1421,7 @@ class HVACNetworkScannerGUI:
             self._add_device_to_tree(dev)
             if proto != 'Service':
                 self._add_points_for(dev)
+                self._add_meta_for(dev)
                 self._add_registers_for(dev)
 
         # Fingerprints are computed at the very end of the scan, after the
@@ -1379,7 +1451,7 @@ class HVACNetworkScannerGUI:
         self.stats_var.set(
             f"Hosts {unique_ips}   ·   BACnet {c['bacnet']}   MS/TP {c['mstp']}   "
             f"Modbus {c['modbus']}   Service ports {c['services']}   SNMP {c['snmp']}   "
-            f"APOGEE {c.get('p2', 0)}   "
+            f"APOGEE {c.get('p2', 0)}   KNX {c.get('knx', 0)}   "
             f"·   Points {c['points']:,}   ·   {self.result.elapsed:.1f}s"
         )
         self._show_selected_details()
@@ -1411,6 +1483,9 @@ class HVACNetworkScannerGUI:
         elif protocol == 'APOGEE P2':
             address = f"TCP {dev.get('port', '?')}"
             vendor = dev.get('vendor', 'Siemens')
+        elif protocol == 'KNXnet/IP':
+            address = f"KNX {dev.get('knx_address', '?')}"
+            vendor = dev.get('vendor', '')
         else:
             address = f":{dev.get('port', '?')}"
             vendor = dev.get('vendor', '') or fp.get('vendor', '')
@@ -1478,7 +1553,9 @@ class HVACNetworkScannerGUI:
             kv("MS/TP net", dev.get('source_network'))
             kv("MS/TP MAC", dev.get('source_address'))
             kv("Via router", dev.get('ip'))
-        kv("Found by", "unicast probe" if dev.get('discovered_via') == 'unicast' else None)
+        kv("Found by", {'unicast': "unicast probe",
+                        'routed who-is': "Who-Is routed through a remote router",
+                        'mac-probe': "MS/TP address probe"}.get(dev.get('discovered_via')))
         out.append(('h', "Identification", ''))
         kv("Model", props.get('model_name') or fp.get('model'))
         kv("Type", fp.get('device_type'))
@@ -1500,8 +1577,44 @@ class HVACNetworkScannerGUI:
             flags = dev.get('point_flags') or {}
             kv("Point status", ", ".join(f"{n} {f}" for f, n in flags.items()) or "all normal"
                if dev.get('objects') else None)
+            trends = dev.get('trend_logs') or []
+            idle = sum(1 for t in trends if trend_state(t) in ('disabled', 'full, stopped'))
+            kv("Trend logs", (f"{len(trends)}" + (f" ({idle} not recording)" if idle else ""))
+               if trends else None)
+            kv("Schedules", len(dev.get('schedules') or []) or None)
             c = dev.get('_classification') or {}
             kv("Profile", c.get('explanation'))
+        bbmd = dev.get('bbmd')
+        if isinstance(bbmd, dict):
+            out.append(('h', "BBMD", ''))
+            peers = [e.get('address', '') for e in bbmd.get('bdt') or []]
+            kv("Peers", ", ".join(peers) or "none")
+            fdt = bbmd.get('fdt')
+            kv("Foreign devs", "table not readable" if fdt is None else (
+                ", ".join(f"{e.get('address')} ({e.get('remaining')} s left)" for e in fdt)
+                or "none registered"))
+        ports = dev.get('network_ports') or []
+        if ports:
+            out.append(('h', "Network ports", ''))
+        for port in ports:
+            bits = [port.get('type') or '?']
+            if port.get('network'):
+                bits.append(f"network {port['network']}")
+            if port.get('mac'):
+                bits.append(f"MAC {port['mac']}")
+            if port.get('max_master') is not None:
+                bits.append(f"max master {port['max_master']}")
+            if port.get('accepts_fd_registrations'):
+                bits.append("accepts foreign devices")
+            if port.get('sc_primary_hub'):
+                bits.append(f"hub {port['sc_primary_hub']}")
+            if port.get('sc_failover_hub'):
+                bits.append(f"failover hub {port['sc_failover_hub']}")
+            if port.get('sc_hub_function'):
+                bits.append("is a BACnet/SC hub" + (
+                    f" on {', '.join(port['sc_accept_uris'])}" if port.get('sc_accept_uris')
+                    else ""))
+            kv(port.get('name') or f"Port {port.get('instance')}", ", ".join(bits))
         if dev.get('banner') or dev.get('title') or dev.get('tls_summary'):
             out.append(('h', "Service", ''))
             kv("Service", dev.get('service'))
@@ -1509,9 +1622,36 @@ class HVACNetworkScannerGUI:
             kv("Server", dev.get('server'))
             kv("Banner", dev.get('banner'))
             kv("TLS", dev.get('tls_summary'))
+            if dev.get('sc_role'):
+                kv("BACnet/SC", f"{dev['sc_role']}, " + (
+                    "accepted without a client certificate"
+                    if dev.get('tls_client_cert_required') is False
+                    else "client certificate required"))
         if dev.get('sys_descr'):
             out.append(('h', "SNMP", ''))
             kv("sysDescr", dev.get('sys_descr'))
+        if dev.get('protocol') == 'KNXnet/IP':
+            out.append(('h', "KNXnet/IP", ''))
+            kv("Name", dev.get('name'))
+            kv("KNX address", dev.get('knx_address'))
+            kv("Medium", dev.get('medium'))
+            kv("Serial", dev.get('serial'))
+            kv("MAC", dev.get('mac'))
+            kv("Services", ", ".join(s['family'] for s in dev.get('services') or []))
+            kv("KNX Secure", "offered" if dev.get('secure') else "not offered")
+            if dev.get('programming_mode'):
+                kv("Note", "in programming mode")
+        fox = dev.get('fox') or {}
+        if fox:
+            out.append(('h', "Niagara", ''))
+            kv("Station", fox.get('station.name'))
+            kv("Version", fox.get('app.version'))
+            kv("Host", fox.get('hostName'))
+            kv("OS", " ".join(x for x in (fox.get('os.name'), fox.get('os.version')) if x))
+            kv("Java VM", " ".join(x for x in (fox.get('vm.name'), fox.get('vm.version')) if x))
+            kv("Host ID", fox.get('hostId'))
+            kv("Brand", fox.get('brandId'))
+            kv("Time zone", fox.get('timeZone'))
         if dev.get('p2_role'):
             out.append(('h', "APOGEE P2", ''))
             kv("Role", dev.get('p2_role'))
@@ -1670,8 +1810,7 @@ class HVACNetworkScannerGUI:
 
     # -- settings ---------------------------------------------------------
 
-    _PROTOCOL_VARS = ('scan_bacnet', 'scan_mstp', 'scan_modbus', 'scan_services',
-                      'scan_snmp', 'scan_p2', 'deep_scan', 'use_rpm')
+    _PROTOCOL_VARS = settings_mod.TOGGLE_OPTIONS
 
     def _collect_settings(self) -> dict[str, Any]:
         data = {
@@ -1680,6 +1819,8 @@ class HVACNetworkScannerGUI:
             'advanced_open': self._adv_open,
             'advanced': {k: v.get() for k, v in self.adv_vars.items()},
             'toggles': {k: getattr(self, k).get() for k in self._PROTOCOL_VARS},
+            'profiles': self._profiles,
+            'profile': self.profile_var.get(),
         }
         try:
             if self.root.state() == 'normal':
@@ -1702,6 +1843,11 @@ class HVACNetworkScannerGUI:
         for k, v in (data.get('toggles') or {}).items():
             if k in self._PROTOCOL_VARS and isinstance(v, bool):
                 getattr(self, k).set(v)
+        if 'profiles' in data:
+            self._profiles = settings_mod.profiles(data)
+            self._refresh_profiles()
+            self.profile_var.set(data.get('profile') if data.get('profile') in self._profiles
+                                 else '')
         if data.get('advanced_open'):
             self._toggle_advanced(True)
         geo = data.get('geometry')
@@ -1713,6 +1859,64 @@ class HVACNetworkScannerGUI:
 
     def _save_settings(self) -> None:
         settings_mod.save(self.settings_path, self._collect_settings())
+
+    # -- site profiles --------------------------------------------------------
+
+    def _profile_data(self) -> dict[str, Any]:
+        return {
+            'targets': self.network_entry.get(),
+            'depth': self.scan_depth_var.get(),
+            'advanced': {k: v.get() for k, v in self.adv_vars.items()},
+            'toggles': {k: getattr(self, k).get() for k in self._PROTOCOL_VARS},
+        }
+
+    def _refresh_profiles(self) -> None:
+        self.profile_combo.configure(values=sorted(self._profiles, key=str.lower))
+
+    def _load_profile(self, name: str) -> None:
+        prof = self._profiles.get(name)
+        if prof is None:
+            return
+        self._apply_settings(prof)
+        self.log_message(f"Site profile {name!r}: {prof.get('targets', '')}")
+        self._save_settings()
+
+    def _store_profile(self, name: str) -> None:
+        self._profiles[name] = self._profile_data()
+        self.profile_var.set(name)
+        self._refresh_profiles()
+        self._save_settings()
+
+    def _save_profile(self) -> None:
+        name = simpledialog.askstring(
+            "Save site profile", "Name for these targets and options:",
+            initialvalue=self.profile_var.get(), parent=self.root)
+        name = (name or '').strip()
+        if not name:
+            return
+        if (name in self._profiles and name != self.profile_var.get()
+                and not messagebox.askyesno("Replace profile",
+                                            f"Replace the saved profile {name!r}?",
+                                            parent=self.root)):
+            return
+        self._store_profile(name)
+        self.log_message(f"Saved site profile {name!r} (CLI: hvac-scanner --profile \"{name}\")")
+
+    def _remove_profile(self, name: str) -> None:
+        self._profiles.pop(name, None)
+        if self.profile_var.get() == name:
+            self.profile_var.set('')
+        self._refresh_profiles()
+        self._save_settings()
+
+    def _delete_profile(self) -> None:
+        name = self.profile_var.get()
+        if not name:
+            messagebox.showinfo("Delete profile", "Choose a saved site first.", parent=self.root)
+            return
+        if messagebox.askyesno("Delete profile", f"Delete the saved profile {name!r}?",
+                               parent=self.root):
+            self._remove_profile(name)
 
     def _on_close(self) -> None:
         if self.scan_running:
