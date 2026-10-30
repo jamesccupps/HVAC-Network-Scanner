@@ -286,7 +286,7 @@ Exit codes:
 
 ## What's new
 
-### 2.8.0 (unreleased)
+### v2.8.0 (2026-10-29)
 
 The rest of the BACnet roadmap, and saved sites. Full list in
 [CHANGELOG.md](CHANGELOG.md).

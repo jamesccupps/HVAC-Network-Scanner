@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.8.0] — unreleased
+## [2.8.0] — 2026-10-29
 
 The rest of the BACnet roadmap and saved sites. Everything new is read-only:
 nothing registers with a BBMD, joins a BACnet/SC hub or writes to a device
