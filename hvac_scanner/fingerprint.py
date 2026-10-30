@@ -260,7 +260,19 @@ def fingerprint_device(dev: dict[str, Any],
 
     # --- Service-only devices -----------------------------------------
     elif protocol == 'Service':
-        if 'unifi' in title:
+        if dev.get('sc_role'):
+            # BACnet Secure Connect (see services._probe_bacnet_sc)
+            role = dev['sc_role']
+            info['model'] = f"BACnet/SC {role}"
+            info['device_type'] = 'BACnet/SC Hub' if role == 'hub' else 'BACnet/SC Node'
+            if dev.get('tls_client_cert_required') is False:
+                info['description'] = ('Accepted a BACnet/SC WebSocket without a client '
+                                       'certificate: anyone on the network can join')
+            else:
+                info['description'] = ('BACnet over TLS 1.3 with mutual authentication; '
+                                       'only devices holding a certificate from the site '
+                                       'CA can connect')
+        elif 'unifi' in title:
             info['model'] = 'Ubiquiti UniFi Gateway'
             info['device_type'] = 'Network Infrastructure'
             info['description'] = 'UniFi network gateway/controller'
@@ -287,6 +299,16 @@ def fingerprint_device(dev: dict[str, Any],
             info['model'] = 'Siemens P2 supervisor (Desigo CC / Insight)'
             info['device_type'] = 'Management Station'
             info['description'] = 'Management station accepting P2 connections from APOGEE panels'
+
+    # --- KNXnet/IP -------------------------------------------------------
+    elif protocol == 'KNXnet/IP':
+        families = [s.get('family') for s in dev.get('services') or []]
+        info['model'] = dev.get('name') or 'KNXnet/IP device'
+        info['device_type'] = ('KNX IP Router' if 'Routing' in families
+                               else 'KNX IP Interface')
+        info['description'] = (f"KNX {dev.get('medium', '')} gateway, individual address "
+                               f"{dev.get('knx_address', '?')}; offers "
+                               f"{', '.join(f for f in families if f) or 'no services'}")
 
     # --- SNMP devices -------------------------------------------------
     elif protocol == 'SNMP':

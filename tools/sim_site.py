@@ -31,6 +31,8 @@ library and the scanner's own codec for object-identifier encoding.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import http.server
 import math
 import os
@@ -98,6 +100,53 @@ def app_oid(obj_type: int, instance: int) -> bytes:
 
 def ctx_unsigned(num: int, v: int) -> bytes:
     return _tag(num, _uint_bytes(v), context=True)
+
+
+def app_bool(v: bool) -> bytes:
+    return bytes([0x11 if v else 0x10])
+
+
+def app_octets(b: bytes) -> bytes:
+    return _tag(6, b)
+
+
+def app_date(year: Optional[int], month: Optional[int], day: Optional[int]) -> bytes:
+    """None in a field is 'unspecified' (255), as in an open-ended period."""
+    return _tag(10, bytes([255 if year is None else year - 1900,
+                           255 if month is None else month,
+                           255 if day is None else day, 255]))
+
+
+def app_time(hour: int, minute: int) -> bytes:
+    return _tag(11, bytes([hour, minute, 0, 0]))
+
+
+def opening(num: int) -> bytes:
+    return bytes([(num << 4) | 0x0E])
+
+
+def closing(num: int) -> bytes:
+    return bytes([(num << 4) | 0x0F])
+
+
+def prop_ref(obj_type: int, instance: int, prop: int = 85,
+             device: Optional[int] = None) -> bytes:
+    """BACnetDeviceObjectPropertyReference: what a trend log logs and what a
+    schedule writes."""
+    out = (_tag(0, struct.pack('!I', (obj_type << 22) | instance), context=True)
+           + ctx_unsigned(1, prop))
+    if device is not None:
+        out += _tag(3, struct.pack('!I', (8 << 22) | device), context=True)
+    return out
+
+
+def weekly_schedule(days: "list[list[tuple[int, int, bytes]]]") -> bytes:
+    """Seven BACnetDailySchedules, Monday first: (hour, minute, encoded value)."""
+    return b''.join(opening(0) + b''.join(app_time(h, m) + v for h, m, v in day)
+                    + closing(0) for day in days)
+
+
+STATUS_NORMAL = _tag(8, bytes([4, 0]))
 
 
 def bvlc(fn: int, npdu_apdu: bytes) -> bytes:
@@ -201,6 +250,12 @@ class SimDevice:
     rpm: bool = True                   # False: reject ReadPropertyMultiple
     latency: float = 0.002             # per-request processing time
     points: list[SimPoint] = field(default_factory=list)
+    # Objects that are not points (trend logs, schedules, network ports):
+    # (type, instance) -> {property: encoded value}.
+    objects: dict = field(default_factory=dict)
+    # Answers a Who-Is straight to the requester rather than by broadcast,
+    # which the standard allows. Matters only behind a remote router.
+    iam_unicast: bool = False
 
     def add_equipment(self, prefix: str, template, start: dict[int, int]) -> None:
         """Append one piece of equipment's points, numbering per object type."""
@@ -217,6 +272,28 @@ class SimDevice:
                                         units, desc, value,
                                         states=_STATE_TEXT.get(base) if obj_type == 19 else None))
 
+    def find(self, name: str) -> SimPoint:
+        for p in self.points:
+            if p.name == name:
+                return p
+        raise KeyError(name)
+
+    def add_object(self, obj_type: int, instance: int, name: str,
+                   props: "dict[int, bytes]") -> None:
+        self.objects[(obj_type, instance)] = {77: app_string(name), **props}
+
+    def add_network_port(self, instance: int, name: str, network_type: int,
+                         network: int, mac: bytes, max_master: Optional[int] = None,
+                         accepts_fd: Optional[bool] = None,
+                         extra: Optional[dict] = None) -> None:
+        props = {427: app_enum(network_type), 425: app_unsigned(network),
+                 423: app_octets(mac), 111: STATUS_NORMAL, **(extra or {})}
+        if max_master is not None:
+            props[64] = app_unsigned(max_master)
+        if accepts_fd is not None:
+            props[413] = app_bool(accepts_fd)
+        self.add_object(56, instance, name, props)
+
     def flag(self, name: str, flags: int) -> None:
         """Set statusFlags on the point called `name`."""
         for p in self.points:
@@ -228,7 +305,8 @@ class SimDevice:
     # -- property access ---------------------------------------------------
 
     def object_list(self) -> list[tuple[int, int]]:
-        return [(8, self.instance)] + [(p.obj_type, p.instance) for p in self.points]
+        return ([(8, self.instance)] + [(p.obj_type, p.instance) for p in self.points]
+                + list(self.objects))
 
     def _point(self, obj_type: int, instance: int) -> Optional[SimPoint]:
         for p in self.points:
@@ -241,6 +319,13 @@ class SimDevice:
         """Encoded value, or (error class, error code)."""
         if obj_type == 8 and instance in (self.instance, 4194303):
             return self._read_device(prop, index)
+        extra = self.objects.get((obj_type, instance))
+        if extra is not None:
+            if prop == 75:
+                return app_oid(obj_type, instance)
+            if prop == 79:
+                return app_enum(obj_type)
+            return extra.get(prop, (2, 32))
         p = self._point(obj_type, instance)
         if p is None:
             return (1, 31)                       # object / unknown-object
@@ -356,10 +441,16 @@ class BACnetEndpoint:
     """One BACnet/IP address: a controller, optionally routing to MS/TP."""
 
     def __init__(self, ip: str, device: SimDevice,
-                 mstp: Optional[dict[int, dict[int, SimDevice]]] = None):
+                 mstp: Optional[dict[int, dict[int, SimDevice]]] = None,
+                 bbmd: Optional[dict] = None, remote: bool = False):
         self.ip = ip
         self.device = device
         self.mstp = mstp or {}                    # dnet -> {mac: device}
+        # {'bdt': [(ip, port, mask)], 'fdt': [(ip, port, ttl, remaining)]}
+        self.bbmd = bbmd
+        # On another subnet from the scanner: what it would broadcast on its
+        # own segment never arrives, so it is not sent at all.
+        self.remote = remote
         self.requests = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((ip, BACNET_PORT))
@@ -383,20 +474,45 @@ class BACnetEndpoint:
                 print(f"[sim {self.ip}] error handling packet: {e!r}", file=sys.stderr)
 
     def _send(self, apdu: bytes, addr, broadcast: bool = False,
-              snet: Optional[int] = None, sadr: bytes = b'', via=None) -> None:
+              snet: Optional[int] = None, sadr: bytes = b'', via=None,
+              unicast_ok: bool = False) -> None:
         if snet is None:
             npdu = b'\x01\x00'
         else:
             npdu = bytes([0x01, 0x08]) + struct.pack('!H', snet) + bytes([len(sadr)]) + sadr
         if via is not None:
             via(self.ip, npdu + apdu)
+        elif broadcast and self.remote:
+            if unicast_ok:                         # answered to the requester
+                self.sock.sendto(bvlc(0x0A, npdu + apdu), addr)
+            # else: broadcast on the far subnet; the scanner never hears it
         else:
             self.sock.sendto(bvlc(0x0B if broadcast else 0x0A, npdu + apdu), addr)
+
+    def _answer_bvll(self, function: int, addr) -> None:
+        """Read-BDT / Read-FDT: the tables if this is a BBMD, else a NAK."""
+        if self.bbmd is None:
+            nak = 0x0020 if function == 0x02 else 0x0040
+            self.sock.sendto(struct.pack('!BBHH', 0x81, 0x00, 6, nak), addr)
+            return
+        if function == 0x02:
+            body = b''.join(socket.inet_aton(ip) + struct.pack('!H', port) + socket.inet_aton(mask)
+                            for ip, port, mask in self.bbmd.get('bdt', []))
+            self.sock.sendto(struct.pack('!BBH', 0x81, 0x03, 4 + len(body)) + body, addr)
+        else:
+            body = b''.join(socket.inet_aton(ip) + struct.pack('!HHH', port, ttl, left)
+                            for ip, port, ttl, left in self.bbmd.get('fdt', []))
+            self.sock.sendto(struct.pack('!BBH', 0x81, 0x07, 4 + len(body)) + body, addr)
 
     def handle(self, data: bytes, addr, via=None) -> None:
         """Answer one packet. `via`, when given, is how a broadcast's replies
         travel back: through the relay, as Forwarded-NPDUs."""
-        if len(data) < 6 or data[0] != 0x81:
+        if len(data) < 4 or data[0] != 0x81:
+            return
+        if data[1] in (0x02, 0x06) and via is None:
+            self._answer_bvll(data[1], addr)
+            return
+        if len(data) < 6:
             return
         idx = 4 + (6 if data[1] == 0x04 else 0)   # Forwarded-NPDU carries an origin address
         npdu = _parse_npdu(data, idx)
@@ -409,7 +525,7 @@ class BACnetEndpoint:
                 payload = bytes([0x01, 0x80, 0x01]) + nets
                 if via is not None:
                     via(self.ip, payload)
-                else:
+                elif not self.remote:              # a remote router's broadcast is lost
                     self.sock.sendto(bvlc(0x0B, payload), addr)
             return
 
@@ -423,7 +539,8 @@ class BACnetEndpoint:
             low, high = _who_is_range(data, a + 2)
             if dnet in (None, 0xFFFF) and low <= self.device.instance <= high:
                 time.sleep(random.uniform(0, 0.05))
-                self._send(self.device.iam_apdu(), addr, broadcast=True, via=via)
+                self._send(self.device.iam_apdu(), addr, broadcast=True, via=via,
+                           unicast_ok=self.device.iam_unicast)
             for net, devices in self.mstp.items():
                 if dnet not in (0xFFFF, net):
                     continue
@@ -431,7 +548,8 @@ class BACnetEndpoint:
                     if low <= dev.instance <= high:
                         time.sleep(dev.latency)
                         self._send(dev.iam_apdu(), addr, broadcast=True,
-                                   snet=net, sadr=bytes([mac]), via=via)
+                                   snet=net, sadr=bytes([mac]), via=via,
+                                   unicast_ok=dev.iam_unicast)
             return
 
         if (data[a] >> 4) != 0 or a + 4 > len(data):
@@ -563,9 +681,11 @@ class BroadcastRelay:
 
 class ModbusUnit:
     def __init__(self, vendor: str = "", product: str = "", version: str = "",
-                 holding: Optional[list[int]] = None, device_id: bool = True):
+                 holding: Optional[list[int]] = None, device_id: bool = True,
+                 server_id: Optional[bytes] = None):
         self.vendor, self.product, self.version = vendor, product, version
         self.device_id = device_id
+        self.server_id = server_id            # FC 0x11 reply, None: not supported
         self.holding = holding or [random.randint(0, 3000) for _ in range(60)]
         self.inputs = [random.randint(0, 1000) for _ in range(60)]
         self.coils = [random.randint(0, 1) for _ in range(32)]
@@ -623,6 +743,11 @@ class ModbusServer:
                 b = s.encode()
                 body += bytes([i, len(b)]) + b
             return body
+        if fc == 0x11:
+            if unit.server_id is None:
+                return bytes([0x91, 0x01])        # illegal function
+            body = unit.server_id + b'\xff'      # run indicator: on
+            return bytes([0x11, len(body)]) + body
         if fc in (3, 4) and len(pdu) >= 5:
             start, count = struct.unpack('!HH', pdu[1:5])
             regs = unit.holding if fc == 3 else unit.inputs
@@ -845,6 +970,124 @@ class P2Node:
         self.sock.close()
 
 
+class SCHub:
+    """A BACnet/SC hub: TLS 1.3 and a WebSocket with the hub subprotocol.
+
+    `require_client_cert` is how a real hub is set up: only a certificate
+    issued by the site's CA gets past the handshake. Without it, the hub
+    accepts the WebSocket from anyone (a misconfiguration worth reporting).
+    Nothing past the upgrade is implemented; `upgrades` counts how often a
+    client got that far."""
+
+    _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    def __init__(self, ip: str, port: int, cert: tuple[str, str],
+                 require_client_cert: bool = True):
+        self.upgrades = 0
+        self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+        self.ctx.load_cert_chain(*cert)
+        if require_client_cert:
+            self.ctx.verify_mode = ssl.CERT_REQUIRED
+            self.ctx.load_verify_locations(cafile=cert[0])   # trusts only itself
+        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind((ip, port))
+        self.srv.listen(8)
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+
+    def _client(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(5)
+            with self.ctx.wrap_socket(conn, server_side=True) as tls:
+                head = b''
+                while b'\r\n\r\n' not in head and len(head) < 8192:
+                    chunk = tls.recv(2048)
+                    if not chunk:
+                        return
+                    head += chunk
+                text = head.decode('latin-1')
+                key = next((line.split(':', 1)[1].strip() for line in text.split('\r\n')
+                            if line.lower().startswith('sec-websocket-key:')), None)
+                if key is None or 'hub.bsc.bacnet.org' not in text.lower():
+                    tls.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                    return
+                accept = base64.b64encode(
+                    hashlib.sha1((key + self._WS_GUID).encode()).digest()).decode()
+                tls.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                             "Connection: Upgrade\r\n"
+                             f"Sec-WebSocket-Accept: {accept}\r\n"
+                             "Sec-WebSocket-Protocol: hub.bsc.bacnet.org\r\n\r\n").encode())
+                self.upgrades += 1
+                tls.recv(1)                        # until the client hangs up
+        except (OSError, ssl.SSLError):
+            pass                                   # incl. a rejected client certificate
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        self.srv.close()
+
+
+def _fox_hello(station: str, version: str, os_name: str, os_version: str,
+               host_id: str) -> bytes:
+    """A Niagara station's answer to a Fox hello (fields as zgrab2 and nmap's
+    fox-info read them)."""
+    fields = [("fox.version", "s:1.0.1"), ("id", "i:5517"), ("hostName", "s:" + station.lower()),
+              ("hostAddress", "s:10.20.0.22"), ("app.name", "s:Station"),
+              ("app.version", "s:" + version), ("vm.name", "s:Java HotSpot(TM) Embedded VM"),
+              ("vm.version", "s:25.211-b12"), ("os.name", "s:" + os_name),
+              ("os.version", "s:" + os_version), ("station.name", "s:" + station),
+              ("lang", "s:en"), ("timeZone", "s:America/Chicago;-21600000;3600000;02:00"),
+              ("hostId", "s:" + host_id), ("vmUuid", "s:5d0c1f8e-2a6b-4c7d-9e01-23456789abcd"),
+              ("brandId", "s:vykon")]
+    return ("fox a 0 -1 fox hello\n{\n" + "".join(f"{k}={v}\n" for k, v in fields)
+            + "};;\n").encode()
+
+
+class KNXGateway:
+    """A KNXnet/IP interface on UDP 3671: answers a DESCRIPTION_REQUEST, to
+    the control endpoint the request names, and nothing else."""
+
+    def __init__(self, ip: str, name: str, knx_address: int, secure: bool = False):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((ip, 3671))
+        dev = (bytes([0x36, 0x01, 0x02, 0x00]) + struct.pack('!H', knx_address)
+               + b'\x00\x00' + bytes.fromhex("00fa0012ab34") + socket.inet_aton("224.0.23.12")
+               + bytes.fromhex("00246d01a2b3") + name.encode('latin-1')[:30].ljust(30, b'\x00'))
+        families = [(0x02, 2), (0x03, 2), (0x04, 2)] + ([(0x09, 1)] if secure else [])
+        svc = bytes([2 + 2 * len(families), 0x02]) + b''.join(bytes(f) for f in families)
+        body = dev + svc
+        self.reply = struct.pack('!BBHH', 0x06, 0x10, 0x0204, 6 + len(body)) + body
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(1024)
+            except OSError:
+                return
+            if len(data) >= 14 and data[2:4] == b'\x02\x03':
+                ip = socket.inet_ntoa(data[8:12])
+                port = struct.unpack('!H', data[12:14])[0]
+                target = addr if ip == '0.0.0.0' else (ip, port)
+                try:
+                    self.sock.sendto(self.reply, target)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        self.sock.close()
+
+
 def _self_signed_cert(cn: str, org: str, workdir: str) -> Optional[tuple[str, str]]:
     """Make a throwaway certificate with openssl, if it is installed."""
     openssl = shutil.which('openssl')
@@ -890,6 +1133,12 @@ def build_bacnet_devices(network: str = DEFAULT_NETWORK,
     dxr = SimDevice(2101, "RM-201", 7, "Siemens Building Technologies", "DXR2.E10PL-1",
                     firmware="01.21", max_apdu=480)
     dxr.add_equipment("", _VAV_POINTS, {})
+    # Moving to BACnet/SC: a second port, connected to the site's hubs. The
+    # property identifiers are past 4194303 and need three octets.
+    dxr.add_network_port(2, "BACnet/SC", 11, 0, b'', extra={
+        4194325: app_string(f"wss://{network}.25:47808"),
+        4194317: app_string(f"wss://{network}.26:4443"),
+        4194322: app_bool(False)})
 
     ens = SimDevice(1100, "Ensemble", 2, "Trane", "TES Workstation", rpm=False)
 
@@ -905,6 +1154,8 @@ def build_bacnet_devices(network: str = DEFAULT_NETWORK,
                       firmware="10.1", max_apdu=480, latency=0.025)
         d.add_equipment("", _VAV_POINTS, {})
         mstp[5][mac] = d
+
+    _add_trends_and_schedules(sc, pxc)
 
     sc.flag("AHU-2:FRZ-STAT", STATUS_IN_ALARM)
     sc.flag("AHU-3:SF-C", STATUS_OVERRIDDEN)
@@ -923,17 +1174,81 @@ def build_bacnet_devices(network: str = DEFAULT_NETWORK,
     ]
 
 
+def _add_trends_and_schedules(sc: SimDevice, pxc: SimDevice) -> None:
+    """What a commissioned supervisory controller carries besides points."""
+    def trend(dev, inst, name, ref, interval, logging_type=0, enabled=True,
+              records=0, size=1000, stop_when_full=False, obj_type=20):
+        dev.add_object(obj_type, inst, name, {
+            132: ref, 133: app_bool(enabled), 134: app_unsigned(interval),
+            197: app_enum(logging_type), 141: app_unsigned(records),
+            126: app_unsigned(size), 144: app_bool(stop_when_full), 111: STATUS_NORMAL})
+
+    def ref(dev, name, device=None):
+        p = dev.find(name)
+        return prop_ref(p.obj_type, p.instance, device=device)
+
+    trend(sc, 1, "AHU-1 SA-T 15 min", ref(sc, "AHU-1:SA-T"), 90000, records=412)
+    trend(sc, 2, "VAV-01 ZN-T COV", ref(sc, "VAV-01:ZN-T"), 0, logging_type=1,
+          records=1000)
+    trend(sc, 3, "Chiller 1 demand", ref(sc, "PLANT:CH1-KW"), 30000, enabled=False)
+    trend(sc, 4, "VAV-07 airflow", ref(sc, "VAV-07:AIR-FLOW"), 6000, records=500,
+          size=500, stop_when_full=True)
+    trend(sc, 1, "Plant temperatures",
+          ref(sc, "PLANT:CHWS-T") + ref(sc, "PLANT:CHWR-T") + ref(sc, "PLANT:BLDG-KWH"),
+          30000, records=230, obj_type=27)
+    occ = sc.find("AHU-1:OCC")
+    weekday = [(6, 0, app_enum(1)), (18, 0, app_enum(0))]
+    sc.add_object(17, 1, "AHU-1 occupancy", {
+        85: app_enum(1), 174: app_enum(0),
+        32: app_date(2026, 1, 1) + app_date(None, None, None),
+        54: prop_ref(occ.obj_type, occ.instance),
+        123: weekly_schedule([weekday] * 5 + [[(8, 0, app_enum(1)), (12, 0, app_enum(0))], []]),
+        111: STATUS_NORMAL})
+    sc.add_object(6, 1, "Holidays 2026", {85: app_bool(False)})
+    # A panel trending a point that lives on another controller.
+    trend(pxc, 1, "AHU-1 SA-T (from SC-1)", ref(sc, "AHU-1:SA-T", device=sc.instance),
+          90000, records=88)
+
+
+def build_remote_building(network: str, peer_bbmd: str
+                          ) -> "tuple[str, SimDevice, dict, dict]":
+    """A second building on its own subnet: a BACnet router (and BBMD) with an
+    MS/TP trunk behind it. Nothing it broadcasts reaches the scanner. One
+    device on the trunk answers a Who-Is to the requester directly; the other
+    only broadcasts, and can be found only by asking its address."""
+    ip = f"{network}.5"
+    router = SimDevice(4000, "BASRT-B-BLDG2", 245, "Contemporary Controls", "BASRT-B",
+                       firmware="4.11")
+    router.add_network_port(1, "BACnet/IP", 5, 2,
+                            socket.inet_aton(ip) + struct.pack('!H', BACNET_PORT),
+                            accepts_fd=True)
+    router.add_network_port(2, "MS/TP trunk 1", 2, 9, b'\x00', max_master=7)
+    trunk: dict[int, SimDevice] = {}
+    for mac, unicast in ((2, True), (6, False)):
+        d = SimDevice(900000 + mac, f"VAV-2{mac:02d}", 5, "Johnson Controls", "FEC2611",
+                      firmware="10.1", max_apdu=480, latency=0.025, iam_unicast=unicast)
+        d.add_equipment("", _VAV_POINTS, {})
+        trunk[mac] = d
+    bbmd = {'bdt': [(ip, BACNET_PORT, '255.255.255.255'),
+                    (peer_bbmd, BACNET_PORT, '255.255.255.255')], 'fdt': []}
+    return ip, router, {9: trunk}, bbmd
+
+
 class Site:
     """`network` is the first three octets of the loopback /24 to use, so a
-    test can run its own site beside one that is already up."""
+    test can run its own site beside one that is already up. `remote_network`
+    adds a second building on another /24 that broadcasts cannot reach (see
+    build_remote_building)."""
 
     def __init__(self, quiet: bool = False, network: str = DEFAULT_NETWORK,
-                 bacnet_only: bool = False):
+                 bacnet_only: bool = False, remote_network: Optional[str] = None):
         self.quiet = quiet
         self.network = network
         self.bacnet_only = bacnet_only
+        self.remote_network = remote_network
         self._closers: list = []
         self.endpoints: list[BACnetEndpoint] = []
+        self.remote_endpoints: list[BACnetEndpoint] = []
         self._tmp = tempfile.mkdtemp(prefix="hvac-sim-")
 
     def _try(self, label: str, fn):
@@ -949,16 +1264,36 @@ class Site:
 
     def start(self) -> "Site":
         net = self.network
+        remote_router = f"{self.remote_network or '127.0.9'}.5"
         for ip, dev, mstp in build_bacnet_devices(net):
+            bbmd = None
+            if mstp:
+                # The router is the site's BBMD: linked to the other building,
+                # with one foreign device (a remote workstation) registered.
+                dev.add_network_port(1, "BACnet/IP", 5, 1,
+                                     socket.inet_aton(ip) + struct.pack('!H', BACNET_PORT),
+                                     accepts_fd=True)
+                dev.add_network_port(2, "MS/TP trunk 1", 2, 5, b'\x00', max_master=127)
+                bbmd = {'bdt': [(ip, BACNET_PORT, '255.255.255.255'),
+                                (remote_router, BACNET_PORT, '255.255.255.255')],
+                        'fdt': [('10.20.30.40', BACNET_PORT, 300, 211)]}
             ep = self._try(f"{ip:<11} BACnet  {dev.model} (device {dev.instance}, "
                            f"{len(dev.points)} points)"
                            + (f", routing MS/TP net {list(mstp)} ({sum(len(v) for v in mstp.values())} devices)"
-                              if mstp else ""),
-                           lambda ip=ip, dev=dev, mstp=mstp: BACnetEndpoint(ip, dev, mstp))
+                              if mstp else "") + (", BBMD" if bbmd else ""),
+                           lambda ip=ip, dev=dev, mstp=mstp, bbmd=bbmd:
+                               BACnetEndpoint(ip, dev, mstp, bbmd=bbmd))
             if ep:
                 self.endpoints.append(ep)
         self._try(f"{net + '.255':<11} BACnet  broadcast relay",
                   lambda: BroadcastRelay(self.endpoints, f"{net}.255"))
+        if self.remote_network:
+            ip, dev, mstp, bbmd = build_remote_building(self.remote_network, f"{net}.5")
+            ep = self._try(f"{ip:<11} BACnet  {dev.model} on another subnet (device "
+                           f"{dev.instance}), routing MS/TP net 9 (2 devices), BBMD",
+                           lambda: BACnetEndpoint(ip, dev, mstp, bbmd=bbmd, remote=True))
+            if ep:
+                self.remote_endpoints.append(ep)    # deliberately not on the relay
         if self.bacnet_only:
             return self
 
@@ -968,7 +1303,7 @@ class Site:
                   lambda: ModbusServer(f"{net}.20", {1: meter}, any_unit=True))
         self._try(f"{net}.21  Modbus  RTU gateway (units 1 and 2)",
                   lambda: ModbusServer(f"{net}.21", {
-                      1: ModbusUnit(device_id=False),
+                      1: ModbusUnit(device_id=False, server_id=b"\x0aVFD-480 drive v3.2"),
                       2: ModbusUnit("Carrier", "30XA Chiller", "4.2"),
                   }))
 
@@ -980,9 +1315,15 @@ class Site:
                   lambda: SNMPAgent(f"{net}.22", "Tridium JACE-8000 Niagara 4.13.1.16 "
                                                   "QNX 7.0 (supervisor for building B)"))
         self._try(f"{net}.22  Fox     Niagara JACE (1911)",
-                  lambda: BannerService(f"{net}.22", 1911,
-                                        b"fox a 0 -1 fox hello\n{\nfox.version=s:1.0.1\n"
-                                        b"hostName=s:JACE-B\n};;\n", reply_to_input=True))
+                  lambda: BannerService(f"{net}.22", 1911, _fox_hello(
+                      "JACE_B", "4.13.1.16", "QNX", "7.0.0", "Qnx-JACE8-0000-1A2B-3C4D"),
+                      reply_to_input=True))
+        self._try(f"{net}.28  Fox     Niagara AX station (3.8, end of life)",
+                  lambda: BannerService(f"{net}.28", 1911, _fox_hello(
+                      "AHU_PLANT", "3.8.41", "QNX", "6.5.0", "Qnx-JACE6-0000-5E6F-7A8B"),
+                      reply_to_input=True))
+        self._try(f"{net}.29  KNX     KNXnet/IP interface (tunnelling, no KNX Secure)",
+                  lambda: KNXGateway(f"{net}.29", "Lighting IP interface", 0x1101))
         self._try(f"{net}.22  HTTP    Niagara web UI",
                   lambda: WebUI(f"{net}.22", 80, "Niagara Web Server", "Niagara Web Server/4.13"))
         self._try(f"{net}.2   HTTP    Tracer SC+ web UI",
@@ -992,6 +1333,13 @@ class Site:
             self._try(f"{net}.2   HTTPS   Tracer SC+ web UI (self-signed)",
                       lambda: WebUI(f"{net}.2", 443, "Tracer SC+ - Log In", "Trane",
                                     tls_cert=cert))
+        hub_cert = _self_signed_cert("bsc-hub", "Site CA", self._tmp)
+        if hub_cert:
+            self._try(f"{net}.25  BACnet/SC hub, TCP 47808 (client certificate required)",
+                      lambda: SCHub(f"{net}.25", 47808, hub_cert))
+            # On a port no sweep covers: found because RM-201 names it.
+            self._try(f"{net}.26  BACnet/SC hub, TCP 4443 (accepts anyone; RM-201 names it)",
+                      lambda: SCHub(f"{net}.26", 4443, hub_cert, require_client_cert=False))
         self._try(f"{net}.3   HTTP    PXC web UI",
                   lambda: WebUI(f"{net}.3", 80, "Desigo PXC", "nginx"))
         self._try(f"{net}.3   FTP     PXC (Nucleus)",
@@ -1018,10 +1366,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--network", default=DEFAULT_NETWORK, metavar="A.B.C",
                    help="loopback /24 to use (default: 127.0.0)")
+    p.add_argument("--remote", metavar="A.B.C", default=None,
+                   help="also run a second building on this /24, behind a router "
+                        "that broadcasts cannot reach (e.g. 127.0.4)")
     args = p.parse_args(argv)
     print("Simulated BAS site on loopback:")
-    site = Site(quiet=args.quiet, network=args.network).start()
-    print(f"\nScan it with:  hvac-scanner {args.network}.2-30   (Ctrl-C to stop)")
+    site = Site(quiet=args.quiet, network=args.network, remote_network=args.remote).start()
+    extra = f",{args.remote}.5" if args.remote else ""
+    print(f"\nScan it with:  hvac-scanner {args.network}.2-30{extra}   (Ctrl-C to stop)")
     try:
         while True:
             time.sleep(1)

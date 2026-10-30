@@ -71,6 +71,7 @@ a = Analysis(
         'hvac_scanner.fingerprint',
         'hvac_scanner.gui',
         'hvac_scanner.icon',
+        'hvac_scanner.knx',
         'hvac_scanner.modbus',
         'hvac_scanner.netrange',
         'hvac_scanner.netsweep',

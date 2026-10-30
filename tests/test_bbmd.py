@@ -242,7 +242,7 @@ class TestIntegration:
                 opts = ScanOptions(networks=["127.0.0.1"], timeout=0.6,
                                    bbmd="127.0.0.1", deep_scan=False,
                                    scan_modbus=False, scan_services=False,
-                                   scan_snmp=False, scan_mstp=False, scan_p2=False)
+                                   scan_snmp=False, scan_mstp=False, scan_p2=False, scan_knx=False)
                 result = ScanEngine(opts, callback=lambda m: None).run()
         assert [d['instance'] for d in result.devices] == [5001]
 
@@ -265,7 +265,7 @@ class TestIntegration:
         with MockBBMD(mode='refuse'):
             opts = ScanOptions(networks=["127.0.0.1"], timeout=0.4,
                                bbmd="127.0.0.1", scan_modbus=False,
-                               scan_services=False, scan_snmp=False, scan_p2=False,
+                               scan_services=False, scan_snmp=False, scan_p2=False, scan_knx=False,
                                scan_mstp=False)
             result = ScanEngine(opts, callback=logs.append).run()
         assert result.devices == []

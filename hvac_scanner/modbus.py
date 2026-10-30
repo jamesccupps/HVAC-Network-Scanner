@@ -21,6 +21,7 @@ v2.7:
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import struct
 from concurrent.futures import ThreadPoolExecutor
@@ -169,8 +170,12 @@ class ModbusScanner:
 
         with _ModbusSession(ip, port, self.timeout) as session:
             for uid in unit_ids:
-                # Try Device Identification (FC 0x2B, MEI 0x0E) first
+                # Try Device Identification (FC 0x2B, MEI 0x0E) first, then
+                # Report Server ID (FC 0x11), which older devices answer
+                # instead.
                 info = self._device_id_via(session, uid)
+                if info is None:
+                    info = self._server_id_via(session, uid)
                 if info is None:
                     # Fall back to a minimal holding register read
                     info = self._holding_read_via(session, uid)
@@ -218,6 +223,23 @@ class ModbusScanner:
         if resp[7] != 0x2B:
             return None
         return self._parse_device_id_response(resp)
+
+    def _server_id_via(self, session: _ModbusSession, uid: int) -> Optional[dict[str, Any]]:
+        """Report Server ID (FC 0x11), as nmap's modbus-discover asks.
+
+        Its contents are the vendor's own: usually a product string, a run
+        indicator, sometimes a version. Printable text in it is kept as the
+        product; the rest is reported as hex.
+        """
+        resp = session.request(uid, bytes([0x11]))
+        if not resp or len(resp) < 10 or resp[7] != 0x11:
+            return None
+        data = resp[9:9 + resp[8]]
+        text = " ".join(t.decode('ascii') for t in re.findall(rb'[\x20-\x7E]{3,}', data)).strip()
+        return {
+            'vendor': 'Unknown', 'product': text[:80] or 'Unknown', 'version': 'Unknown',
+            'server_id': data.hex(), 'detected_via': 'report_server_id',
+        }
 
     def _holding_read_via(self, session: _ModbusSession, uid: int) -> Optional[dict[str, Any]]:
         resp = session.request(uid, self._read_pdu(0x03, 0, 1))

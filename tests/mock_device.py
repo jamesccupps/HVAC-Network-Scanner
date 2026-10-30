@@ -167,6 +167,11 @@ class MockBACnetDevice:
                 pass
 
     def _handle(self, data, addr):
+        if len(data) >= 4 and data[1] in (0x02, 0x06):
+            # Read-BDT / Read-FDT: not a BBMD, so a NAK (Annex J.4).
+            nak = 0x0020 if data[1] == 0x02 else 0x0040
+            self._sock.sendto(struct.pack('!BBHH', 0x81, 0x00, 6, nak), addr)
+            return
         if len(data) >= 12 and data[10:12] == b'\x10\x08':
             oid = struct.pack('!I', (8 << 22) | self.instance)
             apdu_code = {50: 0, 128: 1, 206: 2, 480: 3, 1024: 4}.get(self.max_apdu, 5)
