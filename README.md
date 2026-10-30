@@ -16,10 +16,12 @@ Scans a network and tells you what building-automation gear lives on it. For eac
 
 Works against:
 
-- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions. Reaches other subnets and VLANs by unicast discovery or through a BBMD.
-- **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs.
+- **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions. Reaches other subnets and VLANs by unicast discovery or through a BBMD. Reads BBMDs' broadcast and foreign-device tables, and each controller's trend logs, schedules and calendars as metadata.
+- **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs, including routers on other subnets with no BBMD.
+- **BACnet/SC** — detects BACnet Secure Connect hubs (including ones devices name on nonstandard ports), and reports any that let a connection in without a client certificate.
+- **KNXnet/IP** — finds KNX IP interfaces and routers on UDP 3671 and flags the ones offering tunnelling or routing without KNX Secure.
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
-- **HVAC services** — Niagara Fox, OPC UA, Siemens S7, EtherNet/IP CIP, KNXnet/IP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
+- **HVAC services** — Niagara Fox (station name, Niagara version, OS, host ID, brand; AX stations flagged as end of life), OPC UA, Siemens S7, EtherNet/IP CIP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
 - **SNMP v1/v2c** — raw UDP `sysDescr` probe, no pysnmp dependency.
 - **Siemens APOGEE P2** — detects firmware 2.x APOGEE field panels and P2
   supervisors on TCP/5033 without registering on them (see below).
@@ -171,6 +173,9 @@ Ctrl+Enter). Results appear as each device finishes, not at the end:
   units and status. Points in alarm or fault are red, overridden or out of
   service amber, and multi-state values read as their state text
   ("Occupied"). Double-click a point for its full name and description.
+- **Trends & Schedules** — what each trend log records, how often, and
+  whether it is still recording (disabled or full-and-stopped logs stand
+  out); each schedule's weekly programme and the objects it controls.
 - **Modbus Registers**, **Services** (open ports, banners, page titles, TLS
   certificates) and **Raw JSON**.
 
@@ -188,8 +193,13 @@ scan against an earlier JSON export.
 
 **Advanced** holds the timeout, the per-device rate limit (use 20-50 ms on
 sites with small field controllers), parallel deep scans, unicast discovery,
-BBMD registration, broadcast override, Who-Is chunking, an object cap and
-SNMP communities. Everything you set is remembered for next time.
+BBMD registration, broadcast override, Who-Is chunking, an object cap,
+SNMP communities, and the MS/TP address probe for trunks behind routers on
+other subnets. Everything you set is remembered for next time.
+
+**Site** saves the targets and every option under a name — for the
+buildings you audit again and again — and brings them back from the list.
+The CLI runs the same profiles with `--profile NAME`.
 
 ### Target syntax
 
@@ -238,6 +248,13 @@ python -m hvac_scanner.cli 10.0.0.19,10.0.0.21,10.0.0.192
 # address directly (this happens automatically for non-local subnets)
 python -m hvac_scanner.cli 10.50.20.0/24 --unicast always
 
+# ...and find the MS/TP devices behind its routers too, no BBMD needed
+# (about a minute per MS/TP network)
+python -m hvac_scanner.cli 10.50.20.0/24 --unicast always --mstp-probe
+
+# A site saved in the GUI, with its own targets and options
+python -m hvac_scanner.cli --profile "Building A" --html survey.html
+
 # Several SNMP communities, tried in turn
 python -m hvac_scanner.cli 10.0.0.0/24 --snmp-community public --snmp-community bas
 
@@ -267,7 +284,30 @@ Exit codes:
 - `2` — interrupted (SIGINT)
 - `3` — internal error
 
-## What's new in v2.7
+## What's new
+
+### 2.8.0 (unreleased)
+
+The rest of the BACnet roadmap, and saved sites. Full list in
+[CHANGELOG.md](CHANGELOG.md).
+
+- **MS/TP behind routers on other subnets, without a BBMD**: networks are
+  found from the routers' Network Port objects and asked with a routed
+  Who-Is; `--mstp-probe` asks each MS/TP address to find the devices that
+  only ever broadcast.
+- **BBMD tables**: which subnets each BBMD links, and who is registered as a
+  foreign device to hear the site's broadcasts.
+- **Trend logs and schedules** as metadata — what is trended, how often,
+  whether it is still recording; weekly programmes and what they control —
+  in a new tab and in the survey report.
+- **BACnet/SC detection**, with a high-severity finding for a hub that
+  accepts connections without a client certificate.
+- **Saved site profiles** in the GUI, runnable from the CLI with
+  `--profile`.
+- **KNXnet/IP detection**, a fuller **Niagara Fox** identity (and AX end
+  of life flagged), Modbus **Report Server ID**, and BACnet/SC hubs found
+  through the devices that name them — from checking the scanner against
+  nmap, zgrab2, Redpoint, bacnet-stack and BACpypes3.
 
 ### v2.7.0 (2026-10-29)
 

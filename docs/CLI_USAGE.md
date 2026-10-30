@@ -16,7 +16,15 @@ is also on your PATH and is equivalent.
 
 | Flag | Description |
 |------|-------------|
-| `NETWORKS` | One or more targets: CIDR (`192.168.1.0/24`), single host, last-octet range (`10.0.0.2-100`), full range (`10.0.0.2-10.0.0.12`), space- or comma-separated. A target that will not parse exits 1 before anything is sent. |
+| `NETWORKS` | One or more targets: CIDR (`192.168.1.0/24`), single host, last-octet range (`10.0.0.2-100`), full range (`10.0.0.2-10.0.0.12`), space- or comma-separated. A target that will not parse exits 1 before anything is sent. Optional with `--profile`. |
+
+### Site profiles
+
+| Flag | Description |
+|------|-------------|
+| `--profile NAME` | Scan a site profile saved in the GUI (Site, Save…): its targets and options. Targets and flags given on the command line take precedence over the profile's. |
+| `--list-profiles` | List the saved profiles and their targets, then exit. |
+| `--settings-file PATH` | The settings file that holds the profiles. Defaults to the GUI's own (`%APPDATA%\HVACNetworkScanner\settings.json` on Windows, `~/.config/hvac-scanner/settings.json` elsewhere). |
 
 ### General
 
@@ -51,9 +59,12 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 | `--no-modbus` | Skip Modbus TCP sweep. |
 | `--no-services` | Skip the HVAC-services TCP port scan. |
 | `--no-snmp` | Skip SNMP `sysDescr` probe. |
+| `--no-knx` | Skip KNXnet/IP gateway detection (one description request per target on UDP 3671). |
 | `--no-p2` | Skip Siemens APOGEE P2 detection on TCP/5033 (one identify frame with a foreign BLN name per open port; no handshake, nothing registered). |
 | `--no-deep` | Skip deep-scan. Discovery only — no object lists, no register reads. |
-| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp --no-p2`. |
+| `--no-metadata` | Skip trend log, schedule, calendar and Network Port metadata in the deep scan. |
+| `--no-bbmd-tables` | Skip reading BBMDs' broadcast and foreign-device tables. |
+| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp --no-p2 --no-knx`. |
 
 ### Output
 
@@ -89,6 +100,7 @@ compared — they differ on every scan and would bury the signal.
 | `--bbmd IP` | Register as a Foreign Device with this BBMD and send Who-Is through it. Discovers subnets the scanner cannot broadcast to. |
 | `--bbmd-ttl SECONDS` | Registration lease, default 60. Renewed automatically during long scans. |
 | `--unicast {auto,always,off}` | Unicast discovery for targets a broadcast cannot reach. Default `auto`. |
+| `--mstp-probe` | For MS/TP networks behind a router on another subnet, ask each MS/TP address in turn. About a minute per network. |
 
 A Who-Is is a broadcast, and broadcasts do not cross a router. There are two
 ways round that:
@@ -101,8 +113,13 @@ ways round that:
   the usual case when the building system sits on its own VLAN — up to 1,024
   of them. `always` probes every silent target. Devices on pre-2004 stacks
   answer the wildcard with an error; they are counted in the log but need a
-  BBMD or a scan from their own subnet. MS/TP devices behind a remote router
-  are not reachable this way.
+  BBMD or a scan from their own subnet. The MS/TP networks behind a router
+  found this way are taken from the router's Network Port objects and asked
+  with a Who-Is routed through it; devices that answer the requester
+  directly turn up. Devices that only broadcast their I-Am cannot answer
+  across the subnet boundary — `--mstp-probe` finds those by asking each
+  MS/TP address (0 to the port's max master) with a confirmed read, four
+  at a time, about a minute per network.
 - **A BBMD** (`--bbmd`) relays broadcasts for you and also reaches MS/TP
   devices behind remote routers. If registration fails the BACnet pass is
   skipped rather than quietly falling back to a local broadcast, which would
@@ -188,6 +205,23 @@ the firewall routes UDP 47808 between them but a broadcast never crosses.
 `auto` would already probe this target because it is not on a local /24;
 `always` also covers a target that *is* on a local /24 but whose devices
 sit behind something that eats broadcasts.
+
+### Finding MS/TP devices behind a remote router
+
+```bash
+python -m hvac_scanner.cli 10.50.20.0/24 --unicast always --mstp-probe
+```
+
+Without `--mstp-probe` the scan still finds the routers and their networks
+and asks each network with a routed Who-Is; the log names any network that
+did not answer and the BBMD (if one was found) that would reach it.
+
+### Running a saved site
+
+```bash
+python -m hvac_scanner.cli --list-profiles
+python -m hvac_scanner.cli --profile "Building A" --html building-a.html --quiet
+```
 
 ### Scanning several buildings from one host
 
