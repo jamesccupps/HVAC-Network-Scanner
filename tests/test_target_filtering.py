@@ -114,6 +114,8 @@ class TestBacnetScanPath:
             def __init__(self, *_a, **_kw): pass
             def open(self): pass
             def close(self): pass
+            def read_bbmd_tables(self, *_a, **_kw): return {}
+            def discover_routers_unicast(self, *_a, **_kw): return []
             def discover_who_is(self, *_a, **_kw):
                 return [
                     # In-range
@@ -134,7 +136,7 @@ class TestBacnetScanPath:
                 scan_mstp=False,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False, scan_p2=False,
+                scan_snmp=False, scan_p2=False, scan_knx=False,
                 deep_scan=False,  # skip deep scan for simplicity
             ),
             callback=lambda _m: None,
@@ -167,6 +169,8 @@ class TestDeduplicationAcrossMultipleTargets:
             def __init__(self, *_a, **_kw): pass
             def open(self): pass
             def close(self): pass
+            def read_bbmd_tables(self, *_a, **_kw): return {}
+            def discover_routers_unicast(self, *_a, **_kw): return []
 
             def discover_who_is(self, *_a, **_kw):
                 # Every Who-Is broadcast returns the same I-Ams (realistic —
@@ -190,7 +194,7 @@ class TestDeduplicationAcrossMultipleTargets:
                 scan_mstp=False,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False, scan_p2=False,
+                scan_snmp=False, scan_p2=False, scan_knx=False,
                 deep_scan=False,
             ),
             callback=lambda _m: None,
@@ -216,6 +220,8 @@ class TestDeduplicationAcrossMultipleTargets:
             def __init__(self, *_a, **_kw): pass
             def open(self): pass
             def close(self): pass
+            def read_bbmd_tables(self, *_a, **_kw): return {}
+            def discover_routers_unicast(self, *_a, **_kw): return []
             def discover_who_is(self, *_a, **_kw):
                 return [
                     {'ip': '10.0.0.19', 'instance': 33333, 'vendor_id': 2},
@@ -226,7 +232,7 @@ class TestDeduplicationAcrossMultipleTargets:
         eng = ScanEngine(
             ScanOptions(networks=['10.0.0.19'], scan_bacnet=True,
                         scan_mstp=False, scan_modbus=False,
-                        scan_services=False, scan_snmp=False, scan_p2=False, deep_scan=False),
+                        scan_services=False, scan_snmp=False, scan_p2=False, scan_knx=False, deep_scan=False),
             callback=lambda _m: None,
         )
         eng.run()
@@ -246,6 +252,8 @@ class TestDeduplicationAcrossMultipleTargets:
             def __init__(self, *_a, **_kw): pass
             def open(self): pass
             def close(self): pass
+            def read_bbmd_tables(self, *_a, **_kw): return {}
+            def discover_routers_unicast(self, *_a, **_kw): return []
             def discover_who_is(self, target_ip=None, *_a, **_kw):
                 broadcasts_sent.append(target_ip)
                 return [
@@ -262,7 +270,7 @@ class TestDeduplicationAcrossMultipleTargets:
             ScanOptions(
                 networks=['10.0.0.176', '10.0.0.201', '10.0.0.230', '10.0.0.245'],
                 scan_bacnet=True, scan_mstp=False, scan_modbus=False,
-                scan_services=False, scan_snmp=False, scan_p2=False, deep_scan=False,
+                scan_services=False, scan_snmp=False, scan_p2=False, scan_knx=False, deep_scan=False,
             ),
             callback=lambda _m: None,
         )
@@ -292,6 +300,8 @@ class TestMstpScanPath:
             def __init__(self, *_a, **_kw): pass
             def open(self): pass
             def close(self): pass
+            def read_bbmd_tables(self, *_a, **_kw): return {}
+            def discover_routers_unicast(self, *_a, **_kw): return []
 
             def discover_who_is(self, target_ip=None, low=None, high=None,
                                 dnet=None, extra_wait=0.0):
@@ -351,7 +361,7 @@ class TestMstpScanPath:
                 scan_mstp=True,
                 scan_modbus=False,
                 scan_services=False,
-                scan_snmp=False, scan_p2=False,
+                scan_snmp=False, scan_p2=False, scan_knx=False,
                 deep_scan=False,
             ),
             callback=lambda _m: None,

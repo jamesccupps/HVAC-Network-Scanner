@@ -109,11 +109,12 @@ def test_exception_response_to_fc43_is_not_labelled_device_id():
     port = srv.getsockname()[1]
 
     def serve():
-        for fc in (0xAB, 0x03):          # reject FC43, then answer FC3
+        # reject FC43 and FC17 (Report Server ID), then answer FC3
+        for fc in (0xAB, 0x91, 0x03):
             conn, _ = srv.accept()
             conn.recv(256)
-            if fc == 0xAB:
-                pdu = bytes([0xAB, 0x01])          # illegal function
+            if fc in (0xAB, 0x91):
+                pdu = bytes([fc, 0x01])            # illegal function
             else:
                 pdu = bytes([0x03, 0x02, 0x00, 0x2A])
             conn.sendall(struct.pack('!HHH', 1, 0, len(pdu) + 1)

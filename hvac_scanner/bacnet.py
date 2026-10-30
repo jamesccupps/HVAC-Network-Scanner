@@ -206,18 +206,23 @@ class BACnetClient:
 
     def discover_who_is_networks(self, target_ip: str, dnets: "list[int]",
                                  extra_wait: float = 0.0,
-                                 spacing_s: float = 0.05) -> list[dict[str, Any]]:
+                                 spacing_s: float = 0.05,
+                                 unicast: bool = False) -> list[dict[str, Any]]:
         """Who-Is to several remote networks, collected in one window.
 
         Each routed I-Am carries the network it came from (SNET), so the
         replies need no per-network wait to tell them apart. `spacing_s`
         keeps the requests from landing on the routers all at once.
+
+        `unicast` is for `target_ip` being one router rather than a
+        broadcast address (see `codec.build_whois`).
         """
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
         for i, dnet in enumerate(dnets):
             try:
-                self._sock.sendto(codec.build_whois(dnet=dnet), (target_ip, BACNET_PORT))
+                self._sock.sendto(codec.build_whois(dnet=dnet, unicast=unicast),
+                                  (target_ip, BACNET_PORT))
             except OSError as e:
                 self._log(f"  Who-Is send error (DNET {dnet}): {e}")
             if spacing_s and i < len(dnets) - 1:
@@ -361,6 +366,113 @@ class BACnetClient:
 
         return routers, sorted(networks)
 
+    def discover_routers_unicast(self, ips: "list[str]", pace_s: float = 0.002,
+                                 wait: Optional[float] = None) -> list[dict[str, Any]]:
+        """Who-Is-Router-To-Network sent to each address directly.
+
+        The standard has a router broadcast its I-Am-Router-To-Network, and a
+        broadcast on a remote subnet never reaches the scanner, so most
+        routers on another subnet stay quiet here. Some answer the requester
+        directly, and for those this is the cheapest way to learn the network
+        numbers behind them: one window for every address at once.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        pkt = codec.build_whois_router_to_network(unicast=True)
+        for ip in ips:
+            try:
+                self._sock.sendto(pkt, (ip, BACNET_PORT))
+            except OSError as e:
+                log.debug("Who-Is-Router-To-Network to %s: %s", ip, e)
+            if pace_s:
+                time.sleep(pace_s)
+        wanted = set(ips)
+        routers: dict[str, set[int]] = {}
+        deadline = time.monotonic() + (self.timeout if wait is None else wait)
+        for data, addr in self._receive_until(deadline):
+            nets = codec.parse_iam_router(data)
+            if not nets:
+                continue
+            ip = (codec.forwarded_origin(data) or addr)[0]
+            if ip in wanted:
+                routers.setdefault(ip, set()).update(nets)
+        return [{'ip': ip, 'port': BACNET_PORT, 'networks': sorted(nets)}
+                for ip, nets in routers.items()]
+
+    def read_bbmd_tables(self, ips: "list[str]", stop_fn=None,
+                         pace_s: float = 0.002) -> dict[str, dict[str, Any]]:
+        """Read the broadcast and foreign-device tables of every BBMD among `ips`.
+
+        Read-Broadcast-Distribution-Table goes to every address; a BBMD
+        answers with its table and anything else with a NAK or silence. The
+        BBMDs then get Read-Foreign-Device-Table. Both are reads: nothing is
+        registered and no table changes. Returns ``{ip: {'bdt': [...],
+        'fdt': [...] or None}}`` for the BBMDs only.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        bdts = self._bvll_query(ips, codec.build_read_bdt(), codec.parse_read_bdt_ack,
+                                codec.BVLC_RESULT_READ_BDT_NAK, stop_fn, pace_s)
+        fdts = self._bvll_query(list(bdts), codec.build_read_fdt(), codec.parse_read_fdt_ack,
+                                codec.BVLC_RESULT_READ_FDT_NAK, stop_fn, pace_s)
+        return {ip: {'bdt': bdt, 'fdt': fdts.get(ip)} for ip, bdt in bdts.items()}
+
+    def _bvll_query(self, ips: "list[str]", pkt: bytes, parser, nak: int,
+                    stop_fn, pace_s: float) -> dict[str, Any]:
+        """Send one BVLL request to each address; collect the acknowledgements.
+
+        Stops listening early once every address has answered one way or the
+        other, so a segment of devices that NAK promptly costs milliseconds.
+        """
+        if not ips:
+            return {}
+        for ip in ips:
+            if stop_fn and stop_fn():
+                return {}
+            try:
+                self._sock.sendto(pkt, (ip, BACNET_PORT))
+            except OSError as e:
+                log.debug("BVLL query to %s: %s", ip, e)
+            if pace_s:
+                time.sleep(pace_s)
+        pending = set(ips)
+        acks: dict[str, Any] = {}
+        for data, addr in self._receive_until(time.monotonic() + self.timeout,
+                                              done=lambda: not pending):
+            if addr[0] not in pending:
+                continue
+            parsed = parser(data)
+            if parsed is not None:
+                acks[addr[0]] = parsed
+                pending.discard(addr[0])
+            elif codec.parse_bvlc_result(data) == nak:
+                pending.discard(addr[0])
+        return acks
+
+    def _receive_until(self, deadline: float, done=None):
+        """Yield ``(data, addr)`` for every datagram until `deadline`, or until
+        `done()` says there is nothing left to wait for. Discovery phase only:
+        nothing else may be reading the socket."""
+        assert self._sock is not None
+        old_timeout = self._sock.gettimeout()
+        try:
+            while not (done and done()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._sock.settimeout(remaining)
+                try:
+                    data, addr = self._sock.recvfrom(4096)
+                except socket.timeout:
+                    return
+                except OSError as e:
+                    # Windows: an ICMP port-unreachable for an earlier send.
+                    log.debug("recvfrom: %s", e)
+                    continue
+                yield data, addr
+        finally:
+            self._sock.settimeout(old_timeout)
+
     def _collect_iam(self, deadline: float) -> list[dict[str, Any]]:
         assert self._sock is not None
         out: list[dict[str, Any]] = []
@@ -401,21 +513,26 @@ class BACnetClient:
     def read_property(self, ip: str, obj_type: int | str, obj_instance: int,
                       prop_id: int | str, array_index: Optional[int] = None,
                       dnet: Optional[int] = None,
-                      dadr: "str | int | bytes | None" = None) -> Any:
+                      dadr: "str | int | bytes | None" = None,
+                      raw: bool = False) -> Any:
         """Issue a ReadProperty request and return the decoded value.
 
         For MSTP devices behind a router, pass `dnet`=source_network and
         `dadr`=source_address from the IAm response. `ip` is then the
         router's IP (where UDP unicast goes); the NPDU carries the DNET/DADR
         so the router forwards across the MSTP trunk.
+
+        `raw` returns the encoded value instead (see
+        `codec.parse_read_property_ack_raw`).
         """
         self._throttle(ip)
         invoke_id = self._next_invoke_id(ip)
         pkt = codec.build_read_property(obj_type, obj_instance, prop_id,
                                         array_index=array_index, invoke_id=invoke_id,
                                         dnet=dnet, dadr=dadr)
-        return self._request_response(ip, pkt, invoke_id,
-                                      parser=codec.parse_read_property_ack)
+        return self._request_response(
+            ip, pkt, invoke_id,
+            parser=codec.parse_read_property_ack_raw if raw else codec.parse_read_property_ack)
 
     def read_property_multiple(self, ip: str, obj_type: int | str, obj_instance: int,
                                prop_ids: list[int | str],
@@ -430,10 +547,7 @@ class BACnetClient:
         pkt = codec.build_read_property_multiple(obj_type, obj_instance, prop_ids,
                                                  invoke_id=invoke_id,
                                                  dnet=dnet, dadr=dadr)
-        result = self._request_response(
-            ip, pkt, invoke_id,
-            parser=lambda d: codec.parse_read_property_multiple_ack(d, prop_ids)
-        )
+        result = self._request_response(ip, pkt, invoke_id, parser=_rpm_values)
         return result or {}
 
     def _request_response(self, ip: str, pkt: bytes, expected_invoke_id: int,
@@ -545,9 +659,10 @@ class BACnetClient:
                 log.debug("discarded unmatched packet from %s (invoke %s)", addr[0], got_id)
         return False
 
-    def _request_many(self, requests: "list[tuple[str, bytes, int]]",
+    def _request_many(self, requests: "list[tuple]",
                       parser: Callable[[bytes], Any],
-                      stop_fn=None, pace_s: float = 0.002) -> dict[str, Any]:
+                      stop_fn=None, pace_s: float = 0.002,
+                      timeout: Optional[float] = None) -> dict[Any, Any]:
         """Send one request to each of many devices and gather the replies.
 
         `requests` is ``[(ip, packet, invoke_id)]``, at most one per IP. The
@@ -555,14 +670,18 @@ class BACnetClient:
         are collected for one timeout period, so probing a few hundred
         addresses costs about one timeout rather than one per address.
         Returns ``{ip: parsed reply}`` for the addresses that answered.
+
+        A fourth element, ``(ip, packet, invoke_id, label)``, keys the result
+        by `label` instead — for several requests through one router, told
+        apart by their invoke IDs.
         """
         assert self._sock is not None
-        keys = {(ip, inv): ip for ip, _pkt, inv in requests}
+        keys = {(r[0], r[2]): (r[3] if len(r) > 3 else r[0]) for r in requests}
         with self._lock:
             for key in keys:
                 self._pending[key] = None
         try:
-            for ip, pkt, _inv in requests:
+            for ip, pkt, _inv, *_label in requests:
                 if stop_fn and stop_fn():
                     break
                 try:
@@ -571,7 +690,7 @@ class BACnetClient:
                     log.debug("sendto %s failed: %s", ip, e)
                 if pace_s:
                     time.sleep(pace_s)
-            deadline = time.monotonic() + self.timeout
+            deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
             while time.monotonic() < deadline:
                 with self._lock:
                     if all(self._pending.get(k) is not None for k in keys):
@@ -643,26 +762,80 @@ class BACnetClient:
         for ip, instance in found.items():
             if stop_fn and stop_fn():
                 break
-            info = self.read_property_multiple(
-                ip, 'Device', instance,
-                ['vendorIdentifier', 'maxApduLengthAccepted', 'segmentationSupported'])
-            if not info:
-                info = {}
-                for name in ('vendorIdentifier', 'maxApduLengthAccepted',
-                             'segmentationSupported'):
-                    val = self.read_property(ip, 'Device', instance, name)
-                    if val is not None:
-                        info[PROP_IDS[name]] = val
-            vendor_id = info.get(PROP_IDS['vendorIdentifier'])
-            seg = info.get(PROP_IDS['segmentationSupported'])
-            dev = _iam_to_dict(IAmDevice(
-                ip=ip, port=BACNET_PORT, instance=instance,
-                max_apdu=info.get(PROP_IDS['maxApduLengthAccepted']),
-                segmentation=({0: "Both", 1: "Transmit", 2: "Receive", 3: "None"}
-                              .get(seg, str(seg)) if seg is not None else None),
-                vendor_id=vendor_id if isinstance(vendor_id, int) else None,
-            ))
+            dev = self._describe_found(ip, instance)
             dev['discovered_via'] = 'unicast'
+            devices.append(dev)
+        return devices
+
+    def _describe_found(self, ip: str, instance: int, dnet: Optional[int] = None,
+                        mac: Optional[int] = None) -> dict[str, Any]:
+        """Fill in what an I-Am would have said about a device found by a read."""
+        dadr = mac
+        names = ['vendorIdentifier', 'maxApduLengthAccepted', 'segmentationSupported']
+        info = self.read_property_multiple(ip, 'Device', instance, names,
+                                           dnet=dnet, dadr=dadr)
+        if not info:
+            info = {}
+            for name in names:
+                val = self.read_property(ip, 'Device', instance, name,
+                                         dnet=dnet, dadr=dadr)
+                if val is not None:
+                    info[PROP_IDS[name]] = val
+        vendor_id = info.get(PROP_IDS['vendorIdentifier'])
+        seg = info.get(PROP_IDS['segmentationSupported'])
+        return _iam_to_dict(IAmDevice(
+            ip=ip, port=BACNET_PORT, instance=instance,
+            max_apdu=info.get(PROP_IDS['maxApduLengthAccepted']),
+            segmentation=({0: "Both", 1: "Transmit", 2: "Receive", 3: "None"}
+                          .get(seg, str(seg)) if seg is not None else None),
+            vendor_id=vendor_id if isinstance(vendor_id, int) else None,
+            source_network=dnet,
+            source_address=str(mac) if mac is not None else None,
+        ))
+
+    def probe_mstp_macs(self, router_ip: str, dnet: int, macs: "list[int]",
+                        stop_fn=None, in_flight: int = 4,
+                        timeout: Optional[float] = None,
+                        progress=None) -> list[dict[str, Any]]:
+        """Find the devices on one MS/TP network by asking each address.
+
+        For a trunk behind a router on another subnet, where a routed Who-Is
+        reaches the devices but their I-Am broadcasts never come back across
+        the subnet boundary. The wildcard Device read (see `discover_unicast`)
+        is a confirmed request, so its answer is routed back to the scanner
+        like any other reply.
+
+        Only `in_flight` addresses are asked at a time. An absent MS/TP node
+        costs the trunk a reply timeout (about a quarter of a second) on every
+        request, and the trunk is shared with the building's own traffic.
+        Returns device dicts with ``discovered_via='mac-probe'``.
+        """
+        if self._sock is None:
+            raise RuntimeError("BACnetClient not opened")
+        found: dict[int, int] = {}
+        for i in range(0, len(macs), max(1, in_flight)):
+            if stop_fn and stop_fn():
+                break
+            reqs = []
+            for mac in macs[i:i + max(1, in_flight)]:
+                inv = self._next_invoke_id(router_ip)
+                reqs.append((router_ip, codec.build_read_property(
+                    'Device', 4194303, 'objectIdentifier', invoke_id=inv,
+                    dnet=dnet, dadr=mac), inv, mac))
+            replies = self._request_many(reqs, parser=codec.parse_read_property_ack,
+                                         stop_fn=stop_fn, pace_s=0, timeout=timeout)
+            for mac, value in replies.items():
+                if (isinstance(value, tuple) and len(value) == 2
+                        and value[0] == 'Device' and isinstance(value[1], int)):
+                    found[mac] = value[1]
+            if progress:
+                progress(min(i + max(1, in_flight), len(macs)), len(macs))
+        devices = []
+        for mac, instance in sorted(found.items()):
+            if stop_fn and stop_fn():
+                break
+            dev = self._describe_found(router_ip, instance, dnet=dnet, mac=mac)
+            dev['discovered_via'] = 'mac-probe'
             devices.append(dev)
         return devices
 
@@ -936,7 +1109,8 @@ class BACnetClient:
         if not raw:
             for name in prop_names:
                 val = self.read_property(ip, obj_type, obj_instance, name,
-                                         dnet=dnet, dadr=dadr)
+                                         dnet=dnet, dadr=dadr,
+                                         **_raw_kw(PROP_IDS.get(name)))
                 if val is not None:
                     num = PROP_IDS.get(name)
                     if num is not None:
@@ -953,7 +1127,7 @@ class BACnetClient:
                 if self._partial_fill_failures.get(key, 0) >= _PARTIAL_FILL_GIVE_UP:
                     continue
                 val = self.read_property(ip, obj_type, obj_instance, name,
-                                         dnet=dnet, dadr=dadr)
+                                         dnet=dnet, dadr=dadr, **_raw_kw(num))
                 if val is None:
                     self._partial_fill_failures[key] = (
                         self._partial_fill_failures.get(key, 0) + 1)
@@ -1071,7 +1245,8 @@ class BACnetClient:
             if e.obj_type is None:
                 continue
             type_name = BACNET_OBJ_TYPES.get(e.obj_type, f"type-{e.obj_type}")
-            raw.setdefault((type_name, e.obj_instance), {})[e.prop_id] = e.value
+            raw.setdefault((type_name, e.obj_instance), {})[e.prop_id] = (
+                e.raw if e.prop_id in _RAW_PROP_IDS else e.value)
 
         out: "dict[tuple[str, int], dict[str, Any]]" = {}
         for (type_name, oinst), props in raw.items():
@@ -1090,6 +1265,26 @@ class BACnetClient:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+# Properties whose meaning is in their structure: returned as the encoded
+# value, for the caller to decode with codec.decode_property_references or
+# codec.decode_weekly_schedule.
+_RAW_PROP_IDS = {PROP_IDS[n] for n in ('logDeviceObjectProperty',
+                                       'listOfObjectPropertyReferences',
+                                       'weeklySchedule')}
+
+
+def _raw_kw(prop_id: Optional[int]) -> dict[str, bool]:
+    # Only passed when wanted, so a read_property override that predates
+    # `raw` keeps working for every other property.
+    return {'raw': True} if prop_id in _RAW_PROP_IDS else {}
+
+
+def _rpm_values(data: bytes) -> dict[int, Any]:
+    """{property: value} from a one-object RPM-ACK, structured properties raw."""
+    return {e.prop_id: (e.raw if e.prop_id in _RAW_PROP_IDS else e.value)
+            for e in codec.parse_read_property_multiple_ack_full(data)}
+
 
 def _iam_to_dict(device: IAmDevice) -> dict[str, Any]:
     return {
@@ -1134,6 +1329,25 @@ _POINT_PROPERTY_TYPES = {
     'applicationSoftwareVersion': ('string',),
     'statusFlags':  ('string',),           # BIT STRING, decoded to hex by the codec
     'stateText':    ('string_list',),      # BACnetARRAY of CharacterString
+    # Trend logs, schedules, network ports (METADATA_PROPERTIES_BY_TYPE)
+    'enable':                   ('bool',),
+    'stopWhenFull':             ('bool',),
+    'bbmdAcceptFDRegistrations': ('bool',),
+    'logInterval':              ('uint',),
+    'recordCount':              ('uint',),
+    'bufferSize':               ('uint',),
+    'loggingType':              ('uint',),
+    'networkType':              ('uint',),
+    'networkNumber':            ('uint',),
+    'maxMaster':                ('uint',),
+    'macAddress':               ('string',),   # OCTET STRING, hex
+    'scPrimaryHubUri':          ('string',),
+    'scFailoverHubUri':         ('string',),
+    'scHubFunctionEnable':      ('bool',),
+    'scHubFunctionAcceptUris':  ('string_list',),
+    'logDeviceObjectProperty':  ('bytes',),
+    'listOfObjectPropertyReferences': ('bytes',),
+    'weeklySchedule':           ('bytes',),
 }
 
 
@@ -1170,6 +1384,17 @@ def _validate_point_property(name: str, val: Any) -> Any:
         if isinstance(items, list) and items and all(isinstance(s, str) for s in items):
             return items
         return None
+
+    if expected == 'bool':
+        return val if isinstance(val, bool) else None
+
+    if expected == 'uint':
+        if isinstance(val, int) and not isinstance(val, bool) and val >= 0:
+            return val
+        return None
+
+    if expected == 'bytes':
+        return val if isinstance(val, bytes) else None
 
     if expected == 'int_or_str':
         # NB: bool is a subclass of int — exclude it

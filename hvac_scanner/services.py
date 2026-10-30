@@ -7,8 +7,10 @@ vendor/product info via banner grabs and protocol-specific handshakes.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import logging
+import os
 import re
 import socket
 import ssl
@@ -26,8 +28,16 @@ from .netsweep import tcp_sweep
 
 log = logging.getLogger(__name__)
 
-# Ports we explicitly skip here - handled by their own scanners
-_SKIP_PORTS = {47808, 502}
+# Ports we explicitly skip here - handled by their own scanners. (BACnet/IP
+# is UDP 47808; TCP 47808 is BACnet/SC on some products and is probed here.)
+_SKIP_PORTS = {502}
+
+# BACnet Secure Connect (Annex AB): BVLC-SC over a WebSocket over TLS 1.3 with
+# mutual authentication. The standard fixes no port; these are where a hub is
+# the expected service. An HTTPS port that turns out to want a client
+# certificate, or not to serve web pages, gets the same probe.
+_BSC_PORTS = {47808, 47820}
+_BSC_SUBPROTOCOLS = ("hub.bsc.bacnet.org", "dc.bsc.bacnet.org")
 
 # Hosts identified concurrently after the sweep. Each host's own ports are
 # probed one after another: an embedded web server often serves a single
@@ -60,6 +70,32 @@ def _tls_context() -> ssl.SSLContext:
     except ssl.SSLError:
         pass
     return ctx
+
+
+def parse_fox_hello(text: str) -> dict[str, str]:
+    """The fields of a Fox hello: ``key=type:value`` lines inside the braces,
+    for example ``app.version=s:4.13.1.16``. The type letter is dropped; a
+    time zone keeps only its name."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, rest = line.partition('=')
+        if not sep or not key or ' ' in key or ':' not in rest:
+            continue
+        value = rest.split(':', 1)[1].strip()
+        if key == 'timeZone':
+            value = value.split(';', 1)[0]
+        if key in ('sysInfo', 'authAgentTypeSpecs'):
+            continue                       # large and not identifying
+        out[key.strip()] = value[:200]
+    return out
+
+
+def _client_cert_demanded(err: ssl.SSLError) -> bool:
+    """Whether a TLS failure was the server insisting on a client
+    certificate, which this probe never has."""
+    reason = (getattr(err, 'reason', None) or str(err)).upper()
+    return any(r in reason for r in ('CERTIFICATE_REQUIRED', 'CERTIFICATE REQUIRED',
+                                     'BAD_CERTIFICATE'))
 
 
 class HVACServiceScanner:
@@ -155,6 +191,16 @@ class HVACServiceScanner:
             info.update(self._http_banner(ip, port, use_ssl=False))
         elif port in (443, 8443):
             info.update(self._http_banner(ip, port, use_ssl=True))
+            status = info.get('banner', '').split(' ', 1)[0]
+            # No banner at all may be a client-certificate refusal that
+            # arrived as a reset; see _probe_bacnet_sc.
+            if not status or info.get('tls_client_cert_required') or status in (
+                    'HTTP/400', 'HTTP/404', 'HTTP/426'):
+                sc = self._probe_bacnet_sc(ip, port)
+                if sc.get('sc_role') or sc.get('tls_client_cert_required'):
+                    info.update(sc)
+        elif port in _BSC_PORTS:
+            info.update(self._probe_bacnet_sc(ip, port))
         elif port in (1911, 4911):
             info.update(self._probe_niagara_fox(ip, port))
         elif port == 4840:
@@ -221,7 +267,12 @@ class HVACServiceScanner:
                 )
                 if login_match:
                     info['title'] = f"[Login Page: {login_match.group(1)}]"
-        except (OSError, http.client.HTTPException, ssl.SSLError) as e:
+        except ssl.SSLError as e:
+            log.debug("HTTP probe %s:%d: %s", ip, port, e)
+            if _client_cert_demanded(e):
+                info['tls_client_cert_required'] = True
+                info['banner'] = "TLS: client certificate required"
+        except (OSError, http.client.HTTPException) as e:
             log.debug("HTTP probe %s:%d: %s", ip, port, e)
         finally:
             if conn is not None:
@@ -242,23 +293,187 @@ class HVACServiceScanner:
                           f"{days} day(s) ({cert.subject_cn or 'no CN'})")
         return info
 
-    def _probe_niagara_fox(self, ip: str, port: int) -> dict:
-        info: dict[str, Any] = {'product': 'Niagara Fox', 'vendor': 'Honeywell / Tridium'}
+    def probe_bacnet_sc(self, ip: str, port: int) -> Optional[dict[str, Any]]:
+        """A service entry for a BACnet/SC endpoint at `ip`:`port`, or None.
+
+        For hub addresses learned some other way (a device's Network Port
+        names its hub) rather than by the sweep."""
+        info = self._probe_bacnet_sc(ip, port)
+        if not (info.get('sc_role') or info.get('tls_client_cert_required')):
+            return None
+        out: dict[str, Any] = {
+            'ip': ip, 'port': port, 'service': 'BACnet/SC', 'protocol': 'Service',
+            'vendor': '', 'product': '', 'version': '', 'banner': '', 'title': '',
+        }
+        out.update(info)
+        out['sc_role'] = info.get('sc_role') or 'hub or node'
+        if not info.get('sc_role'):
+            out['product'] = "BACnet/SC (mutual TLS)"
+        return out
+
+    def _probe_bacnet_sc(self, ip: str, port: int) -> dict:
+        """Recognize a BACnet/SC hub or node without joining it.
+
+        Opens TLS, keeps the server certificate, and asks for a WebSocket
+        with the BACnet/SC subprotocols. Three outcomes:
+
+        - the server demands a client certificate (a TLS 1.3
+          certificate_required alert): what a correctly configured hub or
+          node does, and as far as an outsider can get;
+        - it accepts the upgrade and names a BACnet/SC subprotocol: a hub
+          (or direct-connect node) that lets anyone connect, which defeats
+          BACnet/SC's security. The connection is closed at once, before any
+          BACnet/SC message is sent;
+        - anything else: not BACnet/SC.
+        """
+        info: dict[str, Any] = {}
+        key = base64.b64encode(os.urandom(16)).decode()
+        request = (f"GET / HTTP/1.1\r\nHost: {ip}:{port}\r\n"
+                   f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                   f"Sec-WebSocket-Protocol: {', '.join(_BSC_SUBPROTOCOLS)}\r\n"
+                   f"User-Agent: HVAC-Scanner/{__version__}\r\n\r\n").encode()
+        cert = None
+        response = b''
+        refused = ''
         try:
-            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-                sock.settimeout(self.timeout)
-                sock.connect((ip, port))
-                sock.sendall(b'fox a 1 -1 fox hello\n')
-                resp = sock.recv(2048).decode('ascii', errors='replace')
-            if 'fox' in resp.lower():
-                info['banner'] = resp.strip()[:200]
-                for line in resp.split('\n'):
-                    if 'version' in line.lower():
-                        info['version'] = line.strip()
-                    elif 'host' in line.lower():
-                        info['product'] = f"Niagara ({line.strip()})"
+            with socket.create_connection((ip, port), timeout=self.timeout) as raw:
+                with _tls_context().wrap_socket(raw) as tls:
+                    try:
+                        cert = parse_der_certificate(tls.getpeercert(binary_form=True))
+                    except (AttributeError, ValueError, OSError) as e:
+                        log.debug("cert read %s:%d: %s", ip, port, e)
+                    refused = self._refused_after_handshake(tls)
+                    if not refused:
+                        tls.sendall(request)
+                        while b'\r\n\r\n' not in response and len(response) < 8192:
+                            chunk = tls.recv(2048)
+                            if not chunk:
+                                break
+                            response += chunk
+        except ssl.SSLError as e:
+            log.debug("BACnet/SC probe %s:%d: %s", ip, port, e)
+            if not _client_cert_demanded(e):
+                return info
+            refused = "TLS alert: certificate required"
         except OSError as e:
+            log.debug("BACnet/SC probe %s:%d: %s", ip, port, e)
+            return info
+        if refused:
+            info['tls_client_cert_required'] = True
+
+        head = response.decode('latin-1', errors='replace')
+        status = head.split('\r\n', 1)[0]
+        offered = re.search(r'(?im)^sec-websocket-protocol:\s*(\S+)', head)
+        subprotocol = offered.group(1).lower() if offered else ''
+        if status.split(' ')[1:2] == ['101'] and subprotocol in _BSC_SUBPROTOCOLS:
+            role = 'hub' if subprotocol.startswith('hub') else 'node'
+            info.update({
+                'sc_role': role, 'tls_client_cert_required': False,
+                'product': f"BACnet/SC {role}",
+                'banner': f"{status} | {subprotocol} without a client certificate",
+            })
+        elif info.get('tls_client_cert_required'):
+            info.update({
+                'sc_role': 'hub or node' if port in _BSC_PORTS else None,
+                'product': ("BACnet/SC (mutual TLS)" if port in _BSC_PORTS
+                            else "TLS service requiring a client certificate"),
+                'banner': refused,
+            })
+        elif status:
+            info['banner'] = status
+        if cert is not None:
+            info['tls'] = cert.to_dict()
+            info['tls_summary'] = cert.summary()
+        return info
+
+    def _refused_after_handshake(self, tls: ssl.SSLSocket) -> str:
+        """Whether the server turned us away straight after the handshake,
+        and how. '' when it is waiting for a request, as a server that
+        accepted the connection does.
+
+        In TLS 1.3 the handshake completes on this side before the server
+        has looked at our certificate (we send none). A server that wants one
+        answers with a certificate_required alert, which arrives here as an
+        SSLError for the caller. Or, when it closes before reading all we
+        sent, as a TCP reset with no alert at all: Windows resets a
+        connection closed with unread data. Listening before sending
+        anything keeps the reset from being mistaken for something our
+        request caused.
+        """
+        tls.settimeout(min(self.timeout, 1.0))
+        try:
+            data = tls.recv(2048)
+        except socket.timeout:
+            return ''
+        except ConnectionResetError:
+            if tls.version() == 'TLSv1.3':
+                return "TLS 1.3: connection reset straight after the handshake"
+            raise
+        finally:
+            tls.settimeout(self.timeout)
+        if not data and tls.version() == 'TLSv1.3':
+            return "TLS 1.3: connection closed straight after the handshake"
+        return ''
+
+    def _probe_niagara_fox(self, ip: str, port: int) -> dict:
+        """Ask a Niagara station who it is, as Workbench does on connecting.
+
+        A station answers a Fox hello with one of its own: Niagara version,
+        station name, host OS and Java VM, the host ID that its licence is
+        bound to, and the OEM brand. The hello is the complete form (the one
+        nmap's fox-info and zgrab2 send); the first line alone, which this
+        probe used to send, is not a hello a station has to answer. The
+        hello names this scanner honestly rather than posing as Workbench,
+        and the connection is closed straight after the reply — nothing is
+        logged in to. Port 4911 is Fox over TLS.
+        """
+        info: dict[str, Any] = {'product': 'Niagara Fox', 'vendor': 'Honeywell / Tridium'}
+        hello = ("fox a 1 -1 fox hello\n{\n"
+                 "fox.version=s:1.0\nid=i:1\n"
+                 "hostName=s:hvac-scanner\n"
+                 f"app.name=s:HVAC-Scanner\napp.version=s:{__version__}\n"
+                 "lang=s:en\n};;\n").encode()
+        cert = None
+        resp = b''
+        try:
+            with socket.create_connection((ip, port), timeout=self.timeout) as raw:
+                sock = _tls_context().wrap_socket(raw) if port == 4911 else raw
+                try:
+                    if port == 4911:
+                        try:
+                            cert = parse_der_certificate(sock.getpeercert(binary_form=True))
+                        except (AttributeError, ValueError, OSError) as e:
+                            log.debug("cert read %s:%d: %s", ip, port, e)
+                    sock.sendall(hello)
+                    while b'};;' not in resp and len(resp) < 16384:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        resp += chunk
+                finally:
+                    if sock is not raw:
+                        sock.close()
+        except (OSError, ssl.SSLError) as e:
             log.debug("Fox probe %s:%d: %s", ip, port, e)
+
+        text = resp.decode('utf-8', errors='replace')
+        if cert is not None:
+            info['tls'] = cert.to_dict()
+            info['tls_summary'] = cert.summary()
+        if not text.startswith('fox a'):
+            return info
+        fields = parse_fox_hello(text)
+        info['fox'] = fields
+        app = fields.get('app.name', '')
+        version = fields.get('app.version', '')
+        info['version'] = version
+        info['product'] = " ".join(x for x in ("Niagara", app, version) if x)
+        info['banner'] = "; ".join(
+            f"{label} {fields[key]}" for key, label in (
+                ('station.name', 'station'), ('hostName', 'host'),
+                ('os.name', 'OS'), ('brandId', 'brand'), ('hostId', 'host ID'))
+            if fields.get(key))[:240] or text.splitlines()[0]
         return info
 
     def _probe_s7(self, ip: str, port: int) -> dict:

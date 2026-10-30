@@ -28,7 +28,7 @@ from typing import Any, Optional
 from . import __version__
 
 SEVERITIES = ("high", "medium", "low", "info")
-_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2')
+_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2', 'KNXnet/IP')
 _CLEARTEXT = {21: "FTP", 23: "Telnet"}
 _HTTPS_PORTS = {443, 8443}
 _HTTP_PORTS = {80, 8080, 8000, 8888, 9090}
@@ -66,6 +66,66 @@ def _concrete_default(creds: str) -> bool:
         if sep and user.strip() and password.strip() and not password.strip().startswith('('):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Trend logs and schedules, as words (shared with the GUI)
+# ---------------------------------------------------------------------------
+
+_DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+
+def week_summary(weekly: Optional[dict[str, str]]) -> str:
+    """'Mon–Fri 06:00 active, 18:00 inactive; Sat 08:00 active' from a
+    schedule's per-day programme, running identical consecutive days together."""
+    runs: list[list[str]] = []
+    for i, day in enumerate(_DAYS):
+        text = (weekly or {}).get(day)
+        if not text:
+            continue
+        if runs and runs[-1][2] == text and _DAYS.index(runs[-1][1]) == i - 1:
+            runs[-1][1] = day
+        else:
+            runs.append([day, day, text])
+    return "; ".join(f"{a if a == b else f'{a}–{b}'} {t}" for a, b, t in runs)
+
+
+def trend_stopped_full(trend: dict[str, Any]) -> bool:
+    """A trend log that has filled its buffer and is set to stop when full:
+    it is recording nothing, whatever its enable says."""
+    records, size = trend.get('records'), trend.get('buffer_size')
+    return bool(trend.get('stop_when_full') and isinstance(records, int)
+                and isinstance(size, int) and size > 0 and records >= size)
+
+
+def trend_interval(trend: dict[str, Any]) -> str:
+    kind = trend.get('logging_type') or ''
+    if kind == 'COV':
+        return 'on change (COV)'
+    if kind == 'triggered':
+        return 'when triggered'
+    seconds = trend.get('interval_s')
+    if not seconds:
+        return kind
+    for unit, size in (('h', 3600), ('min', 60)):
+        if seconds >= size and seconds % size == 0:
+            return f"every {int(seconds // size)} {unit}"
+    return f"every {seconds:g} s"
+
+
+def trend_state(trend: dict[str, Any]) -> str:
+    if trend.get('enabled') is False:
+        return 'disabled'
+    if trend_stopped_full(trend):
+        return 'full, stopped'
+    return 'logging' if trend.get('enabled') else ''
+
+
+def trend_records(trend: dict[str, Any]) -> str:
+    records, size = trend.get('records'), trend.get('buffer_size')
+    if records is None:
+        return ''
+    return f"{records:,} / {size:,}" if isinstance(size, int) else f"{records:,}"
 
 
 def _days_left(tls: dict[str, Any], now: datetime) -> Optional[int]:
@@ -206,6 +266,36 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "automation network. Firmware 3.x panels can move to BACnet/IP.",
             ["Address", "Role", "Evidence"], rows))
 
+    # KNX gateways that let anyone onto the bus
+    rows = [[d.get('ip'), d.get('name', ''), d.get('knx_address', ''),
+             ", ".join(f for f, on in (("tunnelling", d.get('tunnelling')),
+                                       ("routing", d.get('routing'))) if on)]
+            for d in devices if d.get('protocol') == 'KNXnet/IP'
+            and (d.get('tunnelling') or d.get('routing')) and not d.get('secure')]
+    if rows:
+        out.append(Finding(
+            "medium", "KNXnet/IP gateways without KNX Secure",
+            "Tunnelling and routing put telegrams on the KNX bus for any host "
+            "that can reach the gateway: lights, blinds, heating and anything else "
+            "on the bus can be switched, with no password. These gateways do not "
+            "offer KNX IP Secure. Restrict who can reach UDP 3671, or move to "
+            "secure gateways.",
+            ["Address", "Name", "KNX address", "Offers"], rows))
+
+    # Niagara AX is past end of support
+    rows = [[d.get('ip'), str(d.get('port')), (d.get('fox') or {}).get('station.name', ''),
+             (d.get('fox') or {}).get('app.version', '')]
+            for d in services
+            if str((d.get('fox') or {}).get('app.version', '')).startswith('3.')]
+    if rows:
+        out.append(Finding(
+            "medium", "Niagara AX stations past end of support",
+            "Niagara AX (3.x) reached end of life: Tridium's fixes for defects and "
+            "security issues have ended, so known vulnerabilities in these stations "
+            "will not be patched. Plan the move to Niagara 4, and keep these "
+            "stations off any network that is not strictly the BAS.",
+            ["Address", "Port", "Station", "Niagara version"], rows))
+
     # Modbus has no authentication
     rows = [[d.get('ip'), f"unit {d.get('unit_id')}",
              " ".join(x for x in (d.get('vendor'), d.get('product')) if x and x != 'Unknown')]
@@ -217,6 +307,69 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "and, on most devices, write registers. Keep these on a network only the "
             "BAS can reach.",
             ["Address", "Unit", "Identity"], rows))
+
+    # BACnet/SC that lets anyone in
+    rows = [[d.get('ip'), str(d.get('port')), d.get('sc_role', ''), d.get('tls_summary', '')]
+            for d in services if d.get('sc_role') and d.get('tls_client_cert_required') is False]
+    if rows:
+        out.append(Finding(
+            "high", "BACnet/SC accepting connections without a client certificate",
+            "BACnet Secure Connect's protection is the mutual TLS handshake: only "
+            "devices with a certificate from the site's CA should get a connection. "
+            "These accepted a BACnet/SC WebSocket from the scanner, which has none, "
+            "so anything on the network can join the secure BACnet network. Require "
+            "client certificates on the hub.",
+            ["Address", "Port", "Role", "Certificate"], rows))
+
+    # Who is registered to hear the site's broadcasts
+    bbmds = [d for d in primary if isinstance(d.get('bbmd'), dict)]
+    rows = [[d.get('ip'), e.get('address', ''), str(e.get('ttl', '')),
+             str(e.get('remaining', ''))]
+            for d in bbmds for e in (d['bbmd'].get('fdt') or [])]
+    if rows:
+        out.append(Finding(
+            "low", "Foreign devices registered with a BBMD",
+            "Each address here is registered to receive every BACnet broadcast the "
+            "BBMD distributes, and to send broadcasts into the network — typically a "
+            "remote workstation or a supervisor on another subnet. Confirm each one "
+            "is known.",
+            ["BBMD", "Registered address", "TTL (s)", "Seconds left"], rows))
+
+    # Trend logs that are recording nothing
+    rows = [[d.get('ip'), _label(d), t.get('name', ''), "; ".join(t.get('logs') or []),
+             trend_state(t)]
+            for d in primary for t in d.get('trend_logs') or []
+            if trend_state(t) in ('disabled', 'full, stopped')]
+    if rows:
+        out.append(Finding(
+            "low", "Trend logs not recording",
+            "These trend logs are disabled, or have filled their buffer and are set "
+            "to stop when full. Whatever they were set up to capture is not being "
+            "recorded.",
+            ["Address", "Device", "Trend log", "Logs", "State"], rows))
+
+    # The BACnet network beyond the scanned addresses
+    rows = []
+    for d in bbmds:
+        peers = [e.get('address', '').rsplit(':', 1)[0] for e in d['bbmd'].get('bdt') or []]
+        peers = [p for p in peers if p and p != d.get('ip')]
+        if peers:
+            rows.append([d.get('ip'), ", ".join(peers)])
+    if rows:
+        out.append(Finding(
+            "info", "BBMDs linking subnets into one BACnet network",
+            "Broadcasts on any of these subnets reach all of them. Peers not covered "
+            "by this survey are parts of the same BACnet network worth scanning too.",
+            ["BBMD", "Peer BBMDs"], rows))
+
+    rows = [[d.get('ip'), str(d.get('port')), d.get('tls_summary', '')]
+            for d in services if d.get('sc_role') and d.get('tls_client_cert_required')]
+    if rows:
+        out.append(Finding(
+            "info", "BACnet/SC endpoints requiring client certificates",
+            "TLS services on BACnet/SC ports that refused a connection without a "
+            "client certificate, as BACnet Secure Connect requires.",
+            ["Address", "Port", "Certificate"], rows))
 
     # Reachable across subnets
     rows = [[d.get('ip'), str(d.get('instance')), _label(d)]
@@ -313,11 +466,14 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     flagged = sum(1 for d in primary for p in d.get('objects') or [] if p.get('status'))
 
     sev_counts = {s: sum(1 for f in findings if f.severity == s) for s in SEVERITIES}
+    trends = [(d, t) for d in primary for t in d.get('trend_logs') or []]
+    schedules = [(d, s) for d in primary for s in d.get('schedules') or []]
     cards = [("Hosts", hosts), ("BACnet/IP", counts.get('bacnet', 0)),
              ("MS/TP", counts.get('mstp', 0)), ("Modbus", counts.get('modbus', 0)),
              ("Service ports", counts.get('services', 0)), ("SNMP", counts.get('snmp', 0)),
-             ("APOGEE P2", counts.get('p2', 0)),
-             ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged)]
+             ("APOGEE P2", counts.get('p2', 0)), ("KNXnet/IP", counts.get('knx', 0)),
+             ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged),
+             ("Trend logs", len(trends)), ("Schedules", len(schedules))]
     cards_html = "".join(f'<div class="card"><b>{_e(v)}</b><span>{_e(k)}</span></div>'
                          for k, v in cards)
 
@@ -337,7 +493,9 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
         props = d.get('properties') or {}
         ident = d.get('instance') if str(d.get('protocol', '')).startswith('BACnet') \
             else (f"unit {d.get('unit_id')}" if d.get('protocol') == 'Modbus TCP'
-                  else (f"TCP {d.get('port')}" if d.get('protocol') == 'APOGEE P2' else ''))
+                  else (f"TCP {d.get('port')}" if d.get('protocol') == 'APOGEE P2'
+                        else (f"KNX {d.get('knx_address')}" if d.get('protocol') == 'KNXnet/IP'
+                              else '')))
         if d.get('source_network'):
             ident = f"{ident} (MS/TP {d.get('source_network')}:{d.get('source_address')})"
         flags = d.get('point_flags') or {}
@@ -352,6 +510,18 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     for ip, d in sorted(service_only.items(), key=lambda kv: _ip_key(kv[0])):
         inv_rows.append([ip, "Services only", '', '', d.get('identified_model') or d.get('title') or '',
                          d.get('vendor', ''), '', '', '', ''])
+
+    trend_rows = [[d.get('ip'), _label(d), t.get('name', ''), "; ".join(t.get('logs') or []),
+                   trend_interval(t), trend_records(t), trend_state(t)]
+                  for d, t in sorted(trends, key=lambda dt: (_ip_key(dt[0].get('ip')),
+                                                             dt[1].get('instance') or 0))]
+    sched_rows = [[d.get('ip'), _label(d), f"{s.get('type')} {s.get('instance')}",
+                   s.get('name', ''), "; ".join(s.get('controls') or []),
+                   week_summary(s.get('weekly')), s.get('default', ''),
+                   s.get('present_value', '')]
+                  for d, s in sorted(schedules, key=lambda ds: (_ip_key(ds[0].get('ip')),
+                                                                ds[1].get('type', ''),
+                                                                ds[1].get('instance') or 0))]
 
     svc_rows = [[d.get('ip'), d.get('port'), d.get('service', ''), d.get('vendor', ''),
                  d.get('title') or d.get('product') or '', d.get('tls_summary', '')]
@@ -386,6 +556,13 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
 <h2>Device inventory</h2>
 {_table(["Address", "Protocol", "ID", "Name", "Model", "Vendor", "Firmware", "Location",
          "Points", "Flagged"], inv_rows)}
+
+<h2>Trend logs</h2>
+{_table(["Address", "Device", "Trend log", "Logs", "Interval", "Records", "State"], trend_rows)}
+
+<h2>Schedules and calendars</h2>
+{_table(["Address", "Device", "Object", "Name", "Controls", "Weekly programme", "Default",
+         "Now"], sched_rows)}
 
 <h2>Open service ports</h2>
 {_table(["Address", "Port", "Service", "Vendor", "Title / product", "TLS certificate"], svc_rows)}
