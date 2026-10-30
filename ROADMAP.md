@@ -5,8 +5,9 @@ section. Nothing here is a promise of a date. If something you need is
 missing, open an issue — that is how items get onto this list and how they
 move up it.
 
-Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently point
-status flags, multi-state text and the HTML survey report (2.7.0).
+Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently MS/TP
+behind remote routers without a BBMD, BBMD tables, trend log and schedule
+inventory, BACnet/SC detection and saved site profiles (2.8.0).
 
 ## Next
 
@@ -44,26 +45,19 @@ vendor software, and never a write to a panel.
 
 ### BACnet
 
-- **MS/TP behind remote routers without a BBMD.** Unicast discovery (v2.7)
-  finds IP devices on other subnets, but the MS/TP devices behind a remote
-  router still need a BBMD. Asking each discovered router directly
-  (Who-Is-Router-To-Network, then a routed Who-Is per network) would cover it.
-- **Trend log and schedule inventory**, as metadata only (what is trended,
-  at what interval; which schedules exist), without pulling history.
-- **BACnet/SC.** Detect BACnet Secure Connect hubs (TLS/WebSocket on 47820)
-  as more sites adopt it.
-
-### Usability
-
-- **Saved site profiles** in the GUI: named target lists with their own
-  options, for people who audit the same few buildings regularly.
+- **Alarm routing inventory**: Notification Class objects — which
+  recipients get which alarms, at what priorities — as metadata, the way
+  2.8 reads trend logs and schedules.
+- **Router tables**: the Network Port `routingTable`, so networks behind a
+  chain of routers are found without a Who-Is-Router-To-Network answer.
+- **BACnet/SC identity**: with a certificate the site provides, read the
+  hub's own Device object. Opt-in, since it joins the secure network.
 
 ## Later / under consideration
 
 - JCI N2 and LonWorks/IP detection (detection only, same constraints as
   APOGEE).
-- KNXnet/IP search request (UDP 3671) and Modbus RTU-over-TCP gateways that
-  only answer specific unit IDs.
+- Modbus RTU-over-TCP gateways that only answer specific unit IDs.
 - Signed Windows builds, if a code-signing certificate becomes available.
 - A packaged Linux build (AppImage) of the GUI.
 
