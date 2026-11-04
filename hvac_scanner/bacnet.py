@@ -1271,7 +1271,8 @@ class BACnetClient:
 # codec.decode_weekly_schedule.
 _RAW_PROP_IDS = {PROP_IDS[n] for n in ('logDeviceObjectProperty',
                                        'listOfObjectPropertyReferences',
-                                       'weeklySchedule')}
+                                       'weeklySchedule', 'recipientList',
+                                       'routingTable')}
 
 
 def _raw_kw(prop_id: Optional[int]) -> dict[str, bool]:
@@ -1345,6 +1346,11 @@ _POINT_PROPERTY_TYPES = {
     'scFailoverHubUri':         ('string',),
     'scHubFunctionEnable':      ('bool',),
     'scHubFunctionAcceptUris':  ('string_list',),
+    'notificationClass':        ('uint',),
+    'priority':                 ('uint_list',),   # [to-offnormal, to-fault, to-normal]
+    'ackRequired':              ('string',),      # BIT STRING, hex
+    'recipientList':            ('bytes',),
+    'routingTable':             ('bytes',),
     'logDeviceObjectProperty':  ('bytes',),
     'listOfObjectPropertyReferences': ('bytes',),
     'weeklySchedule':           ('bytes',),
@@ -1395,6 +1401,13 @@ def _validate_point_property(name: str, val: Any) -> Any:
 
     if expected == 'bytes':
         return val if isinstance(val, bytes) else None
+
+    if expected == 'uint_list':
+        items = [val] if isinstance(val, int) else val
+        if (isinstance(items, list) and items
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in items)):
+            return items
+        return None
 
     if expected == 'int_or_str':
         # NB: bool is a subclass of int — exclude it

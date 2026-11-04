@@ -150,6 +150,21 @@ def _read_tag(data: bytes, idx: int) -> tuple[int, int, int, int, int]:
     return tag_num, tag_class, length, idx, idx + length
 
 
+def _is_opening(tag_class: int, length: int, vstart: int, nxt: int) -> bool:
+    """Whether a `_read_tag` result is an opening tag.
+
+    `_read_tag` reports an opening tag as length 6 and a closing tag as 7,
+    which a context-tagged value of six or seven octets also reports — a
+    B/IP MAC address is six. Only a real opening or closing tag has no
+    contents, so that tells them apart.
+    """
+    return tag_class == 1 and length == 6 and vstart == nxt
+
+
+def _is_closing(tag_class: int, length: int, vstart: int, nxt: int) -> bool:
+    return tag_class == 1 and length == 7 and vstart == nxt
+
+
 def _skip_tag(data: bytes, idx: int) -> int:
     """Advance past one tag+value. Handles opening/closing tags as zero-length."""
     _, _, length, _, next_idx = _read_tag(data, idx)
@@ -949,10 +964,10 @@ def _value_end(data: bytes, idx: int) -> int:
     """
     depth = 0
     while idx < len(data):
-        _num, tag_class, length, _vstart, nxt = _read_tag(data, idx)
-        if tag_class == 1 and length == 6:
+        _num, tag_class, length, vstart, nxt = _read_tag(data, idx)
+        if _is_opening(tag_class, length, vstart, nxt):
             depth += 1
-        elif tag_class == 1 and length == 7:
+        elif _is_closing(tag_class, length, vstart, nxt):
             if depth == 0:
                 return idx
             depth -= 1
@@ -988,13 +1003,13 @@ def _decode_tagged(data: bytes, idx: int, end: int) -> tuple[list, int]:
     while idx < end:
         tag_num, tag_class, length, vstart, nxt = _read_tag(data, idx)
         if tag_class == 1:
-            if length == 6:
+            if _is_opening(tag_class, length, vstart, nxt):
                 close = _value_end(data, nxt)
                 children, _ = _decode_tagged(data, nxt, close)
                 out.append(Ctx(tag_num, children))
                 idx = _read_tag(data, close)[4]
                 continue
-            if length == 7:
+            if _is_closing(tag_class, length, vstart, nxt):
                 raise BACnetParseError("unbalanced closing tag")
             out.append(Ctx(tag_num, data[vstart:nxt]))
             idx = nxt
@@ -1046,6 +1061,106 @@ def decode_property_references(raw: bytes) -> list[dict[str, Any]]:
     return refs
 
 
+def decode_bits(hex_value: Any) -> list[bool]:
+    """A BIT STRING as the flat decoding gives it (hex: one octet of unused
+    trailing bits, then the bits, most significant first) as booleans."""
+    try:
+        data = bytes.fromhex(str(hex_value))
+    except ValueError:
+        return []
+    if not data:
+        return []
+    bits = [bool(byte & (0x80 >> i)) for byte in data[1:] for i in range(8)]
+    return bits[:max(0, len(bits) - data[0])]
+
+
+def format_bacnet_mac(mac: bytes) -> str:
+    """A BACnet MAC address in its own notation: B/IP as ip:port, MS/TP as a
+    station number, anything else as hex."""
+    if len(mac) == 6:
+        return f"{'.'.join(str(b) for b in mac[:4])}:{int.from_bytes(mac[4:], 'big')}"
+    if len(mac) == 1:
+        return str(mac[0])
+    return ':'.join(f"{b:02X}" for b in mac)
+
+
+_TRANSITIONS = ('to-offnormal', 'to-fault', 'to-normal')
+_DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+
+def decode_recipient_list(raw: bytes) -> list[dict[str, Any]]:
+    """A Notification Class's recipientList: who gets its alarms, and when.
+
+    Each BACnetDestination is validDays, fromTime, toTime, recipient (a
+    device, [0], or an address, [1] {network, MAC}), processIdentifier,
+    issueConfirmedNotifications and transitions, all in that order.
+    """
+    try:
+        items = decode_tagged(raw)
+    except (BACnetParseError, IndexError, struct.error):
+        return []
+    out = []
+    for i in range(0, len(items) - 6, 7):
+        days, start, end, who, process, confirmed, transitions = items[i:i + 7]
+        if not isinstance(who, Ctx):
+            break                                  # out of step: stop, don't guess
+        if who.tag == 0 and isinstance(who.value, bytes):
+            obj = decode_object_id(who.value)
+            recipient = {'device': obj[1]} if obj else {}
+        elif who.tag == 1 and isinstance(who.value, list) and len(who.value) >= 2:
+            net, mac = who.value[0], who.value[1]
+            try:
+                mac_text = format_bacnet_mac(bytes.fromhex(str(mac)))
+            except ValueError:
+                mac_text = str(mac)
+            recipient = {'network': net, 'address': mac_text}
+        else:
+            recipient = {}
+        day_bits = decode_bits(days)
+        out.append({
+            **recipient,
+            'days': [d for d, on in zip(_DAYS, day_bits) if on],
+            'from': str(start)[:5], 'to': str(end)[:5],
+            'process': process if isinstance(process, int) else None,
+            'confirmed': confirmed if isinstance(confirmed, bool) else None,
+            'transitions': [t for t, on in zip(_TRANSITIONS, decode_bits(transitions)) if on],
+        })
+    return out
+
+
+def decode_ack_required(hex_value: Any) -> list[str]:
+    return [t for t, on in zip(_TRANSITIONS, decode_bits(hex_value)) if on]
+
+
+_ROUTE_STATUS = {0: 'available', 1: 'busy', 2: 'disconnected'}
+
+
+def decode_routing_table(raw: bytes) -> list[dict[str, Any]]:
+    """A Network Port's routingTable: the networks reachable through other
+    routers on that port. Each BACnetRouterEntry is [0] network number,
+    [1] next-hop MAC, [2] status, [3] performance index (optional)."""
+    try:
+        items = decode_tagged(raw)
+    except (BACnetParseError, IndexError, struct.error):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Ctx) or not isinstance(item.value, bytes):
+            continue
+        num = int.from_bytes(item.value, 'big')
+        if item.tag == 0:
+            out.append({'network': num})
+        elif not out:
+            continue
+        elif item.tag == 1:
+            out[-1]['via'] = format_bacnet_mac(item.value)
+        elif item.tag == 2:
+            out[-1]['status'] = _ROUTE_STATUS.get(num, str(num))
+        elif item.tag == 3:
+            out[-1]['performance'] = num
+    return out
+
+
 def decode_weekly_schedule(raw: bytes) -> list[list[tuple[str, Any]]]:
     """A Schedule's weeklySchedule: seven days, Monday first, each a list of
     ``(time, value)`` changes. A value of None is a relinquish (Null)."""
@@ -1067,7 +1182,8 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
 
     if tag_class != 0:
         # Context tag inside opening/closing — unusual here, just skip
-        if length in (6, 7):
+        if (_is_opening(tag_class, length, vstart, vend)
+                or _is_closing(tag_class, length, vstart, vend)):
             return None, vstart
         return data[vstart:vend].hex(), vend
 
@@ -1348,15 +1464,17 @@ def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
                         val, idx = _parse_app_value(data, idx)
                         values.append(val)
                     idx = end + 1  # closing tag 4
-                    if values:
-                        out.append(RpmEntry(
-                            obj_type=obj_type,
-                            obj_instance=obj_instance,
-                            prop_id=prop_id,
-                            array_index=array_index,
-                            value=values[0] if len(values) == 1 else values,
-                            raw=data[start:end],
-                        ))
+                    # An empty value is still an answer: a Notification
+                    # Class with no recipients reads as an empty list, and
+                    # that is worth knowing rather than treating as unread.
+                    out.append(RpmEntry(
+                        obj_type=obj_type,
+                        obj_instance=obj_instance,
+                        prop_id=prop_id,
+                        array_index=array_index,
+                        value=values[0] if len(values) == 1 else values,
+                        raw=data[start:end],
+                    ))
                 elif data[idx] == 0x5E:  # Opening tag 5 (access error)
                     idx += 1
                     while idx < len(data) and data[idx] != 0x5F:

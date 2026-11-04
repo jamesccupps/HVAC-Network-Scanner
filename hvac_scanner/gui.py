@@ -35,7 +35,8 @@ from typing import Any, Optional
 from . import __version__
 from . import settings as settings_mod
 from .engine import ScanEngine, ScanOptions
-from .report import trend_interval, trend_records, trend_state, week_summary
+from .report import (recipient_summary, trend_interval, trend_records, trend_state,
+                     week_summary)
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +663,7 @@ class HVACNetworkScannerGUI:
 
     def _build_meta_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Dark.TFrame")
-        self.notebook.add(tab, text="Trends & Schedules")
+        self.notebook.add(tab, text="Trends, Schedules & Alarms")
         self.meta_tree = self._make_tree(tab, "meta", [
             ("device", "Device", 170), ("type", "Object Type", 130),
             ("address", "Instance", 70), ("name", "Name", 220),
@@ -693,6 +694,17 @@ class HVACNetworkScannerGUI:
                 "; ".join(sch.get('controls') or []), when, sch.get('effective', ''),
                 f"now {now}" if now else '',
             ))
+        for nc in dev.get('notification_classes') or []:
+            recipients = nc.get('recipients')
+            prio = nc.get('priority') or {}
+            self._insert(self.meta_tree, (
+                label, "Notification Class", nc.get('instance', ''), nc.get('name', ''),
+                "; ".join(recipient_summary(r) for r in recipients or []),
+                ("priority " + " / ".join(str(v) for v in prio.values())) if prio else '',
+                ("ack " + ", ".join(nc['ack_required'])) if nc.get('ack_required') else '',
+                "no recipients" if recipients == [] else
+                (f"{len(recipients)} recipient(s)" if recipients else "not read"),
+            ), ("flag",) if recipients == [] else ())
 
     def _build_registers_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Dark.TFrame")
@@ -1582,6 +1594,10 @@ class HVACNetworkScannerGUI:
             kv("Trend logs", (f"{len(trends)}" + (f" ({idle} not recording)" if idle else ""))
                if trends else None)
             kv("Schedules", len(dev.get('schedules') or []) or None)
+            classes = dev.get('notification_classes') or []
+            silent = sum(1 for n in classes if n.get('recipients') == [])
+            kv("Alarm classes", (f"{len(classes)}" + (f" ({silent} with no recipients)"
+                                                      if silent else "")) if classes else None)
             c = dev.get('_classification') or {}
             kv("Profile", c.get('explanation'))
         bbmd = dev.get('bbmd')
@@ -1606,6 +1622,9 @@ class HVACNetworkScannerGUI:
                 bits.append(f"max master {port['max_master']}")
             if port.get('accepts_fd_registrations'):
                 bits.append("accepts foreign devices")
+            for route in port.get('routes') or []:
+                bits.append(f"routes to network {route.get('network')} via "
+                            f"{route.get('via', '?')} ({route.get('status', '?')})")
             if port.get('sc_primary_hub'):
                 bits.append(f"hub {port['sc_primary_hub']}")
             if port.get('sc_failover_hub'):

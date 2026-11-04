@@ -880,6 +880,11 @@ PROP_IDS = {
     'recordCount':                  141,
     'stopWhenFull':                 144,
     'loggingType':                  197,
+    # Notification Class (alarm routing)
+    'ackRequired':                  1,
+    'notificationClass':            17,
+    'priority':                     86,
+    'recipientList':                102,
     # Schedule / Calendar
     'effectivePeriod':              32,
     'listOfObjectPropertyReferences': 54,
@@ -891,6 +896,7 @@ PROP_IDS = {
     'macAddress':                   423,
     'networkNumber':                425,
     'networkType':                  427,
+    'routingTable':                 428,
     # Network Port, BACnet/SC (Annex AB; 22-bit identifiers)
     'scFailoverHubUri':             4194317,
     'scHubFunctionAcceptUris':      4194319,
@@ -1005,10 +1011,14 @@ METADATA_PROPERTIES_BY_TYPE = {
                            'effectivePeriod', 'listOfObjectPropertyReferences',
                            'weeklySchedule', 'statusFlags'],
     'Calendar':           ['objectName', 'description', 'presentValue'],
+    # Who receives the device's alarms, when, and at what priority.
+    'Notification Class': ['objectName', 'description', 'notificationClass', 'priority',
+                           'ackRequired', 'recipientList'],
     'Network Port':       ['objectName', 'networkType', 'networkNumber', 'macAddress',
                            'maxMaster', 'bbmdAcceptFDRegistrations',
                            'scPrimaryHubUri', 'scFailoverHubUri',
-                           'scHubFunctionEnable', 'scHubFunctionAcceptUris'],
+                           'scHubFunctionEnable', 'scHubFunctionAcceptUris',
+                           'routingTable'],
 }
 
 # BACnetNetworkType (Network Port networkType).
