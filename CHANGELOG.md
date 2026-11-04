@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.9.0] — unreleased
+
+### Added
+
+- **Alarm routing inventory.** Notification Class objects are read as
+  metadata: each class's recipients (a device, or a network address), the
+  days and hours each receives alarms, which transitions, confirmed or not,
+  the priorities and which transitions need acknowledging. Shown in the
+  device details and in the renamed **Trends, Schedules & Alarms** tab, and
+  in a new **Alarm routing** section of the survey report.
+  - Finding: notification classes with no recipients — alarms routed
+    through them reach no one.
+  - Finding: alarm recipients the scan did not find — a workstation that no
+    longer exists, or one outside the scanned addresses.
+- **Router tables.** A Network Port's routing table (the networks reachable
+  through other routers on that port) is read and shown with the port.
+  For a router on another subnet, those networks are also asked with a
+  routed Who-Is, so a network behind a chain of routers is found without a
+  Who-Is-Router-To-Network answer.
+- Simulator: two notification classes on SC-1 (one routed to the front end,
+  a missing workstation and a remote address; one routed to no one), and
+  routing tables on both routers.
+
+### Fixed
+
+- **A context-tagged value of six or seven octets was read as an opening or
+  closing tag.** The tag reader reports those as lengths 6 and 7, which a
+  six-octet value — a B/IP MAC address — also reports, so routing-table
+  entries lost their next hop and a seven-octet value ended the construct
+  around it. Opening and closing tags are now told apart by having no
+  contents.
+- A ReadPropertyMultiple property whose value is empty (a Notification Class
+  with no recipients) was dropped as if the device had not returned it.
+
 ## [2.8.0] — 2026-10-29
 
 The rest of the BACnet roadmap and saved sites. Everything new is read-only:
