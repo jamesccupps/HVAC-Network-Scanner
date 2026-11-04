@@ -173,9 +173,11 @@ Ctrl+Enter). Results appear as each device finishes, not at the end:
   units and status. Points in alarm or fault are red, overridden or out of
   service amber, and multi-state values read as their state text
   ("Occupied"). Double-click a point for its full name and description.
-- **Trends & Schedules** — what each trend log records, how often, and
-  whether it is still recording (disabled or full-and-stopped logs stand
-  out); each schedule's weekly programme and the objects it controls.
+- **Trends, Schedules & Alarms** — what each trend log records, how often,
+  and whether it is still recording (disabled or full-and-stopped logs stand
+  out); each schedule's weekly programme and the objects it controls; and
+  each notification class's alarm recipients, priorities and
+  acknowledgement (a class routed to no one stands out).
 - **Modbus Registers**, **Services** (open ports, banners, page titles, TLS
   certificates) and **Raw JSON**.
 
@@ -285,6 +287,16 @@ Exit codes:
 - `3` — internal error
 
 ## What's new
+
+### 2.9.0 (unreleased)
+
+- **Alarm routing**: every notification class's recipients, when they
+  receive alarms and at what priority, with findings for classes routed to
+  no one and recipients that did not answer the scan.
+- **Router tables**: the networks a router knows through other routers,
+  also used to reach MS/TP networks behind a chain of routers.
+- A codec fix for six- and seven-octet context values (B/IP MAC addresses
+  inside constructed values).
 
 ### v2.8.0 (2026-10-29)
 
