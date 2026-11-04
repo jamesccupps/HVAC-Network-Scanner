@@ -1244,6 +1244,14 @@ class ScanEngine:
                                             'max_master': port.get('max_master')})
                 else:
                     ip_nets.add(net)
+        # A router's routing table names networks further on, through other
+        # routers. A Who-Is routed to this router reaches them as well.
+        for dev in remote:
+            for port in dev.get('network_ports') or []:
+                for route in port.get('routes') or []:
+                    if route.get('network') and route.get('status') != 'disconnected':
+                        routes.setdefault(route['network'], {
+                            'ip': dev['ip'], 'type': None, 'via': route.get('via')})
         # Only devices whose Network Ports were not read need asking: the
         # ports already say which networks a router serves, and that a plain
         # controller serves none. A router that answers does so at once.
@@ -1712,10 +1720,11 @@ class ScanEngine:
 
     def _apply_metadata(self, dev: dict[str, Any],
                         meta: "list[tuple[str, int, dict[str, Any]]]") -> None:
-        """File trend logs, schedules, calendars and network ports on `dev`."""
+        """File trend logs, schedules, calendars, notification classes and
+        network ports on `dev`."""
         names = {(o['type'], o['instance']): o['name'] for o in dev.get('objects', [])}
         own = dev.get('instance')
-        trends, schedules, ports = [], [], []
+        trends, schedules, ports, alarms = [], [], [], []
         for obj_type, inst, raw in meta:
             obj_type = str(obj_type)
             name = _safe_str(raw.get('objectName', ''))
@@ -1735,6 +1744,22 @@ class ScanEngine:
                     'sc_failover_hub': raw.get('scFailoverHubUri', ''),
                     'sc_hub_function': raw.get('scHubFunctionEnable'),
                     'sc_accept_uris': raw.get('scHubFunctionAcceptUris') or [],
+                    # Networks reachable through other routers on this port.
+                    'routes': codec.decode_routing_table(raw.get('routingTable') or b''),
+                })
+            elif obj_type == 'Notification Class':
+                priority = raw.get('priority')
+                alarms.append({
+                    'instance': inst, 'name': name,
+                    'description': _safe_str(raw.get('description', '')),
+                    'number': raw.get('notificationClass', inst),
+                    'priority': (dict(zip(('to-offnormal', 'to-fault', 'to-normal'), priority))
+                                 if isinstance(priority, list) else {}),
+                    'ack_required': codec.decode_ack_required(raw.get('ackRequired')),
+                    # None when the list could not be read; [] is a class
+                    # that sends its alarms to no one.
+                    'recipients': (codec.decode_recipient_list(raw['recipientList'])
+                                   if isinstance(raw.get('recipientList'), bytes) else None),
                 })
             elif obj_type.startswith('Trend Log'):
                 refs = codec.decode_property_references(
@@ -1784,6 +1809,8 @@ class ScanEngine:
             dev['trend_logs'] = trends
         if schedules:
             dev['schedules'] = schedules
+        if alarms:
+            dev['notification_classes'] = alarms
         parts = []
         if trends:
             off = sum(1 for t in trends if t['enabled'] is False)
@@ -1793,6 +1820,10 @@ class ScanEngine:
             parts.append(f"{len(trends)} trend log(s)" + (f" ({extra})" if extra else ""))
         if schedules:
             parts.append(f"{len(schedules)} schedule(s)/calendar(s)")
+        if alarms:
+            nobody = sum(1 for a in alarms if a['recipients'] == [])
+            parts.append(f"{len(alarms)} notification class(es)"
+                         + (f" ({nobody} with no recipients)" if nobody else ""))
         if ports:
             parts.append("network ports: " + ", ".join(
                 f"{p['type'] or '?'}" + (f" net {p['network']}" if p['network'] else "")

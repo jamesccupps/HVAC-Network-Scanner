@@ -128,6 +128,25 @@ def trend_records(trend: dict[str, Any]) -> str:
     return f"{records:,} / {size:,}" if isinstance(size, int) else f"{records:,}"
 
 
+def recipient_summary(r: dict[str, Any]) -> str:
+    """'device 1100, Mon–Fri 07:00–18:00, to-offnormal + to-fault' for one
+    alarm recipient; the parts that are 'always' are left out."""
+    who = (f"device {r['device']}" if 'device' in r
+           else (f"{r.get('address', '?')}" + (f" (network {r['network']})" if r.get('network')
+                                               else "")))
+    parts = [who]
+    days = r.get('days') or []
+    if days and len(days) < 7:
+        parts.append(week_summary({d: '·' for d in days}).replace(' ·', ''))
+    if (r.get('from'), r.get('to')) not in (('00:00', '23:59'), ('00:00', '00:00'),
+                                            (None, None), ('', '')):
+        parts.append(f"{r.get('from')}–{r.get('to')}")
+    transitions = r.get('transitions') or []
+    if transitions and len(transitions) < 3:
+        parts.append(" + ".join(transitions))
+    return ", ".join(parts)
+
+
 def _days_left(tls: dict[str, Any], now: datetime) -> Optional[int]:
     raw = tls.get('not_after')
     if not raw:
@@ -348,6 +367,30 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "recorded.",
             ["Address", "Device", "Trend log", "Logs", "State"], rows))
 
+    # Alarm routing
+    classes = [(d, n) for d in primary for n in d.get('notification_classes') or []]
+    rows = [[d.get('ip'), _label(d), str(n.get('number', '')), n.get('name', '')]
+            for d, n in classes if n.get('recipients') == []]
+    if rows:
+        out.append(Finding(
+            "low", "Notification classes with no recipients",
+            "Alarms and events routed through these notification classes are sent to "
+            "no one. Either nothing uses them, or something that should alarm does "
+            "not.",
+            ["Address", "Device", "Class", "Name"], rows))
+    found = {d.get('instance') for d in devices if str(d.get('protocol', '')).startswith('BACnet')}
+    rows = [[d.get('ip'), _label(d), str(n.get('number', '')), n.get('name', ''),
+             f"device {r['device']}"]
+            for d, n in classes for r in n.get('recipients') or []
+            if 'device' in r and r['device'] not in found]
+    if rows:
+        out.append(Finding(
+            "low", "Alarm recipients this scan did not find",
+            "These notification classes send alarms to devices that did not answer "
+            "this scan. A recipient may sit outside the scanned addresses; if it is a "
+            "workstation that no longer exists, these alarms go nowhere.",
+            ["Address", "Device", "Class", "Name", "Recipient"], rows))
+
     # The BACnet network beyond the scanned addresses
     rows = []
     for d in bbmds:
@@ -467,6 +510,7 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
 
     sev_counts = {s: sum(1 for f in findings if f.severity == s) for s in SEVERITIES}
     trends = [(d, t) for d in primary for t in d.get('trend_logs') or []]
+    classes = [(d, n) for d in primary for n in d.get('notification_classes') or []]
     schedules = [(d, s) for d in primary for s in d.get('schedules') or []]
     cards = [("Hosts", hosts), ("BACnet/IP", counts.get('bacnet', 0)),
              ("MS/TP", counts.get('mstp', 0)), ("Modbus", counts.get('modbus', 0)),
@@ -523,6 +567,14 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
                                                                 ds[1].get('type', ''),
                                                                 ds[1].get('instance') or 0))]
 
+    alarm_rows = [[d.get('ip'), _label(d), str(n.get('number', '')), n.get('name', ''),
+                   "; ".join(recipient_summary(r) for r in n['recipients'])
+                   if n.get('recipients') else ("none" if n.get('recipients') == [] else "not read"),
+                   " / ".join(str(v) for v in (n.get('priority') or {}).values()),
+                   ", ".join(n.get('ack_required') or [])]
+                  for d, n in sorted(classes, key=lambda dn: (_ip_key(dn[0].get('ip')),
+                                                              dn[1].get('instance') or 0))]
+
     svc_rows = [[d.get('ip'), d.get('port'), d.get('service', ''), d.get('vendor', ''),
                  d.get('title') or d.get('product') or '', d.get('tls_summary', '')]
                 for d in sorted((d for d in devices if d.get('protocol') == 'Service'),
@@ -563,6 +615,10 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
 <h2>Schedules and calendars</h2>
 {_table(["Address", "Device", "Object", "Name", "Controls", "Weekly programme", "Default",
          "Now"], sched_rows)}
+
+<h2>Alarm routing</h2>
+{_table(["Address", "Device", "Class", "Name", "Recipients",
+         "Priority (offnormal / fault / normal)", "Acknowledge"], alarm_rows)}
 
 <h2>Open service ports</h2>
 {_table(["Address", "Port", "Service", "Vendor", "Title / product", "TLS certificate"], svc_rows)}
