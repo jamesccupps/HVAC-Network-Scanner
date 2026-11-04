@@ -288,7 +288,7 @@ Exit codes:
 
 ## What's new
 
-### 2.9.0 (unreleased)
+### v2.9.0 (2026-11-04)
 
 - **Alarm routing**: every notification class's recipients, when they
   receive alarms and at what priority, with findings for classes routed to

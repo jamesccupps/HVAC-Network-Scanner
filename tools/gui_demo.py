@@ -5,7 +5,7 @@
 
     tools/gui_demo.py out.png [devices|points|meta|modbus|services]
         [--advanced] [--filter=TEXT] [--select=TEXT] [--targets=SPEC]
-        [--site=NAME] [--probe]
+        [--site=NAME] [--probe] [--geometry=WxH+X+Y]
 
 Used for the README screenshot and as a smoke test of the packaged GUI path:
 it presses the actual Scan button rather than calling the engine. The
@@ -59,7 +59,9 @@ def main(argv: list[str]) -> int:
     root = tk.Tk()
     root.tk.call('tk', 'scaling', root.winfo_fpixels('1i') / 72.0)
     app = HVACNetworkScannerGUI(root, settings_path=None)
-    root.geometry("1500x940+40+40")
+    # --geometry=WxH+X+Y keeps the capture clear of anything pinned to the
+    # screen (a screen-sharing bar, say), since the capture is of the screen.
+    root.geometry(_opt(argv, "geometry") or "1500x940+40+40")
     app.network_entry.delete(0, tk.END)
     app.network_entry.insert(0, _opt(argv, "targets") or "127.0.0.2-30")
     app.scan_services.set(True)
