@@ -226,7 +226,7 @@ python -m hvac_scanner.cli --profile "Building A" --html building-a.html --quiet
 ### Scanning several buildings from one host
 
 ```bash
-python -m hvac_scanner.cli 10.20.0.0/24 --bbmd 10.20.0.1 --rate-limit 50
+python -m hvac_scanner.cli 10.20.30.0/24 --bbmd 10.20.30.1 --rate-limit 50
 ```
 
 The target list still bounds which devices are deep-scanned; `--bbmd` only

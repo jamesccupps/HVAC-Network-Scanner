@@ -1075,7 +1075,7 @@ def _fox_hello(station: str, version: str, os_name: str, os_version: str,
     """A Niagara station's answer to a Fox hello (fields as zgrab2 and nmap's
     fox-info read them)."""
     fields = [("fox.version", "s:1.0.1"), ("id", "i:5517"), ("hostName", "s:" + station.lower()),
-              ("hostAddress", "s:10.20.0.22"), ("app.name", "s:Station"),
+              ("hostAddress", "s:10.20.30.22"), ("app.name", "s:Station"),
               ("app.version", "s:" + version), ("vm.name", "s:Java HotSpot(TM) Embedded VM"),
               ("vm.version", "s:25.211-b12"), ("os.name", "s:" + os_name),
               ("os.version", "s:" + os_version), ("station.name", "s:" + station),
