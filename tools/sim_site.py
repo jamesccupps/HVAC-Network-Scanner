@@ -149,6 +149,39 @@ def weekly_schedule(days: "list[list[tuple[int, int, bytes]]]") -> bytes:
 STATUS_NORMAL = _tag(8, bytes([4, 0]))
 
 
+def app_bits(bits: str) -> bytes:
+    """A BIT STRING from '1100...' (first bit first)."""
+    data = bytearray((len(bits) + 7) // 8)
+    for i, b in enumerate(bits):
+        if b == '1':
+            data[i // 8] |= 0x80 >> (i % 8)
+    return _tag(8, bytes([len(data) * 8 - len(bits)]) + bytes(data))
+
+
+def destination(days: str, start: tuple, end: tuple, recipient: bytes,
+                transitions: str = '111', confirmed: bool = True, process: int = 0) -> bytes:
+    """One BACnetDestination of a Notification Class's recipient list."""
+    return (app_bits(days) + _tag(11, bytes(start)) + _tag(11, bytes(end)) + recipient
+            + app_unsigned(process) + app_bool(confirmed) + app_bits(transitions))
+
+
+def to_device(instance: int) -> bytes:
+    return _tag(0, struct.pack('!I', (8 << 22) | instance), context=True)
+
+
+def to_address(network: int, mac: bytes) -> bytes:
+    return opening(1) + app_unsigned(network) + app_octets(mac) + closing(1)
+
+
+def router_entry(network: int, via: bytes, status: int = 0) -> bytes:
+    """One BACnetRouterEntry of a Network Port's routing table."""
+    return (ctx_unsigned(0, network) + _tag(1, via, context=True)
+            + ctx_unsigned(2, status))
+
+
+ALL_DAY = ((0, 0, 0, 0), (23, 59, 59, 99))
+
+
 def bvlc(fn: int, npdu_apdu: bytes) -> bytes:
     return struct.pack('!BBH', 0x81, fn, 4 + len(npdu_apdu)) + npdu_apdu
 
@@ -1205,6 +1238,22 @@ def _add_trends_and_schedules(sc: SimDevice, pxc: SimDevice) -> None:
         123: weekly_schedule([weekday] * 5 + [[(8, 0, app_enum(1)), (12, 0, app_enum(0))], []]),
         111: STATUS_NORMAL})
     sc.add_object(6, 1, "Holidays 2026", {85: app_bool(False)})
+    # Alarm routing: the front-end workstation, a workstation that is gone,
+    # and a remote operator by address; and a class nobody receives.
+    sc.add_object(15, 1, "Critical alarms", {
+        17: app_unsigned(1),
+        86: app_unsigned(64) + app_unsigned(64) + app_unsigned(200),
+        1: app_bits('110'),
+        102: (destination('1111111', *ALL_DAY, to_device(1100))
+              + destination('1111100', (7, 0, 0, 0), (18, 0, 0, 0), to_device(9001),
+                            transitions='110', confirmed=False, process=3)
+              + destination('1111111', *ALL_DAY,
+                            to_address(0, socket.inet_aton("10.20.30.40")
+                                       + struct.pack('!H', BACNET_PORT)), process=7)),
+    })
+    sc.add_object(15, 2, "Maintenance", {
+        17: app_unsigned(2), 86: app_unsigned(150) + app_unsigned(150) + app_unsigned(250),
+        1: app_bits('000'), 102: b''})
     # A panel trending a point that lives on another controller.
     trend(pxc, 1, "AHU-1 SA-T (from SC-1)", ref(sc, "AHU-1:SA-T", device=sc.instance),
           90000, records=88)
@@ -1221,7 +1270,8 @@ def build_remote_building(network: str, peer_bbmd: str
                        firmware="4.11")
     router.add_network_port(1, "BACnet/IP", 5, 2,
                             socket.inet_aton(ip) + struct.pack('!H', BACNET_PORT),
-                            accepts_fd=True)
+                            accepts_fd=True, extra={428: router_entry(
+                                5, socket.inet_aton(peer_bbmd) + struct.pack('!H', BACNET_PORT))})
     router.add_network_port(2, "MS/TP trunk 1", 2, 9, b'\x00', max_master=7)
     trunk: dict[int, SimDevice] = {}
     for mac, unicast in ((2, True), (6, False)):
@@ -1272,7 +1322,9 @@ class Site:
                 # with one foreign device (a remote workstation) registered.
                 dev.add_network_port(1, "BACnet/IP", 5, 1,
                                      socket.inet_aton(ip) + struct.pack('!H', BACNET_PORT),
-                                     accepts_fd=True)
+                                     accepts_fd=True, extra={428: router_entry(
+                                         9, socket.inet_aton(remote_router)
+                                         + struct.pack('!H', BACNET_PORT))})
                 dev.add_network_port(2, "MS/TP trunk 1", 2, 5, b'\x00', max_master=127)
                 bbmd = {'bdt': [(ip, BACNET_PORT, '255.255.255.255'),
                                 (remote_router, BACNET_PORT, '255.255.255.255')],

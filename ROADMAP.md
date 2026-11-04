@@ -5,9 +5,10 @@ section. Nothing here is a promise of a date. If something you need is
 missing, open an issue — that is how items get onto this list and how they
 move up it.
 
-Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently MS/TP
-behind remote routers without a BBMD, BBMD tables, trend log and schedule
-inventory, BACnet/SC detection and saved site profiles (2.8.0).
+Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently the
+alarm routing inventory and router tables (2.9.0), and before that MS/TP
+behind remote routers, BBMD tables, trend log and schedule inventory,
+BACnet/SC detection and saved site profiles (2.8.0).
 
 ## Next
 
@@ -45,11 +46,10 @@ vendor software, and never a write to a panel.
 
 ### BACnet
 
-- **Alarm routing inventory**: Notification Class objects — which
-  recipients get which alarms, at what priorities — as metadata, the way
-  2.8 reads trend logs and schedules.
-- **Router tables**: the Network Port `routingTable`, so networks behind a
-  chain of routers are found without a Who-Is-Router-To-Network answer.
+- **Which points alarm where**: each point's own notification class
+  (`notificationClass` on objects with intrinsic reporting), so the alarm
+  routing inventory can say which points report through a class with no
+  recipients.
 - **BACnet/SC identity**: with a certificate the site provides, read the
   hub's own Device object. Opt-in, since it joins the secure network.
 
