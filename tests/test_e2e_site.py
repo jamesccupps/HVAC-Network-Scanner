@@ -187,3 +187,21 @@ def test_unicast_discovery_off_finds_nothing_without_a_broadcast(site):
                          scan_mstp=False, deep_scan=False)
     assert not result.devices
     assert any('No BACnet device answered' in line for line in logs)
+
+
+def test_closing_a_simulated_device_frees_its_address():
+    """close() must free the address at once. On Linux closing the socket
+    alone did not: the thread waiting in recvfrom() or accept() kept it
+    bound, and every later test on that address skipped with "Address
+    already in use"."""
+    import sim_site
+    cases = [(socket.SOCK_DGRAM, 3671, lambda ip: sim_site.KNXGateway(ip, "GW", 0x1101)),
+             (socket.SOCK_STREAM, 5033, lambda ip: sim_site.P2Node(ip, "SIMBLN", "PXC50"))]
+    for i, (kind, port, make) in enumerate(cases):
+        ip = f"{NET}.{50 + i}"
+        try:
+            make(ip).close()
+        except OSError as e:
+            pytest.skip(f"cannot bind {ip}: {e}")
+        with socket.socket(socket.AF_INET, kind) as again:
+            again.bind((ip, port))

@@ -683,13 +683,15 @@ def test_modbus_report_server_id_identifies_what_fc43_does_not():
     import sim_site
     from hvac_scanner.modbus import ModbusScanner
     try:
+        # Any free port: 502 needs root on Linux.
         srv = sim_site.ModbusServer(f"{NET}.34", {
             1: sim_site.ModbusUnit(device_id=False, server_id=b"\x0aVFD-480 drive v3.2"),
-            2: sim_site.ModbusUnit(device_id=False)})
+            2: sim_site.ModbusUnit(device_id=False)}, port=0)
     except OSError as e:
         pytest.skip(f"cannot bind: {e}")
     try:
-        found = {d['unit_id']: d for d in ModbusScanner(timeout=1.0).scan_host(f"{NET}.34", 502, [1, 2])}
+        found = {d['unit_id']: d for d in
+                 ModbusScanner(timeout=1.0).scan_host(f"{NET}.34", srv.port, [1, 2])}
     finally:
         srv.close()
     assert found[1]['detected_via'] == 'report_server_id'

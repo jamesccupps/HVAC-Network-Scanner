@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Tests
+
+- About fifteen tests against the simulated site skipped on every Linux CI
+  leg with "Address already in use". On Linux, closing a socket does not wake
+  a thread waiting on it in `recvfrom()` or `accept()`, so each simulated
+  device kept its address bound until the run ended and the next test on
+  that address could not start. The simulator now shuts each socket down and
+  waits for its thread, and the Modbus Report Server ID test takes a free
+  port instead of 502 (root only on Linux).
+
 ## [2.9.1] — 2026-11-06
 
 Fixes from an external review of 2.9.0 (2026-11-06): what a broken or hostile
