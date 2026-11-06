@@ -25,6 +25,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when other BACnet software had 47808, which hides broadcasts (some I-Ams,
   routers' network announcements) from the scan.
 
+- **Devices only** depth: each device's identity (name, model, vendor,
+  firmware, description, location) and nothing else, for a fast inventory;
+  tick Services as well for devices and their open ports. The report shows
+  a dash, not 0, for the point counts it did not read. A quick scan still
+  read up to 50 objects per controller and took minutes on a large site.
+- **A per-device time limit** (Advanced, `--device-time-limit`, 180 s by
+  default, 0 for none): a device that reaches it keeps what was read, is
+  marked partial in the log, the export (`cut_short`) and the report, and
+  the scan moves on.
+- **Times in the log.** Each section heading carries the clock time and the
+  time since the start, each device says how long it took and how many of
+  its requests went unanswered, and the summary ends with where the time
+  went (`Time: BACnet 9 min 41 s (deep scan 9 min 12 s, MS/TP 12 s), ...`).
+  The export records the same (`coverage.seconds`, and `scan_seconds` and
+  `requests` per device), and the report lists *Controllers that drop
+  requests*: on one site four controllers dropped about one request in
+  ten and took minutes each, a timeout per loss, with nothing saying why.
+
 ### Changed
 
 - The report shows the same flagged point on three or more controllers of
@@ -52,6 +70,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   switched to one read at a time for good. Before, a short burst of loss
   dropped three controllers to single reads, each lost reply costing a
   5 s timeout, and their deep scans ran for minutes.
+- **Devices named for what they are.** The type and description leaned on
+  the first site's numbering, and a device's own model name only replaced
+  the model column. On a second site that made a Trane Tracer Ensemble
+  server a "unitary controller", an Insight workstation a Desigo CC
+  server, every DXR2 a "Desigo PXC series controller", and the DXR2.E12P a
+  "bath controller" (E18: "heat pump controller", the program one site
+  runs). Known models now set type and description from the makers'
+  catalogues: DXR2 E10PL / E12P / E18, PXC Modular / Compact (told apart by
+  firmware), Insight, Desigo CC, Tracer Ensemble, Trane TR200 and Yaskawa
+  HV600 drives, and the MelcoBEMS MINI gateway.
+- The dark theme's scrollbars were dark grey on dark grey; the thumb is now
+  a lighter grey that brightens under the pointer.
+- Unicast discovery asks the addresses that stayed silent once more (where
+  anything answered at all): each of two scans of one site missed a
+  different controller on a lossy link.
 - A router heard both directly and through a BBMD was listed twice, and
   each router query now names the broadcast it went to (a bare "Found 0
   router(s)" for the remote subnet's broadcast read like a failure).

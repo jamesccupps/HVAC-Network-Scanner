@@ -54,6 +54,10 @@ class Colors:
     BG_ROW_ALT   = "#202938"
     BG_INPUT     = "#21262d"
     BORDER       = "#30363d"
+    # Scrollbar thumb: it must stand out from the panels it sits on (it was
+    # BG_INPUT on BG_CARD, two near-identical darks, and hard to find).
+    SCROLL       = "#484f58"
+    SCROLL_HOVER = "#6e7681"
     TEXT         = "#e6edf3"
     TEXT_DIM     = "#8b949e"
     ACCENT       = "#58a6ff"
@@ -78,6 +82,7 @@ PROTOCOL_COLORS = {
 # Settings the GUI remembers between runs (see settings.py).
 _ADVANCED_DEFAULTS = {
     'timeout': "5", 'rate_limit': "0", 'whois_chunk': "0", 'workers': "4",
+    'device_limit': "180",
     'unicast': "auto", 'bbmd': "", 'broadcast': "", 'max_objects': "",
     'communities': "public",
 }
@@ -288,10 +293,13 @@ class HVACNetworkScannerGUI:
                   foreground=[("selected", C.TEXT), ("active", C.TEXT)],
                   lightcolor=[("selected", C.ACCENT)])
 
-        style.configure("TScrollbar", background=C.BG_INPUT, troughcolor=C.BG_CARD,
-                        bordercolor=C.BG_CARD, arrowcolor=C.TEXT_DIM,
-                        lightcolor=C.BG_INPUT, darkcolor=C.BG_INPUT, gripcount=0)
-        style.map("TScrollbar", background=[("active", C.BORDER)])
+        style.configure("TScrollbar", background=C.SCROLL, troughcolor=C.BG_PANEL,
+                        bordercolor=C.BG_PANEL, arrowcolor=C.TEXT,
+                        lightcolor=C.SCROLL, darkcolor=C.SCROLL, gripcount=0)
+        style.map("TScrollbar",
+                  background=[("pressed", C.TEXT_DIM), ("active", C.SCROLL_HOVER)],
+                  lightcolor=[("pressed", C.TEXT_DIM), ("active", C.SCROLL_HOVER)],
+                  darkcolor=[("pressed", C.TEXT_DIM), ("active", C.SCROLL_HOVER)])
         style.configure("Horizontal.TProgressbar", troughcolor=C.BG_INPUT,
                         background=C.ACCENT, bordercolor=C.BG_PANEL,
                         lightcolor=C.ACCENT, darkcolor=C.ACCENT, thickness=6)
@@ -399,7 +407,7 @@ class HVACNetworkScannerGUI:
         ttk.Label(row2, text="Depth", style="Header.TLabel").pack(side=tk.LEFT, padx=(18, 6))
         self.scan_depth_var = tk.StringVar(value="normal")
         ttk.Combobox(row2, textvariable=self.scan_depth_var, width=8, state="readonly",
-                     values=["quick", "normal", "full"]).pack(side=tk.LEFT)
+                     values=["devices", "quick", "normal", "full"]).pack(side=tk.LEFT)
 
         self.adv_btn = ttk.Button(row2, text="Advanced ▾", style="Link.TButton",
                                   command=self._toggle_advanced)
@@ -541,8 +549,10 @@ class HVACNetworkScannerGUI:
         field(2, 0, "BBMD", 'bbmd', width=16, tip="register as foreign device")
         field(2, 1, "Broadcast", 'broadcast', width=16, tip="blank = automatic")
         field(2, 2, "SNMP communities", 'communities', width=16, tip="comma-separated")
+        self.device_limit_entry = field(3, 0, "Device time limit (s)", 'device_limit',
+                                        width=6, tip="per device, 0 = none")
         chk = ttk.Frame(self.adv_frame, style="Card.TFrame")
-        chk.grid(row=3, column=0, columnspan=9, sticky="w", pady=(4, 0))
+        chk.grid(row=4, column=0, columnspan=9, sticky="w", pady=(4, 0))
         ttk.Checkbutton(chk, text="Deep scan (read points and registers)",
                         variable=self.deep_scan).pack(side=tk.LEFT, padx=(0, 18))
         ttk.Checkbutton(chk, text="ReadPropertyMultiple",
@@ -1226,7 +1236,8 @@ class HVACNetworkScannerGUI:
                 ('timeout', self.timeout_entry, "Timeout", 5.0, float, 0.1),
                 ('whois_chunk', self.whois_chunk_entry, "Who-Is chunk", 0, int, 0),
                 ('rate_limit', self.rate_limit_entry, "Rate limit", 0, int, 0),
-                ('workers', self.workers_entry, "Parallel devices", 4, int, 1)):
+                ('workers', self.workers_entry, "Parallel devices", 4, int, 1),
+                ('device_limit', self.device_limit_entry, "Device time limit", 180.0, float, 0)):
             try:
                 numbers[key] = self._read_number(entry, label, default, cast, minimum)
             except ValueError as e:
@@ -1251,6 +1262,7 @@ class HVACNetworkScannerGUI:
             rate_limit_ms=numbers['rate_limit'],
             scan_depth=self.scan_depth_var.get(),
             bacnet_workers=numbers['workers'],
+            device_time_limit=numbers['device_limit'],
             unicast_discovery=self.adv_vars['unicast'].get() or "auto",
             bbmd=bbmd,
             bacnet_broadcast=broadcast,

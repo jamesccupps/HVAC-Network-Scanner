@@ -48,6 +48,13 @@ class Finding:
 # Findings
 # ---------------------------------------------------------------------------
 
+def _took(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)):
+        return ""
+    s = int(seconds)
+    return f"{s // 60} min {s % 60:02d} s" if s >= 60 else f"{s} s"
+
+
 def _label(dev: dict[str, Any]) -> str:
     props = dev.get('properties') or {}
     name = props.get('object_name') or ''
@@ -445,6 +452,26 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "workstation that no longer exists, these alarms go nowhere.",
             ["Address", "Device", "Class", "Name", "Recipient"], rows))
 
+    # Network health: controllers that left the scanner's requests unanswered
+    lossy = []
+    for d in devices:
+        req = d.get('requests') or {}
+        sent, lost = req.get('sent') or 0, req.get('unanswered') or 0
+        if lost >= 3 and lost * 20 >= sent:                       # 5% or more
+            lossy.append((lost / max(sent, 1), d, sent, lost))
+    rows = [[d.get('ip'), _label(d), f"{lost} of {sent} ({round(100 * share)}%)",
+             _took(d.get('scan_seconds'))]
+            for share, d, sent, lost in sorted(lossy, key=lambda x: -x[0])]
+    if rows:
+        out.append(Finding(
+            "low", "Controllers that drop requests",
+            "These controllers left a share of the scanner's requests unanswered. A "
+            "healthy controller answers nearly every one; drops usually point to the "
+            "network near it (a cable, a duplex mismatch, errors on its switch port) "
+            "or to a controller too busy to keep up. The building's own supervisor "
+            "sees the same drops, and each one cost this scan a full timeout.",
+            ["Address", "Device", "Unanswered", "Scan took"], rows))
+
     # The BACnet network beyond the scanned addresses
     rows = []
     for d in bbmds:
@@ -657,8 +684,12 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
              ("APOGEE P2", counts.get('p2', 0)), ("KNXnet/IP", counts.get('knx', 0)),
              ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged),
              ("Trend logs", len(trends)), ("Schedules", len(schedules))]
-    # A pass that did not run shows a dash, not a 0 that reads as "none here".
-    cards = [(k, "—" if k in _CARD_PASS and _not_scanned(scan, _CARD_PASS[k]) else v)
+    # A pass that did not run shows a dash, not a 0 that reads as "none here";
+    # so do the point counts of a devices-only scan, which reads no points.
+    devices_only = ((scan.get('coverage') or {}).get('options') or {}).get('scan_depth') == 'devices'
+    unread = {"Points", "Flagged points", "Trend logs", "Schedules"} if devices_only else set()
+    cards = [(k, "—" if k in unread or (k in _CARD_PASS and _not_scanned(scan, _CARD_PASS[k]))
+              else v)
              for k, v in cards]
     cards_html = "".join(f'<div class="card"><b>{_e(v)}</b><span>{_e(k)}</span></div>'
                          for k, v in cards)
@@ -674,6 +705,17 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     if gaps:
         lines.append("Not scanned: " + "; ".join(f"{_e(label)} ({_e(why)})"
                                                 for label, why in gaps) + ".")
+    cut = [d.get('ip') for d in scan.get('devices') or [] if d.get('cut_short')]
+    if cut:
+        shown = ", ".join(_e(ip) for ip in cut[:8]) + (f" and {len(cut) - 8} more"
+                                                       if len(cut) > 8 else "")
+        lines.append(f"{len(cut)} device(s) reached the per-device time limit and are partial: "
+                     f"{shown}. Raise the limit (Advanced, or --device-time-limit) to read "
+                     f"them in full.")
+    if devices_only:
+        lines.append("Devices-only scan: each device's identity was read; no points, alarms, "
+                     "trend logs, schedules or Modbus registers. Findings about points cannot "
+                     "appear here; run a quick or normal scan for those.")
     if isinstance(port, int) and port != 47808:
         lines.append(f"BACnet ran on UDP port {port}: other BACnet software on the scanning PC "
                      f"had 47808. Devices still answered requests, but broadcasts sent to "

@@ -122,6 +122,9 @@ class BACnetClient:
         self._point_batch: dict[tuple[str, int], int] = {}
         # (ip, device_instance) -> the largest point batch it has answered.
         self._point_batch_ok: dict[tuple[str, int], int] = {}
+        # ip -> [confirmed requests sent, of those never answered]. A device
+        # that drops requests costs a timeout for each; the engine reports it.
+        self._request_counts: dict[str, list[int]] = {}
         # (bbmd_ip, ttl) once registered as a Foreign Device, else None.
         self._bbmd: Optional[tuple[str, int]] = None
         self._bbmd_registered_at: float = 0.0
@@ -200,6 +203,16 @@ class BACnetClient:
                     break
             self._invoke_ids[ip] = nxt
             return nxt
+
+    def request_counts(self, ip: str) -> tuple[int, int]:
+        """(confirmed requests sent to `ip`, how many were never answered)."""
+        with self._lock:
+            sent, lost = self._request_counts.get(ip, (0, 0))
+        return sent, lost
+
+    def _count_unanswered(self, ip: str) -> None:
+        with self._lock:
+            self._request_counts.setdefault(ip, [0, 0])[1] += 1
 
     def _throttle(self, ip: str) -> None:
         """Enforce rate_limit_ms between packets to the same IP."""
@@ -643,11 +656,14 @@ class BACnetClient:
         key = (ip, expected_invoke_id)
         with self._lock:
             self._pending[key] = None
+            counts = self._request_counts.setdefault(ip, [0, 0])
+            counts[0] += 1
         try:
             try:
                 self._sock.sendto(pkt, (ip, BACNET_PORT))
             except OSError as e:
                 self._log(f"  sendto {ip} failed: {e}")
+                self._count_unanswered(ip)
                 return None
 
             deadline = time.monotonic() + self.timeout
@@ -657,6 +673,7 @@ class BACnetClient:
                     if data is None:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
+                            self._request_counts[ip][1] += 1
                             return None
                         if self._reader_active:
                             self._cond.wait(remaining)
@@ -672,6 +689,7 @@ class BACnetClient:
                         self._cond.notify_all()
                 with self._lock:
                     if self._pending.get(key) is None and timed_out:
+                        self._request_counts[ip][1] += 1
                         return None
         finally:
             with self._lock:
@@ -805,23 +823,41 @@ class BACnetClient:
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
         found: dict[str, int] = {}
+        answered: set[str] = set()
         refused = 0
-        for i in range(0, len(ips), batch):
-            if stop_fn and stop_fn():
-                break
-            reqs = []
-            for ip in ips[i:i + batch]:
-                inv = self._next_invoke_id(ip)
-                reqs.append((ip, codec.build_read_property(
-                    'Device', 4194303, 'objectIdentifier', invoke_id=inv), inv))
-            replies = self._request_many(reqs, parser=codec.parse_read_property_ack,
-                                         stop_fn=stop_fn)
-            for ip, value in replies.items():
-                if (isinstance(value, tuple) and len(value) == 2
-                        and value[0] == 'Device' and isinstance(value[1], int)):
-                    found[ip] = value[1]
-                else:
-                    refused += 1
+
+        def ask(addresses: "list[str]") -> None:
+            nonlocal refused
+            for i in range(0, len(addresses), batch):
+                if stop_fn and stop_fn():
+                    break
+                reqs = []
+                for ip in addresses[i:i + batch]:
+                    inv = self._next_invoke_id(ip)
+                    reqs.append((ip, codec.build_read_property(
+                        'Device', 4194303, 'objectIdentifier', invoke_id=inv), inv))
+                replies = self._request_many(reqs, parser=codec.parse_read_property_ack,
+                                             stop_fn=stop_fn)
+                for ip, value in replies.items():
+                    answered.add(ip)
+                    if (isinstance(value, tuple) and len(value) == 2
+                            and value[0] == 'Device' and isinstance(value[1], int)):
+                        found[ip] = value[1]
+                    else:
+                        refused += 1
+
+        ask(list(ips))
+        # Ask the silent addresses once more: a controller on a lossy link
+        # can miss one probe (on one site a different controller went
+        # missing from each of two scans). Only where something answered,
+        # so an empty or unreachable range costs nothing extra.
+        silent = [ip for ip in ips if ip not in answered]
+        if found and silent and not (stop_fn and stop_fn()):
+            before = len(found)
+            ask(silent)
+            if len(found) > before:
+                self._log(f"  Asked {len(silent)} silent address(es) again; "
+                          f"{len(found) - before} answered the second time.")
         if refused:
             self._log(f"  {refused} address(es) answered on 47808 but not at the "
                       f"wildcard device instance (pre-2004 BACnet stacks); they "

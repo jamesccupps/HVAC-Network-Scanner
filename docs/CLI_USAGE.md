@@ -34,7 +34,8 @@ is also on your PATH and is equivalent.
 | `--rate-limit MS` | `0` | Minimum ms between BACnet packets to the same IP. Set to `50` for small field controllers (UC400, FEC, BASRT). |
 | `--max-objects N` | unset | Ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Whatever the profile says, no device is enumerated past 20,000 objects unless this is set higher. |
 | `--max-hosts N` | `65536` | Refuse to scan more than N addresses in total, across all targets. A guard against a mistyped prefix. |
-| `--scan-depth LEVEL` | `normal` | `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
+| `--scan-depth LEVEL` | `normal` | `devices` reads only each device's identity (name, model, vendor, firmware): the fastest inventory, no points. `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
+| `--device-time-limit SECONDS` | `180` | Most time one device's deep scan may take; past it the scan keeps what was read, marks the device partial (`cut_short` in the JSON) and moves on. `0` = no limit. |
 | `--broadcast IP` | auto | Override the computed Who-Is broadcast target. Rarely needed: the broadcast is derived from the target syntax automatically. |
 | `--no-rpm` | off | Disable `ReadPropertyMultiple`. Use if a specific device misbehaves with RPM requests. Costs roughly two orders of magnitude more round trips on a large controller. |
 | `--bacnet-workers N` | `4` | BACnet devices deep-scanned at once. Each worker owns one IP address — a router and the MS/TP devices behind it share one — so no device sees more than one request at a time either way. `1` scans strictly one device after another. |
@@ -71,7 +72,7 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 
 | Flag | Description |
 |------|-------------|
-| `--json PATH` | Write structured results to a JSON file. Its `coverage` block records the options, whether the scan was stopped, and which passes ran (`scanned`, `off`, `failed`, `skipped: why`, `stopped partway`, `stopped before it ran`); also `bacnet_port` (the UDP port BACnet ran on: not 47808 when another program held it), `local_address` (the address the scan went out from) and `outside_targets` (devices that answered from outside the targets and were not scanned, counted by /24). |
+| `--json PATH` | Write structured results to a JSON file. Its `coverage` block records the options, whether the scan was stopped, and which passes ran (`scanned`, `off`, `failed`, `skipped: why`, `stopped partway`, `stopped before it ran`); also `bacnet_port` (the UDP port BACnet ran on: not 47808 when another program held it), `local_address` (the address the scan went out from) `outside_targets` (devices that answered from outside the targets and were not scanned, counted by /24) and `seconds` (how long each pass took). Each BACnet device carries `scan_seconds`, `requests` (`sent`, `unanswered`) and, if the per-device time limit stopped it, `cut_short`. |
 | `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). A device-supplied value that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is written as text. |
 | `--points-csv PATH` | Write the point list: one row per BACnet point and Modbus register, with value, units and status. |
 | `--html PATH` | Write a self-contained HTML survey report: findings ranked by severity, device inventory, open services. `python -m hvac_scanner.report scan.json -o out.html` builds the same report from a saved JSON export. |

@@ -533,3 +533,157 @@ def test_a_router_heard_directly_and_through_a_bbmd_is_listed_once():
     assert [(r['ip'], r['networks']) for r in routers] == [("10.0.1.100", [106])]
     assert nets == [106]
     assert sum("Router at 10.0.1.100" in l for l in lines) == 1
+
+
+@pytest.mark.parametrize("vendor_id,vendor,model,firmware,instance,apdu,kind,words", [
+    (7, "Siemens Schweiz", "DXR2.E12P-1", "v01.21", 107003, 1476, "Field Controller", "pressure sensor"),
+    (7, "Siemens Schweiz", "DXR2.E10PL-1", "v01.21", 102002, 1476, "Field Controller", "damper actuator"),
+    (7, "Siemens Schweiz", "DXR2.E18-1", "v01.21", 104028, 1476, "Field Controller", "18 I/O"),
+    (7, "Siemens Schweiz", "Siemens BACnet Field Panel", "PXME V3.5.5 BACnet 4.3g", 112000, 1476,
+     "Automation Station", "PXC Modular"),
+    (7, "Siemens Schweiz", "Insight", "", 9997, 1476, "Management Station", "Insight"),
+    (2, "The Trane Company", "TES Workstation", "", 125, 1476, "Management Station", "Tracer Ensemble"),
+    (2, "The Trane Company", "TR200", "", 5, 480, "Variable Frequency Drive", "TR200"),
+    (141, "Yaskawa America", "HV60U", "", 6, 480, "Variable Frequency Drive", "HV600"),
+])
+def test_devices_are_named_for_what_their_model_says(vendor_id, vendor, model, firmware,
+                                                      instance, apdu, kind, words):
+    """A second site showed the naming leaned on the first site's numbering:
+    a Tracer Ensemble server was a "unitary controller", an Insight
+    workstation a Desigo CC server, every DXR2 a "Desigo PXC" controller."""
+    from hvac_scanner.device_profiles import classify_device
+    from hvac_scanner.fingerprint import fingerprint_device
+    fp = fingerprint_device({'ip': '10.0.0.5', 'vendor_id': vendor_id, 'vendor_name': vendor,
+                             'instance': instance, 'max_apdu': apdu, 'protocol': 'BACnet/IP',
+                             'properties': {'model_name': model, 'vendor_name': vendor,
+                                            'firmware_revision': firmware}})
+    assert fp['model'] == model
+    assert fp['device_type'] == kind
+    assert words in fp['description']
+    assert 'PXC series' not in fp['description'] and 'unitary' not in fp['description']
+    _profile, why = classify_device(vendor, model, 100)
+    assert 'bath' not in why and 'heat pump' not in why
+
+
+# -- faster scans and a log that says where the time went ----------------------
+
+def test_devices_only_depth_reads_identity_and_nothing_else():
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+
+    class Client:
+        asked = []
+
+        def read_device_info(self, ip, instance, **kw):
+            Client.asked.append('info')
+            return {'object_name': 'RM101', 'model_name': 'DXR2.E12P-1'}
+
+        def __getattr__(self, name):            # anything else is a failure
+            def nope(*a, **kw):
+                Client.asked.append(name)
+                raise AssertionError(f"devices-only scan called {name}")
+            return nope
+
+    eng = ScanEngine(ScanOptions(networks=["10.0.0.5"], scan_depth="devices"),
+                     callback=lambda m: None)
+    dev = {'ip': '10.0.0.5', 'instance': 5, 'protocol': 'BACnet/IP'}
+    eng._deep_read_device(Client(), dev)
+    assert Client.asked == ['info']
+    assert dev['properties']['model_name'] == 'DXR2.E12P-1'
+    assert not dev.get('objects')
+
+
+def test_devices_only_is_offered_everywhere():
+    from hvac_scanner import cli
+    from hvac_scanner.device_profiles import SCAN_DEPTH_PRESETS, DeviceProfile, apply_scan_depth
+    assert 'devices' in SCAN_DEPTH_PRESETS
+    assert apply_scan_depth(DeviceProfile(object_cap=500, class_label="x"), "devices")[0].object_cap == 0
+    args = cli._build_parser().parse_args(["10.0.0.5", "--scan-depth", "devices",
+                                           "--device-time-limit", "60"])
+    assert args.scan_depth == "devices" and args.device_time_limit == 60
+
+
+def test_report_of_a_devices_only_scan_does_not_claim_zero_points():
+    from hvac_scanner.report import render_html
+    scan = {'devices': [], 'counts': {'points': 0},
+            'coverage': {'stopped': False, 'passes': {'bacnet': 'scanned'},
+                         'options': {'scan_depth': 'devices'}}}
+    page = render_html(scan)
+    assert "Devices-only scan" in page
+    assert '<b>—</b><span>Points</span>' in page
+
+
+def test_the_log_says_when_each_section_ran_and_where_the_time_went():
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    lines = []
+    eng = ScanEngine(ScanOptions(networks=["10.0.0.5"]), callback=lines.append)
+    title = eng._title("MODBUS TCP DISCOVERY")
+    assert title.startswith("MODBUS TCP DISCOVERY  ·  ") and ", +" in title
+    eng.result.seconds.update({'bacnet': 581.0, 'bacnet_deep': 552.0, 'mstp': 12.0,
+                               'modbus': 4.2, 'snmp': 3.0})
+    assert eng._timing_summary() == ("BACnet 9 min 41 s (deep scan 9 min 12 s, MS/TP 12 s), "
+                                     "Modbus 4.2 s, SNMP 3.0 s")
+    assert eng.result.to_dict()['coverage']['seconds']['modbus'] == 4.2
+
+
+def test_a_device_that_drops_requests_is_named_and_cut_off_at_the_limit(mock_client):
+    """10.0.1.81, .84 and .89 took minutes each and the log never said why."""
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    lines = []
+    eng = ScanEngine(ScanOptions(networks=["127.0.0.1"], timeout=0.3, device_time_limit=1.5,
+                                 read_metadata=False),
+                     callback=lines.append)
+    with MockBACnetDevice(n_objects=300, rpm_mode='full', drop_rpm=range(2, 10_000)) as dev:
+        client = mock_client(timeout=0.3)
+        d = {'ip': '127.0.0.1', 'instance': dev.instance, 'protocol': 'BACnet/IP',
+             'max_apdu': 1476}
+        began = time.monotonic()
+        eng._deep_read(client, d)
+        took = time.monotonic() - began
+    assert took < 6, took
+    assert d['requests']['unanswered'] >= 3
+    assert "per-device time limit" in d['cut_short']
+    footer = next(l for l in lines if l.startswith("    Took "))
+    assert "requests went unanswered" in footer and "per-device time limit" in footer
+
+
+def test_report_names_controllers_that_drop_requests_and_devices_cut_short():
+    from hvac_scanner.report import build_findings, render_html
+    devs = [{'ip': '10.0.1.84', 'instance': 1, 'protocol': 'BACnet/IP',
+             'properties': {'object_name': 'RM7704'}, 'scan_seconds': 131.0,
+             'requests': {'sent': 120, 'unanswered': 14}, 'cut_short': 'x'},
+            {'ip': '10.0.1.85', 'instance': 2, 'protocol': 'BACnet/IP',
+             'requests': {'sent': 120, 'unanswered': 1}}]
+    f = next(f for f in build_findings({'devices': devs}) if f.title == "Controllers that drop requests")
+    assert f.rows == [['10.0.1.84', f.rows[0][1], '14 of 120 (12%)', '2 min 11 s']]
+    page = render_html({'devices': devs, 'coverage': {'stopped': False, 'passes': {}, 'options': {}}})
+    assert "1 device(s) reached the per-device time limit" in page
+
+
+def test_unicast_discovery_asks_silent_addresses_twice():
+    """Each of two scans missed a different controller on a lossy link."""
+    c = bacnet.BACnetClient(timeout=0.2)
+    c._sock = object()
+    calls = []
+
+    def request_many(reqs, parser=None, stop_fn=None):
+        ips = [ip for ip, _pkt, _inv in reqs]
+        calls.append(ips)
+        out = {'10.0.1.65': ('Device', 107025)}
+        if len(calls) == 2:
+            out['10.0.1.81'] = ('Device', 107001)        # answered only when asked again
+        return {ip: v for ip, v in out.items() if ip in ips}
+
+    c._request_many = request_many
+    c._describe_found = lambda ip, inst, dnet=None: {'ip': ip, 'instance': inst}
+    found = c.discover_unicast(['10.0.1.65', '10.0.1.81', '10.0.1.90'])
+    assert sorted(d['instance'] for d in found) == [107001, 107025]
+    assert calls[1] == ['10.0.1.81', '10.0.1.90']
+
+
+def test_unicast_discovery_does_not_ask_again_when_nothing_answered():
+    c = bacnet.BACnetClient(timeout=0.2)
+    c._sock = object()
+    calls = []
+    c._request_many = lambda reqs, parser=None, stop_fn=None: calls.append(reqs) or {}
+    assert c.discover_unicast(['10.0.9.1', '10.0.9.2']) == []
+    assert len(calls) == 1

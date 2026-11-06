@@ -209,6 +209,17 @@ is pasted, and exported to CSV, as text: device names are chosen by whoever
 controls the device, and BACnet names can be changed by anyone on the
 network.
 
+**Depth** sets how much of each device is read. *devices* reads only each
+device's identity (name, model, vendor, firmware, description, location):
+the fastest inventory, with no points; tick *Services* as well for devices
+and their open ports. *quick* samples about 5% of each device's points,
+*normal* (the default) reads up to each model's known size, and *full*
+reads everything.
+
+The scan log gives every section the clock time and the time since the
+start, says how long each device took and how many of its requests went
+unanswered, and ends with where the time went pass by pass.
+
 **Export** writes a **survey report** (HTML — findings, inventory and open
 services in one file you can hand to the building owner), the device list
 (CSV), a **point list** (CSV, one row per point and register — the thing you
@@ -217,7 +228,9 @@ classification report. **Compare** diffs this
 scan against an earlier JSON export.
 
 **Advanced** holds the timeout, the per-device rate limit (use 20-50 ms on
-sites with small field controllers), parallel deep scans, unicast discovery,
+sites with small field controllers), parallel deep scans, a per-device time
+limit (180 s; a device that reaches it keeps what was read and is marked
+partial), unicast discovery,
 BBMD registration, broadcast override, Who-Is chunking, an object cap,
 SNMP communities, and the MS/TP address probe for trunks behind routers on
 other subnets. Everything you set is remembered for next time; while the
@@ -450,6 +463,13 @@ out-of-scope* above).
 **Small controllers misbehave during a scan.** Set a rate limit of 20-50 ms
 and lower Parallel devices to 1.
 
+**A few controllers take minutes each.** They are dropping requests, and
+each lost one costs a full timeout. The log says how many went unanswered,
+the report lists them under *Controllers that drop requests*, and the
+per-device time limit (Advanced) caps what any one of them can cost. The
+cause is usually near the controller: a cable, a duplex mismatch, errors on
+its switch port, or a controller too busy to keep up.
+
 ## Safety and legal
 
 This tool is intended for scanning networks you own or are authorized to audit. Running BACnet or Modbus sweeps against unfamiliar networks is at best rude and at worst unlawful in many jurisdictions. Building automation systems can also behave unpredictably when they see unexpected traffic — small field controllers have been known to lock up under probe load, and some equipment will fail-safe into unsafe mechanical states. Don't point it at anything you haven't been explicitly asked to assess.
@@ -519,7 +539,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 766 tests
+tests/                 # 782 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions
