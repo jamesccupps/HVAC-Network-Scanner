@@ -338,6 +338,27 @@ Exit codes:
 
 ## What's new
 
+### v2.11.0 (2026-11-06)
+
+More of what a building network holds, and faster on unreliable controllers.
+Full list in [CHANGELOG.md](CHANGELOG.md).
+
+- **LonWorks/IP (IP-852)**: routers and nodes on UDP 1628 report their node
+  type, name, Neuron IDs, configuration server and whether authentication
+  is on.
+- **Serial gateways**: Moxa NPort, MGate and OnCell devices, often where P1,
+  N2, MS/TP and Modbus RTU buses reach the network, found with Moxa's
+  identify request only.
+- **OPC UA identity**: the server's own name and product, and whether it
+  allows unsecured endpoints or anonymous sessions (4840 and KEPServerEX's
+  49320). Niagara platform ports are probed too.
+- **Adaptive timeout**: a controller that drops requests now costs about a
+  second per drop, not the full timeout. On one site a quick scan went from
+  3 min 39 s to 2 min 32 s and four lossy controllers from minutes to under
+  half a minute each.
+- **Accurate vendor names**: Alerton is Honeywell's; Vertiv and Copeland are
+  no longer listed as Emerson.
+
 ### v2.10.0 (2026-11-06)
 
 Tested on a real site over four rounds. Full list in

@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.11.0] — 2026-11-06
+
 ### Added
 
 - **LonWorks/IP (IP-852).** A new pass (`--no-lon` to skip) asks every target for
