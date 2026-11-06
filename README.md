@@ -519,7 +519,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 758 tests
+tests/                 # 766 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions

@@ -115,7 +115,10 @@ ways round that:
   to its own instance. `auto` probes target addresses that are on a
   different /24 from every local interface and did not answer the broadcast —
   the usual case when the building system sits on its own VLAN — up to 1,024
-  of them. `always` probes every silent target. Devices on pre-2004 stacks
+  of them. A subnet whose devices answered the broadcast directly is taken
+  as reached and its silent addresses as empty; one heard only through a
+  BBMD's relay is not, because relays drop replies under load, so its silent
+  addresses are still probed. `always` probes every silent target. Devices on pre-2004 stacks
   answer the wildcard with an error; they are counted in the log but need a
   BBMD or a scan from their own subnet. The MS/TP networks behind a router
   found this way are taken from the router's Network Port objects and asked

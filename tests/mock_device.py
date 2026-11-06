@@ -30,8 +30,12 @@ def _cs(text):
 class MockBACnetDevice:
     def __init__(self, instance=1234, n_objects=200, vendor_id=2,
                  model='Tracer SC+', max_apdu=1476, rpm_mode='full',
-                 host='127.0.0.1', patch_port=True):
+                 host='127.0.0.1', patch_port=True, drop_rpm=()):
         self.instance = instance
+        # ReadPropertyMultiple requests to ignore, by their number (1 = the
+        # first): a lossy link or a controller busy for a moment.
+        self.drop_rpm = set(drop_rpm)
+        self.rpm_requests = 0
         self.vendor_id = vendor_id
         self.model = model
         self.max_apdu = max_apdu
@@ -194,6 +198,9 @@ class MockBACnetDevice:
             self.single_reads += 1
             self._handle_rp(data, inv, addr)
         elif svc == 0x0E:
+            self.rpm_requests += 1
+            if self.rpm_requests in self.drop_rpm:
+                return
             self._handle_rpm(data, inv, addr)
 
     def _handle_rp(self, data, inv, addr):

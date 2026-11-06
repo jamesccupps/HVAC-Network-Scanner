@@ -157,6 +157,14 @@ class ScanOptions:
 # worth: past that, the user should ask for it explicitly with "always".
 UNICAST_AUTO_LIMIT = 1024
 
+# A device deep scan running this long is named in the progress text.
+SLOW_DEVICE_S = 60
+
+
+def _duration(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60} min {s % 60:02d} s" if s >= 60 else f"{s} s"
+
 # Settings that widen or change a scan beyond what its targets suggest, logged
 # at the start of a scan whenever they differ from the defaults.
 _ADVANCED_OPTIONS = ('timeout', 'rate_limit_ms', 'bacnet_broadcast', 'bbmd', 'bbmd_ttl',
@@ -816,6 +824,8 @@ class ScanEngine:
                           f"(saved {saved} redundant Who-Is broadcasts).")
 
             seen_devices: set[tuple[str, Any]] = set()
+            # Addresses whose I-Am came straight to us, not relayed by a BBMD.
+            direct_ips: set[str] = set()
             to_scan: list[dict[str, Any]] = []
             heard_any = False
 
@@ -855,6 +865,8 @@ class ScanEngine:
                             net = str(ip)
                         outside[net] = outside.get(net, 0) + 1
                         continue
+                    if not dev.get('relayed'):
+                        direct_ips.add(ip)
                     dedup_key = (ip, dev.get('instance'))
                     if dedup_key in seen_devices:
                         duplicates += 1
@@ -898,7 +910,8 @@ class ScanEngine:
                 to_scan.extend(kept)
 
             if not self._stopped():
-                found = self._discover_unicast(client, allowed_ips, seen_devices)
+                found = self._discover_unicast(client, allowed_ips, seen_devices,
+                                               direct_ips)
                 to_scan.extend(found)
                 heard_any = heard_any or bool(found)
 
@@ -969,7 +982,8 @@ class ScanEngine:
 
     def _discover_unicast(self, client: BACnetClient,
                           allowed_ips: "set[str] | None",
-                          seen: set[tuple[str, Any]]) -> list[dict[str, Any]]:
+                          seen: set[tuple[str, Any]],
+                          direct: "set[str] | None" = None) -> list[dict[str, Any]]:
         """Probe target addresses a broadcast cannot have reached.
 
         Who-Is does not cross a router. When the building system sits on its
@@ -977,6 +991,9 @@ class ScanEngine:
         run a BAS network — broadcast discovery finds nothing even though
         unicast BACnet to every controller works. See
         BACnetClient.discover_unicast for the probe itself.
+
+        `direct` holds the addresses whose I-Am came straight back rather
+        than relayed by a BBMD (None: treat every answer as direct).
         """
         mode = (self.opts.unicast_discovery or "auto").lower()
         if mode == "off" or self.opts.bbmd or allowed_ips is None:
@@ -984,15 +1001,25 @@ class ScanEngine:
         answered = {ip for ip, _inst in seen}
         candidates = [ip for ip in self._target_ips_in_order() if ip not in answered]
         if mode == "auto":
-            # A /24 the broadcast got answers from is evidently reachable by
-            # broadcast, whatever the routing table says; its silent
-            # addresses are just silent.
-            heard = {str(ipaddress.ip_network(f"{ip}/24", strict=False)) for ip in answered}
+            def net24(ip: str) -> str:
+                return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+            # A /24 that answered the broadcast directly is evidently reachable
+            # by broadcast, whatever the routing table says; its silent
+            # addresses are just silent. Answers a BBMD relayed prove less:
+            # the relay drops replies under load (on one site it passed on 0
+            # of 112 devices in one scan and 83 in the next), so that subnet's
+            # silent addresses are still probed.
+            heard = {net24(ip) for ip in (answered if direct is None else direct)}
+            relayed = {net24(ip) for ip in answered} - heard
             candidates = [ip for ip in candidates
-                          if str(ipaddress.ip_network(f"{ip}/24", strict=False)) not in heard
-                          and not self._is_local(ip)]
+                          if net24(ip) not in heard and not self._is_local(ip)]
             if not candidates:
                 return []
+            partly = sorted(relayed & {net24(ip) for ip in candidates})
+            if partly:
+                self._log(f"\n  {', '.join(partly)} answered only through a BBMD, "
+                          f"which can drop replies; probing the silent addresses "
+                          f"there directly.")
             if len(candidates) > UNICAST_AUTO_LIMIT:
                 self._log(f"  {len(candidates)} target address(es) are on another "
                           f"subnet, where a broadcast does not reach. That is more "
@@ -1151,10 +1178,32 @@ class ScanEngine:
         workers = max(1, min(self.opts.bacnet_workers or 1, len(groups)))
         total = len(devices)
         done = [0]
+        busy: dict[str, float] = {}       # address -> when its current device started
+        told = [False]
         self._progress("BACnet deep scan", 0, total)
         if self.opts.deep_scan and workers > 1:
             self._log(f"\nDeep-scanning {total} device(s) on {len(groups)} "
                       f"address(es), {workers} at a time")
+
+        def phase(n: int) -> str:
+            """Name the devices holding the scan up: a controller that
+            answers slowly otherwise looks like a frozen scan (one site sat
+            at 180 / 183 for minutes with nothing on screen saying why)."""
+            now = time.monotonic()
+            with self._result_lock:
+                flight = sorted(busy.items(), key=lambda kv: kv[1])
+            only_these = total - n - len(flight) <= 0
+            slow = [(ip, now - t0) for ip, t0 in flight
+                    if only_these or now - t0 >= SLOW_DEVICE_S]
+            if not slow:
+                return "BACnet deep scan"
+            if only_these and not told[0]:
+                told[0] = True
+                self._log("  Still reading " + ", ".join(
+                    f"{ip} ({_duration(s)})" for ip, s in slow) + "; the rest are done.")
+            shown = ", ".join(ip for ip, _s in slow[:3])
+            more = f" and {len(slow) - 3} more" if len(slow) > 3 else ""
+            return f"BACnet deep scan · still reading {shown}{more}"
 
         def finish(dev: dict[str, Any]) -> None:
             proto_key = 'mstp' if dev.get('protocol') == 'BACnet/MSTP' else 'bacnet'
@@ -1164,17 +1213,22 @@ class ScanEngine:
                 done[0] += 1
                 n = done[0]
             self._emit_device(dev)
-            self._progress("BACnet deep scan", n, total)
+            self._progress(phase(n), n, total)
 
         def run_group(group: list[dict[str, Any]]) -> None:
             for dev in group:
                 if self._stopped():
                     return
                 if self.opts.deep_scan:
+                    with self._result_lock:
+                        busy[dev['ip']] = time.monotonic()
                     try:
                         self._deep_read(client, dev, buffered=workers > 1)
                     except Exception:
                         log.exception("deep read of %s failed", dev.get('ip'))
+                    finally:
+                        with self._result_lock:
+                            busy.pop(dev['ip'], None)
                 finish(dev)
 
         if workers == 1:
@@ -1273,10 +1327,11 @@ class ScanEngine:
         for network in self.opts.networks:
             bcast_set.add(self._bcast_for(network))
 
-        for bcast in bcast_set:
+        for bcast in sorted(bcast_set):
             if self._stopped():
                 break
 
+            self._log(f"  Asking {bcast} for routers (Who-Is-Router-To-Network)")
             routers, dnets = client.discover_routers(target_ip=bcast)
 
             # Filter routers to ones in the user's target range BEFORE we

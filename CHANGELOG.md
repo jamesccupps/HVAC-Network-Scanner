@@ -31,6 +31,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one model as one row (with the addresses and a count), and identical KNX
   gateways likewise: a site of 51 identical room controllers gave 1,224
   near-identical fault rows and 51 identical KNX rows.
+- While a deep scan waits on slow controllers, the progress text names them
+  (`still reading 10.0.1.83, …`) and the log says once how long each has
+  run; a controller read one object at a time logs its progress every 100
+  entries. A site's scan sat at 180 / 183 for minutes with nothing saying why.
+
+### Fixed
+
+- **A quick scan missed 29 controllers a normal scan found.** Unicast
+  discovery (`auto`) skipped every subnet the broadcast had heard from, but
+  answers from another subnet that arrive through a BBMD's relay prove
+  little: on one site the relay passed on none of 112 controllers' replies
+  in one scan and 83 in the next. Those 83 made the scanner treat the subnet
+  as reached and never ask the other 29. Only direct answers count now; a
+  subnet heard through a relay has its silent addresses probed.
+- **Lost packets no longer slow a controller to a crawl.** Once batched
+  reads (objectList, point properties) have worked on a controller, an
+  unanswered one is asked again at the same size before the batch is
+  halved, the size grows back afterwards, and the controller is never
+  switched to one read at a time for good. Before, a short burst of loss
+  dropped three controllers to single reads, each lost reply costing a
+  5 s timeout, and their deep scans ran for minutes.
+- A router heard both directly and through a BBMD was listed twice, and
+  each router query now names the broadcast it went to (a bare "Found 0
+  router(s)" for the remote subnet's broadcast read like a failure).
 
 ### Tests
 

@@ -120,6 +120,8 @@ class BACnetClient:
         # (ip, device_instance) -> current point-read batch size. Adaptive:
         # see _POINT_BATCH_INITIAL.
         self._point_batch: dict[tuple[str, int], int] = {}
+        # (ip, device_instance) -> the largest point batch it has answered.
+        self._point_batch_ok: dict[tuple[str, int], int] = {}
         # (bbmd_ip, ttl) once registered as a Foreign Device, else None.
         self._bbmd: Optional[tuple[str, int]] = None
         self._bbmd_registered_at: float = 0.0
@@ -401,9 +403,16 @@ class BACnetClient:
                     # Relayed through a BBMD: the router is the origin, not
                     # the BBMD the datagram came from.
                     ip, port = codec.forwarded_origin(data) or addr
-                    routers.append({'ip': ip, 'port': port, 'networks': parsed})
                     networks.update(parsed)
-                    self._log(f"  Router at {ip} -> networks: {parsed}")
+                    # A router can be heard twice, directly and through a
+                    # BBMD: one entry each, its networks merged.
+                    known = next((r for r in routers if r['ip'] == ip), None)
+                    if known is None:
+                        routers.append({'ip': ip, 'port': port, 'networks': list(parsed)})
+                        self._log(f"  Router at {ip} -> networks: {parsed}")
+                    elif set(parsed) - set(known['networks']):
+                        known['networks'] = sorted(set(known['networks']) | set(parsed))
+                        self._log(f"  Router at {ip} -> networks: {known['networks']}")
         finally:
             self._sock.settimeout(old_timeout)
 
@@ -519,7 +528,7 @@ class BACnetClient:
     def _collect_iam(self, deadline: float) -> list[dict[str, Any]]:
         assert self._sock is not None
         out: list[dict[str, Any]] = []
-        seen: set[tuple[str, int]] = set()
+        seen: dict[tuple[str, int], dict[str, Any]] = {}
         per_ip: dict[str, int] = {}
         flooding: set[str] = set()
         old_timeout = self._sock.gettimeout()
@@ -540,6 +549,9 @@ class BACnetClient:
                     continue
                 key = (device.ip, device.instance)
                 if key in seen:
+                    # Heard both through a BBMD and directly: it is direct.
+                    if not device.relayed:
+                        seen[key]['relayed'] = False
                     continue
                 if per_ip.get(device.ip, 0) >= _IAM_PER_IP_LIMIT:
                     if device.ip not in flooding:
@@ -552,9 +564,9 @@ class BACnetClient:
                     self._log(f"  [!] More than {_IAM_TOTAL_LIMIT} devices answered "
                               f"one Who-Is; ignoring the rest")
                     break
-                seen.add(key)
                 per_ip[device.ip] = per_ip.get(device.ip, 0) + 1
-                out.append(_iam_to_dict(device))
+                seen[key] = _iam_to_dict(device)
+                out.append(seen[key])
                 # v2.1.2: Don't log per-I-Am here. The engine applies a
                 # target-spec filter to the results and logs the kept
                 # devices (and a summary of how many were dropped).
@@ -1005,6 +1017,13 @@ class BACnetClient:
         objects instead of per object. A batch the device aborts is halved and
         asked again; a device that refuses batched requests outright, or even
         small batches, is read one index at a time.
+
+        A device whose batches have already worked is on a lossy link when
+        one goes unanswered, not out of room: that batch is asked for again
+        at the same size before it is halved, the size grows back once
+        answers return, and it is never switched to one read per index for
+        good. On one site three controllers dropped to single reads after a
+        burst of lost packets and took minutes each, a 5 s timeout per loss.
         """
         if not prefer_multiple or len(indices) < 2:
             return self._object_list_one_by_one(ip, instance, indices,
@@ -1012,27 +1031,53 @@ class BACnetClient:
 
         out: list[tuple[int, tuple[str, int]]] = []
         batch_size = self._object_list_batch_size(max_apdu)
+        worked = 0           # the largest batch this device has answered
+        retried = False      # this batch has already been asked for twice
+        misses = 0           # failed exchanges in a row
         pos = 0
         while pos < len(indices):
             if stop_fn and stop_fn():
                 break
             batch = indices[pos:pos + batch_size]
             got = self._object_list_rpm_batch(ip, instance, batch, dnet, dadr)
-            if got is None or got is _REFUSED:
-                # An Abort or silence usually means the answer did not fit:
-                # halve and ask again for the same indices. A device that
-                # refuses the request (Error, Reject), or even small
-                # batches, is read one index at a time.
-                if got is None and batch_size > _RPM_MIN_BATCH:
-                    batch_size = max(_RPM_MIN_BATCH, batch_size // 2)
-                    continue
+            if got is _REFUSED or (got is None and not worked
+                                   and batch_size <= _RPM_MIN_BATCH):
+                # Refused (Error, Reject), or silent even to small batches
+                # before any worked: no batched reads here.
                 self._log("    %s does not answer batched objectList reads; "
                           "falling back to one read per index" % ip)
                 out.extend(self._object_list_one_by_one(
                     ip, instance, indices[pos:], dnet, dadr, stop_fn))
                 break
+            if got is None:
+                misses += 1
+                if misses >= _OBJECT_LIST_GIVE_UP:
+                    self._log(f"    [!] {ip} stopped answering objectList reads; "
+                              f"stopping at index {batch[0]}")
+                    break
+                if batch_size <= worked and not retried:
+                    # The answer fits (this size worked): a lost datagram.
+                    retried = True
+                    continue
+                retried = False
+                if batch_size > _RPM_MIN_BATCH:
+                    # Silence or an Abort: the answer may not fit.
+                    batch_size = max(_RPM_MIN_BATCH, batch_size // 2)
+                    continue
+                # Batches worked here before: a bad patch. Read a few one at
+                # a time, then try batches again.
+                chunk = indices[pos:pos + _RPM_MIN_BATCH]
+                single = self._object_list_one_by_one(ip, instance, chunk,
+                                                      dnet, dadr, stop_fn)
+                out.extend(single)
+                misses += len(chunk) - len(single)
+                pos += len(chunk)
+                continue
             out.extend(got)
             pos += len(batch)
+            misses, retried = 0, False
+            worked = max(worked, len(batch))
+            batch_size = max(batch_size, min(worked, batch_size * 2))   # back up after a bad patch
         return out
 
     @staticmethod
@@ -1091,9 +1136,14 @@ class BACnetClient:
                                 ) -> list[tuple[int, tuple[str, int]]]:
         out: list[tuple[int, tuple[str, int]]] = []
         misses = 0
-        for i in indices:
+        for k, i in enumerate(indices):
             if stop_fn and stop_fn():
                 break
+            if k and k % 100 == 0:
+                # One at a time is slow, and slower still on a lossy link
+                # (every lost reply costs a timeout): show it moving.
+                self._log(f"    {ip}: {k} of {len(indices)} objectList entries "
+                          f"read one at a time ({k - len(out)} unanswered)")
             result = self.read_property(ip, 'Device', instance, 'objectList',
                                         array_index=i, dnet=dnet, dadr=dadr)
             if isinstance(result, tuple) and len(result) == 2:
@@ -1271,6 +1321,7 @@ class BACnetClient:
 
         key = (ip, instance)
         pos = 0
+        retried = False
         while pos < len(objects):
             if stop_fn and stop_fn():
                 break
@@ -1280,16 +1331,28 @@ class BACnetClient:
             batch = (_fit_request(objects[pos:pos + size], max_apdu, dnet, dadr)
                      if size else [])
             got = self._point_batch_once(ip, batch, dnet, dadr) if batch else None
+            worked = self._point_batch_ok.get(key, 0)
+            if got is None and batch and len(batch) <= worked and not retried:
+                # Batches this size have been answered: likely a lost
+                # datagram on a lossy link. Ask once more before shrinking.
+                retried = True
+                continue
+            retried = False
             if got is None and batch and size > _POINT_BATCH_MIN:
                 # Shrink and retry the same slice.
                 self._point_batch[key] = max(_POINT_BATCH_MIN, size // 2)
                 continue
             if got is None:
-                if batch:
+                # Batches that have worked here stay on (a bad patch, read
+                # this object on its own); a device that never answered one
+                # is read property by property from now on.
+                if batch and not worked:
                     self._point_batch[key] = 0
                 else:
-                    # Batches are off for this device, or not even one
-                    # object's request fits: read property by property.
+                    # Batches are off for this device, not even one object's
+                    # request fits, or a one-object batch went unanswered
+                    # on a device that answers them: this object, property
+                    # by property.
                     batch = objects[pos:pos + 1]
                 for otype, oinst, props in batch:
                     if stop_fn and stop_fn():
@@ -1299,6 +1362,7 @@ class BACnetClient:
                         prefer_multiple=False, dnet=dnet, dadr=dadr)
             else:
                 results.update(got)
+                self._point_batch_ok[key] = max(worked, len(batch))
                 # Grow slowly while the device keeps up.
                 if len(batch) == size and size < _POINT_BATCH_MAX:
                     self._point_batch[key] = size + 1
@@ -1427,6 +1491,7 @@ def _iam_to_dict(device: IAmDevice) -> dict[str, Any]:
                           if device.vendor_id is not None else "Unknown",
         'source_network': device.source_network,
         'source_address': device.source_address,
+        'relayed':        device.relayed,
         'objects':        [],
         'properties':     {},
     }

@@ -348,3 +348,188 @@ def test_gui_update_click_downloads_installs_and_closes(gui_app, tmp_path, monke
     assert (tmp_path / "staging" / updater.EXE_NAME).read_bytes() == \
         (rel / updater.EXE_NAME).read_bytes()
     assert gui_app.root.destroy in later
+
+
+# -- from the user's second real-site scan ------------------------------------
+
+import socket  # noqa: E402
+import struct  # noqa: E402
+import time  # noqa: E402
+
+from hvac_scanner import bacnet, codec  # noqa: E402
+
+from .mock_device import MockBACnetDevice  # noqa: E402
+
+_IAM_APDU = bytes([0x10, 0x00, 0xC4, 0x02, 0x00, 0x03, 0xE9,   # device 1001
+                   0x22, 0x05, 0xC4, 0x91, 0x03, 0x21, 0x02])
+
+
+def _iam(origin=None):
+    """An I-Am, direct or relayed by a BBMD from `origin`."""
+    if origin is None:
+        return codec.build_bvlc(0x0B, b'\x01\x00' + _IAM_APDU)
+    body = socket.inet_aton(origin) + struct.pack('!H', 47808) + b'\x01\x00' + _IAM_APDU
+    return codec.build_bvlc(codec.BVLC_FORWARDED_NPDU, body)
+
+
+def test_an_iam_relayed_by_a_bbmd_is_marked_relayed():
+    assert codec.parse_iam(_iam("10.0.1.83"), ("10.0.0.108", 47808)).relayed
+    assert not codec.parse_iam(_iam(), ("10.0.1.83", 47808)).relayed
+
+
+def test_a_device_heard_directly_as_well_counts_as_direct():
+    class Sock:
+        def __init__(self, packets):
+            self.packets = packets
+
+        def gettimeout(self):
+            return 1.0
+
+        def settimeout(self, t):
+            pass
+
+        def recvfrom(self, n):
+            if not self.packets:
+                raise socket.timeout()
+            return self.packets.pop(0)
+
+    c = bacnet.BACnetClient(timeout=0.2)
+    c._sock = Sock([(_iam("10.0.1.83"), ("10.0.0.108", 47808)),
+                    (_iam(), ("10.0.1.83", 47808))])
+    devs = c._collect_iam(time.time() + 1)
+    assert [(d['ip'], d['relayed']) for d in devs] == [("10.0.1.83", False)]
+
+
+def test_silent_addresses_behind_relayed_answers_are_probed():
+    """The quick scan heard 83 of 112 controllers on 10.0.1.x through the
+    BBMD, took the subnet as reached by broadcast, and never asked the other
+    29. Answers a BBMD relayed no longer count as the broadcast reaching it."""
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+
+    class Client:
+        probed = None
+
+        def discover_unicast(self, ips, stop_fn=None):
+            Client.probed = list(ips)
+            return []
+
+    lines = []
+    eng = ScanEngine(ScanOptions(networks=["10.9.8.1-3", "10.9.9.1-3"]), callback=lines.append)
+    eng._is_local = lambda ip: False
+    seen = {("10.9.8.1", 5), ("10.9.9.1", 6)}
+    eng._discover_unicast(Client(), set(eng._target_ips_in_order()), seen,
+                          direct={"10.9.8.1"})          # 10.9.9.1 came via a BBMD
+    assert Client.probed == ["10.9.9.2", "10.9.9.3"]
+    assert any("10.9.9.0/24 answered only through a BBMD" in l for l in lines)
+
+
+@pytest.fixture
+def mock_client(monkeypatch):
+    def _open(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(self.timeout)
+        s.bind(("", 0))
+        self._sock, self._bound_port = s, s.getsockname()[1]
+        return self._bound_port
+    monkeypatch.setattr(bacnet.BACnetClient, "open", _open)
+    made = []
+
+    def _make(timeout=0.3):
+        c = bacnet.BACnetClient(timeout=timeout)
+        c.open()
+        made.append(c)
+        return c
+    yield _make
+    for c in made:
+        c.close()
+
+
+def test_object_list_rides_out_a_burst_of_lost_batches(mock_client):
+    """10.0.1.83, .84 and .89 dropped to one read per index after lost
+    batches and took minutes each. Once batches have worked, silence is a
+    lost packet: ask again, shrink only if that fails too, grow back."""
+    n = 300
+    with MockBACnetDevice(n_objects=n, rpm_mode='full', drop_rpm={2, 3, 4, 5, 6, 7}) as dev:
+        got = mock_client().read_object_list_entries_indexed(
+            '127.0.0.1', 1234, list(range(1, n + 1)), max_apdu=dev.max_apdu)
+    assert [i for i, _ in got] == list(range(1, n + 1))
+    assert dev.single_reads == 0
+    assert dev.rpm_requests <= 14
+
+
+def test_object_list_still_falls_back_when_batches_never_work(mock_client):
+    n = 40
+    with MockBACnetDevice(n_objects=n, rpm_mode='full', drop_rpm=range(1, 1000)) as dev:
+        got = mock_client().read_object_list_entries_indexed(
+            '127.0.0.1', 1234, list(range(1, n + 1)), max_apdu=dev.max_apdu)
+    assert [i for i, _ in got] == list(range(1, n + 1))
+    assert dev.rpm_requests <= 6            # halved down, no extra asks
+
+
+def test_point_batches_stay_on_after_a_burst_of_lost_batches(mock_client):
+    with MockBACnetDevice(n_objects=60, rpm_mode='full', drop_rpm={2, 3, 4, 5}) as dev:
+        objs = [(t, i, ['objectName', 'presentValue']) for t, i in dev.objects]
+        out = mock_client().read_points_batched('127.0.0.1', 1234, objs)
+    assert all(props.get('objectName') for _t, _i, props in out)
+    assert dev.single_reads == 0
+
+
+def test_progress_names_the_devices_a_deep_scan_is_waiting_on():
+    """The normal scan sat at 180 / 183 for minutes with nothing saying why."""
+    import threading
+    from hvac_scanner.engine import ScanEngine, ScanOptions
+    release = threading.Event()
+    phases, lines = [], []
+    eng = ScanEngine(ScanOptions(networks=["10.0.0.0/24"], bacnet_workers=4),
+                     callback=lines.append,
+                     progress_callback=lambda p, d, t: phases.append((p, d, t)))
+
+    def deep_read(client, dev, buffered=False):
+        if dev['ip'] == "10.0.0.83":
+            release.wait(10)
+
+    eng._deep_read = deep_read
+    devs = [{'ip': f"10.0.0.{i}", 'instance': i, 'protocol': 'BACnet/IP'} for i in range(80, 90)]
+    t = threading.Thread(target=eng._deep_scan_devices, args=(None, devs))
+    t.start()
+    for _ in range(100):
+        if any(d == 9 for _p, d, _t in phases):
+            break
+        time.sleep(0.05)
+    release.set()
+    t.join(10)
+    assert ("BACnet deep scan · still reading 10.0.0.83", 9, 10) in phases
+    assert any(l.startswith("  Still reading 10.0.0.83 (") for l in lines)
+    assert phases[-1] == ("BACnet deep scan", 10, 10)
+
+
+def test_a_router_heard_directly_and_through_a_bbmd_is_listed_once():
+    msg = bytes([0x01, 0x80, 0x01, 0x00, 0x6A])            # I-Am-Router-To-Network 106
+    direct = codec.build_bvlc(0x0B, msg)
+    relayed = codec.build_bvlc(codec.BVLC_FORWARDED_NPDU,
+                               socket.inet_aton("10.0.1.100") + struct.pack('!H', 47808) + msg)
+
+    class Sock:
+        packets = [(direct, ("10.0.1.100", 47808)), (relayed, ("10.0.0.108", 47808))]
+
+        def sendto(self, *a):
+            pass
+
+        def gettimeout(self):
+            return 1.0
+
+        def settimeout(self, t):
+            pass
+
+        def recvfrom(self, n):
+            if not self.packets:
+                raise socket.timeout()
+            return self.packets.pop(0)
+
+    lines = []
+    c = bacnet.BACnetClient(timeout=0.2, callback=lines.append)
+    c._sock = Sock()
+    routers, nets = c.discover_routers("10.0.0.255")
+    assert [(r['ip'], r['networks']) for r in routers] == [("10.0.1.100", [106])]
+    assert nets == [106]
+    assert sum("Router at 10.0.1.100" in l for l in lines) == 1
