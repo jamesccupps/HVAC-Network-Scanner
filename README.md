@@ -330,6 +330,30 @@ Exit codes:
 
 ## What's new
 
+### v2.10.0 (2026-11-06)
+
+Tested on a real site over four rounds. Full list in
+[CHANGELOG.md](CHANGELOG.md).
+
+- **Updates from inside the app**: the executable checks once a day and
+  installs a new release with one click, after checking it against a signed
+  manifest; if anything fails the previous exe is put back. Copies older
+  than 2.10 update by hand once.
+- **Devices only** depth for a fast inventory, and a **per-device time
+  limit** (180 s by default) so one bad controller cannot hold a scan up.
+- **A log that says where the time went**: the clock on every section, how
+  long each device took and how many requests it left unanswered, and a
+  time summary at the end. The report lists controllers that drop requests.
+- **Finds the whole site**: every silent address on another subnet is
+  probed (and asked twice), whatever answered through a BBMD; lost packets
+  no longer drop a controller to slow single reads; devices answering from
+  outside the targets are named by subnet; the export records the BACnet
+  port and the address the scan ran from.
+- **Devices named for what they are** (DXR2 models, PXC Modular/Compact,
+  Desigo PXC4/5/7, Insight, Tracer Ensemble, drives, gateways); the same
+  fault on many identical controllers is one report row; the dark theme's
+  scrollbars are visible.
+
 ### v2.9.1 (2026-11-06)
 
 Fixes from an external review: robustness against broken or hostile
