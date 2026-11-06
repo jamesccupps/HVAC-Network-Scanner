@@ -877,8 +877,6 @@ class ScanEngine:
                           f"(saved {saved} redundant Who-Is broadcasts).")
 
             seen_devices: set[tuple[str, Any]] = set()
-            # Addresses whose I-Am came straight to us, not relayed by a BBMD.
-            direct_ips: set[str] = set()
             to_scan: list[dict[str, Any]] = []
             heard_any = False
 
@@ -918,8 +916,6 @@ class ScanEngine:
                             net = str(ip)
                         outside[net] = outside.get(net, 0) + 1
                         continue
-                    if not dev.get('relayed'):
-                        direct_ips.add(ip)
                     dedup_key = (ip, dev.get('instance'))
                     if dedup_key in seen_devices:
                         duplicates += 1
@@ -963,8 +959,7 @@ class ScanEngine:
                 to_scan.extend(kept)
 
             if not self._stopped():
-                found = self._discover_unicast(client, allowed_ips, seen_devices,
-                                               direct_ips)
+                found = self._discover_unicast(client, allowed_ips, seen_devices)
                 to_scan.extend(found)
                 heard_any = heard_any or bool(found)
 
@@ -1043,8 +1038,7 @@ class ScanEngine:
 
     def _discover_unicast(self, client: BACnetClient,
                           allowed_ips: "set[str] | None",
-                          seen: set[tuple[str, Any]],
-                          direct: "set[str] | None" = None) -> list[dict[str, Any]]:
+                          seen: set[tuple[str, Any]]) -> list[dict[str, Any]]:
         """Probe target addresses a broadcast cannot have reached.
 
         Who-Is does not cross a router. When the building system sits on its
@@ -1052,9 +1046,6 @@ class ScanEngine:
         run a BAS network — broadcast discovery finds nothing even though
         unicast BACnet to every controller works. See
         BACnetClient.discover_unicast for the probe itself.
-
-        `direct` holds the addresses whose I-Am came straight back rather
-        than relayed by a BBMD (None: treat every answer as direct).
         """
         mode = (self.opts.unicast_discovery or "auto").lower()
         if mode == "off" or self.opts.bbmd or allowed_ips is None:
@@ -1062,25 +1053,16 @@ class ScanEngine:
         answered = {ip for ip, _inst in seen}
         candidates = [ip for ip in self._target_ips_in_order() if ip not in answered]
         if mode == "auto":
-            def net24(ip: str) -> str:
-                return str(ipaddress.ip_network(f"{ip}/24", strict=False))
-            # A /24 that answered the broadcast directly is evidently reachable
-            # by broadcast, whatever the routing table says; its silent
-            # addresses are just silent. Answers a BBMD relayed prove less:
-            # the relay drops replies under load (on one site it passed on 0
-            # of 112 devices in one scan and 83 in the next), so that subnet's
-            # silent addresses are still probed.
-            heard = {net24(ip) for ip in (answered if direct is None else direct)}
-            relayed = {net24(ip) for ip in answered} - heard
-            candidates = [ip for ip in candidates
-                          if net24(ip) not in heard and not self._is_local(ip)]
+            # Every silent target on another subnet is probed, whatever
+            # answered the broadcast from there. Answers from another subnet
+            # say nothing about whether the broadcast covered it: a BBMD's
+            # relay passed on none of one site's 112 controllers in one scan
+            # and 83 in the next, and the BBMD itself answers directly. Both
+            # once made the scanner skip the rest of the subnet. Probing the
+            # silent addresses costs one short wait (two at most).
+            candidates = [ip for ip in candidates if not self._is_local(ip)]
             if not candidates:
                 return []
-            partly = sorted(relayed & {net24(ip) for ip in candidates})
-            if partly:
-                self._log(f"\n  {', '.join(partly)} answered only through a BBMD, "
-                          f"which can drop replies; probing the silent addresses "
-                          f"there directly.")
             if len(candidates) > UNICAST_AUTO_LIMIT:
                 self._log(f"  {len(candidates)} target address(es) are on another "
                           f"subnet, where a broadcast does not reach. That is more "

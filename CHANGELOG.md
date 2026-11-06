@@ -61,8 +61,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   answers from another subnet that arrive through a BBMD's relay prove
   little: on one site the relay passed on none of 112 controllers' replies
   in one scan and 83 in the next. Those 83 made the scanner treat the subnet
-  as reached and never ask the other 29. Only direct answers count now; a
-  subnet heard through a relay has its silent addresses probed.
+  as reached and never ask the other 29; in a later scan the BBMD's own
+  direct answer did the same to all 112. Every silent target on another
+  subnet is now probed, whatever answered the broadcast from there.
 - **Lost packets no longer slow a controller to a crawl.** Once batched
   reads (objectList, point properties) have worked on a controller, an
   unanswered one is asked again at the same size before the batch is
@@ -78,7 +79,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "bath controller" (E18: "heat pump controller", the program one site
   runs). Known models now set type and description from the makers'
   catalogues: DXR2 E10PL / E12P / E18, PXC Modular / Compact (told apart by
-  firmware), Insight, Desigo CC, Tracer Ensemble, Trane TR200 and Yaskawa
+  firmware), Desigo PXC4 / PXC5 / PXC7, Insight, Desigo CC, Tracer Ensemble, Trane TR200 and Yaskawa
   HV600 drives, and the MelcoBEMS MINI gateway.
 - The dark theme's scrollbars were dark grey on dark grey; the thumb is now
   a lighter grey that brightens under the pointer.

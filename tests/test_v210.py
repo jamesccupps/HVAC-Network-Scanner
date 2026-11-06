@@ -400,10 +400,11 @@ def test_a_device_heard_directly_as_well_counts_as_direct():
     assert [(d['ip'], d['relayed']) for d in devs] == [("10.0.1.83", False)]
 
 
-def test_silent_addresses_behind_relayed_answers_are_probed():
-    """The quick scan heard 83 of 112 controllers on 10.0.1.x through the
-    BBMD, took the subnet as reached by broadcast, and never asked the other
-    29. Answers a BBMD relayed no longer count as the broadcast reaching it."""
+def test_silent_addresses_on_another_subnet_are_probed_whatever_answered():
+    """Answers from another subnet do not show a broadcast covers it. The
+    quick scan heard 83 of 112 controllers on 10.0.1.x through the BBMD and
+    skipped the other 29; a later one heard only the BBMD itself, which
+    answers directly, and skipped all 112."""
     from hvac_scanner.engine import ScanEngine, ScanOptions
 
     class Client:
@@ -413,14 +414,11 @@ def test_silent_addresses_behind_relayed_answers_are_probed():
             Client.probed = list(ips)
             return []
 
-    lines = []
-    eng = ScanEngine(ScanOptions(networks=["10.9.8.1-3", "10.9.9.1-3"]), callback=lines.append)
+    eng = ScanEngine(ScanOptions(networks=["10.0.1.198-202"]), callback=lambda m: None)
     eng._is_local = lambda ip: False
-    seen = {("10.9.8.1", 5), ("10.9.9.1", 6)}
-    eng._discover_unicast(Client(), set(eng._target_ips_in_order()), seen,
-                          direct={"10.9.8.1"})          # 10.9.9.1 came via a BBMD
-    assert Client.probed == ["10.9.9.2", "10.9.9.3"]
-    assert any("10.9.9.0/24 answered only through a BBMD" in l for l in lines)
+    seen = {("10.0.1.200", 112000)}                       # the BBMD, answering directly
+    eng._discover_unicast(Client(), set(eng._target_ips_in_order()), seen)
+    assert Client.probed == ["10.0.1.198", "10.0.1.199", "10.0.1.201", "10.0.1.202"]
 
 
 @pytest.fixture
@@ -542,6 +540,7 @@ def test_a_router_heard_directly_and_through_a_bbmd_is_listed_once():
     (7, "Siemens Schweiz", "Siemens BACnet Field Panel", "PXME V3.5.5 BACnet 4.3g", 112000, 1476,
      "Automation Station", "PXC Modular"),
     (7, "Siemens Schweiz", "Insight", "", 9997, 1476, "Management Station", "Insight"),
+    (7, "Siemens Schweiz", "PXC5.E24.A", "", 107100, 1476, "Automation Station", "Desigo PXC5"),
     (2, "The Trane Company", "TES Workstation", "", 125, 1476, "Management Station", "Tracer Ensemble"),
     (2, "The Trane Company", "TR200", "", 5, 480, "Variable Frequency Drive", "TR200"),
     (141, "Yaskawa America", "HV60U", "", 6, 480, "Variable Frequency Drive", "HV600"),
