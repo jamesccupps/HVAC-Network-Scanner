@@ -352,3 +352,85 @@ def mock_client_v211(monkeypatch):
     yield _make
     for c in made:
         c.close()
+
+
+# -- firmware covered by published advisories ------------------------------------
+
+from hvac_scanner import advisories  # noqa: E402
+
+
+def _bacnet(model, vendor="Siemens Schweiz", ip="10.0.0.9", **props):
+    return {'ip': ip, 'protocol': 'BACnet/IP', 'vendor_name': vendor,
+            'properties': {'model_name': model, 'vendor_name': vendor, **props}}
+
+
+@pytest.mark.parametrize("reported,fixed,expected", [
+    ("v5.70.1731 (release)", "6.30.2313", "affected"),
+    ("v6.30.2313 (release)", "6.30.2313", "fixed"),
+    ("PXME V3.5.5 BACnet 4.3g", "3.5.7", "affected"),   # the BACnet 4.3g after it is not the version
+    ("PXME V3.5.7 BACnet 4.3g", "3.5.7", "fixed"),
+    ("v01.21", "01.21.142.5", "check"),                 # too short to place
+    ("FW=01.21.29.141;WPC=1.4.131;", "01.21.142.5", "affected"),
+    ("01.21.233.16", "01.21.142.5", "fixed"),
+    ("", "3.5.7", "check"),
+])
+def test_versions_are_compared_component_by_component(reported, fixed, expected):
+    assert advisories.compare(reported, fixed) == expected
+
+
+def test_a_tracer_sc_plus_before_the_fix_is_affected_and_after_it_is_not():
+    old = advisories.for_device(_bacnet("Tracer SC+", "Trane",
+                                        application_software_version="v5.70.1731 (release)"))
+    assert [(m['advisory'].id, m['status']) for m in old] == [("ICSA-26-071-01", "affected")]
+    assert advisories.for_device(_bacnet("Tracer SC+", "Trane",
+                                         application_software_version="v6.30.2313")) == []
+
+
+def test_apogee_pxc_bacnet_firmware_by_version():
+    def ids(fw):
+        return {m['advisory'].id: m['status'] for m in advisories.for_device(
+            _bacnet("Siemens BACnet Field Panel", firmware_revision=fw))}
+    assert ids("EPXC V3.5.1 BACnet 4.3g") == {
+        "ICSA-22-349-16": "affected", "ICSA-22-286-12": "affected", "ICSA-26-295-08": "affected",
+        "ICSA-25-044-11": "no fix", "ICSA-25-135-14": "no fix", "ICSA-25-254-05": "no fix"}
+    assert ids("PXME V3.5.7 BACnet 4.3g") == {
+        "ICSA-25-044-11": "no fix", "ICSA-25-135-14": "no fix", "ICSA-25-254-05": "no fix"}
+    assert ids("") == {}                                # not a PXC line we can place
+
+
+def test_other_vendors_and_unrelated_models_match_nothing():
+    assert advisories.for_device(_bacnet("Tracer SC+", "Siemens Schweiz",
+                                         application_software_version="v1.0")) == []
+    assert advisories.for_device(_bacnet("DXR2.E12P-1", "The Trane Company",
+                                         firmware_revision="v01.21")) == []
+    assert advisories.for_device(_bacnet("Symbio 400-500", "Trane",
+                                         application_software_version="v1.0")) == []
+
+
+def test_every_advisory_entry_is_well_formed():
+    import re
+    for a in advisories.ADVISORIES:
+        assert re.fullmatch(r"ICSA-\d{2}-\d{3}-\d{2}", a.id), a.id
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.published)
+        assert a.cves and all(re.fullmatch(r"CVE-\d{4}-\d{4,}", c) for c in a.cves)
+        assert 0 < a.cvss <= 10
+        assert a.field in ('firmware_revision', 'application_software_version')
+        assert a.fixed is not None or a.note, a.id         # no fix must say why
+        assert a.url.startswith("https://www.cisa.gov/")
+
+
+def test_the_report_lists_affected_firmware_and_what_to_check():
+    from hvac_scanner.report import build_findings
+    devs = [_bacnet("Tracer SC+", "Trane", ip="10.0.0.19", application_software_version="v5.70.1731 (release)"),
+            _bacnet("Tracer SC+", "Trane", ip="10.0.0.21", application_software_version="v5.70.1731 (release)"),
+            _bacnet("DXR2.E12P-1", ip="10.0.1.81", firmware_revision="v01.21"),
+            _bacnet("DXR2.E12P-1", ip="10.0.1.82", firmware_revision=""),
+            {'ip': '10.0.0.90', 'protocol': 'APOGEE P2', 'p2_role': 'field panel'}]
+    titles = {f.title: f for f in build_findings({'devices': devs})}
+    hit = titles["Firmware covered by published security advisories"]
+    assert hit.severity == "high"
+    assert hit.rows == [["10.0.0.19, 10.0.0.21", "Tracer SC+ (2 devices)", "v5.70.1731 (release)",
+                         "ICSA-26-071-01 (update to 6.30.2313)"]]
+    check = titles["Firmware to check against published advisories"]
+    assert [r[:3] for r in check.rows] == [["10.0.1.82", "DXR2.E12P-1", "not read"],
+                                           ["10.0.1.81", "DXR2.E12P-1", "v01.21"]]

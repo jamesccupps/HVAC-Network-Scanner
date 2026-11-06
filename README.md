@@ -14,7 +14,7 @@ Looking for a Siemens APOGEE P2 scanner or P2 Wireshark Decoder? See this projec
 
 ## What it does
 
-Scans a network and tells you what building-automation gear lives on it. For each device found it tries to identify the exact model, pull readable points or registers, and surface the factory-default credentials that ship with that product so you can confirm they've been changed.
+Scans a network and tells you what building-automation gear lives on it. For each device found it tries to identify the exact model, pull readable points or registers, and surface the factory-default credentials that ship with that product so you can confirm they've been changed. The report also checks the firmware each controller reports against published CISA ICS advisories (Trane Tracer SC+, Siemens APOGEE PXC, Desigo PXC and DXR2, Desigo CC), and says which to update and which to check by hand.
 
 Works against:
 
@@ -576,6 +576,7 @@ hvac_scanner/
 ├── certs.py           # Minimal X.509 parsing for HTTPS probes
 ├── diff.py            # Baseline comparison (what changed since last scan)
 ├── report.py          # HTML survey report (findings, inventory, services)
+├── advisories.py      # Published ICS advisories matched to reported firmware
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
@@ -597,7 +598,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 824 tests
+tests/                 # 837 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions

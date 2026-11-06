@@ -453,6 +453,57 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "workstation that no longer exists, these alarms go nowhere.",
             ["Address", "Device", "Class", "Name", "Recipient"], rows))
 
+    # Firmware covered by published security advisories (advisories.py)
+    from .advisories import for_device
+    hit: dict[tuple, list] = {}
+    check: dict[tuple, list] = {}
+    worst = 0.0
+    for d in devices:
+        if not str(d.get('protocol', '')).startswith('BACnet'):
+            continue
+        model = (d.get('properties') or {}).get('model_name', '')
+        found = for_device(d)
+        firm = [m for m in found if m['status'] in ('affected', 'no fix')]
+        if firm:
+            reported = firm[0]['reported']
+            hit.setdefault((model, reported, tuple(
+                (m['advisory'].id, m['advisory'].fixed if m['status'] == 'affected' else None)
+                for m in firm)), []).append(d)
+            worst = max([worst] + [m['advisory'].cvss for m in firm])
+        checks = tuple(f"{m['advisory'].id}: {m['advisory'].note}"
+                       for m in found if m['status'] == 'check')
+        if checks:
+            reported = next(m['reported'] for m in found if m['status'] == 'check')
+            check.setdefault((model, reported or "not read", checks), []).append(d)
+    rows = []
+    for (model, reported, advs), ds in sorted(hit.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        rows.append([_addresses(d.get('ip') for d in ds),
+                     model + (f" ({len(ds)} devices)" if len(ds) > 1 else ""), reported,
+                     "; ".join(f"{a} (update to {fix})" if fix else f"{a} (no fix yet)"
+                               for a, fix in advs)])
+    if rows:
+        out.append(Finding(
+            "high" if worst >= 7.0 else "medium",
+            "Firmware covered by published security advisories",
+            "CISA has published advisories for the firmware these devices report: each is "
+            "older than the version its advisory says to update to, or the advisory has no "
+            "fixed version yet. Plan the updates; until then, the advisories list mitigations, "
+            "chiefly limiting who can reach the devices. The scanner compared versions only "
+            "and did not test for the vulnerabilities. Advisories: "
+            "cisa.gov/news-events/ics-advisories.",
+            ["Address", "Model", "Reports", "Advisories"], rows))
+    rows = [[_addresses(d.get('ip') for d in ds),
+             model + (f" ({len(ds)} devices)" if len(ds) > 1 else ""), reported, "; ".join(checks)]
+            for (model, reported, checks), ds in sorted(check.items())]
+    if rows:
+        out.append(Finding(
+            "low", "Firmware to check against published advisories",
+            "An advisory covers these models, but the version they report cannot be placed "
+            "against its fix (it is too short, was not read, or the advisory names a release "
+            "the device does not report). Look up the installed version in the vendor's tool "
+            "and compare.",
+            ["Address", "Model", "Reports", "Advisories"], rows))
+
     # Network health: controllers that left the scanner's requests unanswered
     lossy = []
     for d in devices:
