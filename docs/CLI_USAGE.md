@@ -30,7 +30,7 @@ is also on your PATH and is equivalent.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout SECONDS` | `5` | Per-operation timeout, more than 0. BACnet-heavy devices may benefit from 8–10. |
+| `--timeout SECONDS` | `5` | Per-operation timeout, more than 0: the longest wait. A BACnet device that has answered a few requests gets four times its slowest recent reply instead (at least 1 s), so a device that drops requests costs about a second per drop. BACnet-heavy devices may benefit from 8–10. |
 | `--rate-limit MS` | `0` | Minimum ms between BACnet packets to the same IP. Set to `50` for small field controllers (UC400, FEC, BASRT). |
 | `--max-objects N` | unset | Ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Whatever the profile says, no device is enumerated past 20,000 objects unless this is set higher. |
 | `--max-hosts N` | `65536` | Refuse to scan more than N addresses in total, across all targets. A guard against a mistyped prefix. |
@@ -62,11 +62,13 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 | `--no-services` | Skip the HVAC-services TCP port scan. |
 | `--no-snmp` | Skip SNMP `sysDescr` probe. |
 | `--no-knx` | Skip KNXnet/IP gateway detection (one description request per target on UDP 3671). |
+| `--no-lon` | Skip LonWorks/IP (IP-852) detection (one device configuration request per target on UDP 1628; nothing configured or joined). |
+| `--no-gateways` | Skip serial gateway detection (Moxa's identify request per target on UDP 4800; never its credential functions). |
 | `--no-p2` | Skip Siemens APOGEE P2 detection on TCP/5033 (one identify frame with a foreign BLN name per open port; no handshake, nothing registered). |
 | `--no-deep` | Skip deep-scan. Discovery only — no object lists, no register reads. |
 | `--no-metadata` | Skip trend log, schedule, calendar and Network Port metadata in the deep scan. |
 | `--no-bbmd-tables` | Skip reading BBMDs' broadcast and foreign-device tables. |
-| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp --no-p2 --no-knx`. |
+| `--bacnet-only` | Shortcut for `--no-modbus --no-services --no-snmp --no-p2 --no-knx --no-lon --no-gateways`. |
 
 ### Output
 

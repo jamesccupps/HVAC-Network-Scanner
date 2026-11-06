@@ -10,6 +10,8 @@ extended without touching scan logic.
 
 from __future__ import annotations
 
+import re
+
 from typing import Any, Iterable, Optional
 
 from .constants import BACNET_VENDORS, DEFAULT_CREDS
@@ -129,6 +131,11 @@ _KNOWN_MODELS: list[tuple[str, str, str, str]] = [
     ('', 'melcobems', 'Gateway',
      'MelcoBEMS MINI: one Mitsubishi Electric indoor unit on BACnet'),
 ]
+
+
+# A Moxa product named on its own web page: "NPort 5150", "MGate 5105-MB-EIP".
+_MOXA_PRODUCT = re.compile(r"\b(nport|mgate|oncell)[ -]?([a-z]?\d{3,5}[a-z0-9-]*)", re.IGNORECASE)
+_MOXA_FAMILIES = {'nport': 'NPort', 'mgate': 'MGate', 'oncell': 'OnCell'}
 
 
 def _known_model(vendor: str, model: str, firmware: str) -> "Optional[tuple[str, str]]":
@@ -359,6 +366,33 @@ def fingerprint_device(dev: dict[str, Any],
         info['description'] = (f"KNX {dev.get('medium', '')} gateway, individual address "
                                f"{dev.get('knx_address', '?')}; offers "
                                f"{', '.join(f for f in families if f) or 'no services'}")
+
+    # --- LonWorks/IP (IP-852) ------------------------------------------
+    elif protocol == 'LonWorks/IP':
+        # The reply names the node type and the name the site gave the
+        # device, not the product: leave the model blank rather than guess.
+        node = dev.get('node_type') or 'IP-852 device'
+        info['device_type'] = ('LonWorks/IP Router' if 'router' in node.lower()
+                               else 'LonWorks/IP Device')
+        info['description'] = (f"IP-852 {node}"
+                               + (f", config server {dev['config_server']}"
+                                  if dev.get('config_server') else ""))
+
+    # --- Moxa serial gateways -------------------------------------------
+    elif protocol == 'Moxa':
+        # The identify reply gives a model code, not a product name, and the
+        # protocol is shared by NPort, MGate and OnCell: say only that.
+        info['model'] = f"Moxa (model code {dev.get('model_code', '?')})"
+        # Its own web page names the product: trust that, nothing else.
+        for p in (80, 443):
+            m = _MOXA_PRODUCT.search(' '.join(
+                (ip_services.get(p) or {}).get(k) or '' for k in ('title', 'server')))
+            if m:
+                info['model'] = f"Moxa {_MOXA_FAMILIES[m.group(1).lower()]} {m.group(2).upper()}"
+                break
+        info['device_type'] = 'Serial Gateway'
+        info['description'] = ('Answers Moxa\'s device search on UDP 4800, used by NPort '
+                               'serial device servers and MGate and OnCell gateways')
 
     # --- SNMP devices -------------------------------------------------
     elif protocol == 'SNMP':

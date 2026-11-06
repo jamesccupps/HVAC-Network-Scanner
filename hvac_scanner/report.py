@@ -29,7 +29,8 @@ from typing import Any, Optional
 from . import __version__
 
 SEVERITIES = ("high", "medium", "low", "info")
-_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2', 'KNXnet/IP')
+_PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2', 'KNXnet/IP',
+            'LonWorks/IP', 'Moxa')
 _CLEARTEXT = {21: "FTP", 23: "Telnet"}
 _HTTPS_PORTS = {443, 8443}
 _HTTP_PORTS = {80, 8080, 8000, 8888, 9090}
@@ -472,6 +473,32 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "sees the same drops, and each one cost this scan a full timeout.",
             ["Address", "Device", "Unanswered", "Scan took"], rows))
 
+    rows = [[d.get('ip'), d.get('name', ''), d.get('node_type', ''),
+             "yes" if d.get('auth_supported') else "no"]
+            for d in devices if d.get('protocol') == 'LonWorks/IP' and not d.get('authenticated')]
+    if rows:
+        out.append(Finding(
+            "low", "LonWorks/IP (IP-852) devices without authentication",
+            "These devices answered without IP-852 authentication, the MD5 digest the "
+            "standard adds to every packet on a channel that turns it on. Without it nothing "
+            "on the channel checks who sent a packet, so anyone who can reach UDP 1628 and "
+            "1629 there can try to put LonTalk traffic on it. Restrict who can reach those "
+            "ports, and turn authentication on where the devices support it.",
+            ["Address", "Name", "Node type", "Supports authentication"], rows))
+
+    rows = [[d.get('ip'), str(d.get('model_code', '')), d.get('mac', '')]
+            for d in devices if d.get('protocol') == 'Moxa']
+    if rows:
+        out.append(Finding(
+            "medium", "Moxa gateways answering their management protocol",
+            "These devices answer Moxa's management protocol on UDP 4800 without a "
+            "password. On older firmware the same protocol also gives anyone the admin "
+            "password and SNMP community (CVE-2016-9361, ICS-CERT ICSA-16-336-02). The "
+            "scanner only asked them to identify themselves and did not test that: check "
+            "their firmware against the advisory, and restrict who can reach UDP 4800. "
+            "They are also where serial buses (P1, N2, MS/TP, Modbus RTU) reach the network.",
+            ["Address", "Model code", "MAC"], rows))
+
     # The BACnet network beyond the scanned addresses
     rows = []
     for d in bbmds:
@@ -485,6 +512,28 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "Broadcasts on any of these subnets reach all of them. Peers not covered "
             "by this survey are parts of the same BACnet network worth scanning too.",
             ["BBMD", "Peer BBMDs"], rows))
+
+    ua = [d for d in services if (d.get('opcua') or {}).get('endpoints')]
+    rows = [[d.get('ip'), str(d.get('port')), d['opcua'].get('application_name', ''),
+             ', '.join(e['security_policy'] for e in d['opcua']['endpoints']
+                       if e.get('security_mode') == 'None')]
+            for d in ua if d['opcua'].get('security_none')]
+    if rows:
+        out.append(Finding(
+            "medium", "OPC UA servers offering unsecured endpoints",
+            "These servers offer an endpoint with security mode None: messages on it are "
+            "neither signed nor encrypted, so anyone on the path can read or alter them. "
+            "Remove the None endpoint unless something still needs it.",
+            ["Address", "Port", "Application", "Policy"], rows))
+    rows = [[d.get('ip'), str(d.get('port')), d['opcua'].get('application_name', '')]
+            for d in ua if d['opcua'].get('anonymous')]
+    if rows:
+        out.append(Finding(
+            "medium", "OPC UA servers allowing anonymous sessions",
+            "These servers accept an Anonymous user token: anyone who can reach them can "
+            "open a session without a login. What a session can then read or write "
+            "depends on the server's own permissions, which the scanner did not test.",
+            ["Address", "Port", "Application"], rows))
 
     rows = [[d.get('ip'), str(d.get('port')), d.get('tls_summary', '')]
             for d in services if d.get('sc_role') and d.get('tls_client_cert_required')]
@@ -591,11 +640,13 @@ def _table(columns: list[str], rows: list[list[Any]], mono: tuple[int, ...] = (0
 
 
 _PASS_LABELS = {'bacnet': 'BACnet/IP', 'mstp': 'BACnet MS/TP', 'modbus': 'Modbus TCP',
-                'p2': 'APOGEE P2', 'knx': 'KNXnet/IP', 'services': 'Service ports',
+                'p2': 'APOGEE P2', 'knx': 'KNXnet/IP', 'lon': 'LonWorks/IP',
+                'gateways': 'Serial gateways',
+                'services': 'Service ports',
                 'snmp': 'SNMP', 'all': 'Everything'}
 _CARD_PASS = {'BACnet/IP': 'bacnet', 'MS/TP': 'mstp', 'Modbus': 'modbus',
               'Service ports': 'services', 'SNMP': 'snmp', 'APOGEE P2': 'p2',
-              'KNXnet/IP': 'knx'}
+              'KNXnet/IP': 'knx', 'LonWorks/IP': 'lon', 'Serial gateways': 'gateways'}
 
 
 def coverage_gaps(scan: dict[str, Any]) -> list[tuple[str, str]]:
@@ -682,6 +733,7 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
              ("MS/TP", counts.get('mstp', 0)), ("Modbus", counts.get('modbus', 0)),
              ("Service ports", counts.get('services', 0)), ("SNMP", counts.get('snmp', 0)),
              ("APOGEE P2", counts.get('p2', 0)), ("KNXnet/IP", counts.get('knx', 0)),
+             ("LonWorks/IP", counts.get('lon', 0)), ("Serial gateways", counts.get('gateways', 0)),
              ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged),
              ("Trend logs", len(trends)), ("Schedules", len(schedules))]
     # A pass that did not run shows a dash, not a 0 that reads as "none here";
@@ -755,12 +807,13 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
             else (f"unit {d.get('unit_id')}" if d.get('protocol') == 'Modbus TCP'
                   else (f"TCP {d.get('port')}" if d.get('protocol') == 'APOGEE P2'
                         else (f"KNX {d.get('knx_address')}" if d.get('protocol') == 'KNXnet/IP'
-                              else '')))
+                              else (f"UDP {d.get('port')}" if d.get('protocol') in ('LonWorks/IP', 'Moxa')
+                                    else ''))))
         if d.get('source_network'):
             ident = f"{ident} (MS/TP {d.get('source_network')}:{d.get('source_address')})"
         flags = d.get('point_flags') or {}
         inv_rows.append([
-            d.get('ip'), d.get('protocol'), ident, props.get('object_name', ''),
+            d.get('ip'), d.get('protocol'), ident, props.get('object_name') or d.get('name', ''),
             props.get('model_name') or d.get('identified_model') or d.get('product') or '',
             d.get('vendor_name') or d.get('vendor') or '',
             props.get('firmware_revision', ''), props.get('location', ''),

@@ -121,7 +121,8 @@ def update_profiles(path: "Path | None",
 
 # On/off options a profile carries, by their ScanOptions names.
 TOGGLE_OPTIONS = ('scan_bacnet', 'scan_mstp', 'scan_modbus', 'scan_services',
-                  'scan_snmp', 'scan_p2', 'scan_knx', 'deep_scan', 'use_rpm',
+                  'scan_snmp', 'scan_p2', 'scan_knx', 'scan_lon',
+                  'scan_gateways', 'deep_scan', 'use_rpm',
                   'read_bbmd_tables', 'read_metadata', 'mstp_mac_probe')
 
 

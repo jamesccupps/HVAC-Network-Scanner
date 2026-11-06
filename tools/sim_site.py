@@ -1129,6 +1129,188 @@ class KNXGateway(_Listener):
                     pass
 
 
+class IP852Router(_Listener):
+    """A LonWorks/IP (IP-852) router on UDP 1628. Answers a Device
+    Configuration Request (0x63) with its Device Configuration (0x71), laid
+    out as the IzoT LonTalk stack builds it (LtIpPackets.h, LtIpMaster.cpp),
+    and ignores everything else."""
+
+    def __init__(self, ip: str, name: str, neuron_id: str, config_server: str,
+                 authenticate: bool = False):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((ip, 1628))
+        cs_ip, cs_port = config_server.split(':')
+        body = struct.pack(
+            '!IBBBBBBHHHIIIIIIHHHH',
+            3_960_000_000,                    # dateTime, seconds since 1900
+            1, 0, 0x02, 1,                    # UDP; configured router; supports auth; LonTalk/IP router
+            0, 0, 150,                        # no multicast; MBZ; channel timeout ms
+            6, 1628,                          # one Neuron ID; unicast port
+            struct.unpack('!I', socket.inet_aton(ip))[0], 3_959_999_000, 0,
+            struct.unpack('!I', socket.inet_aton(cs_ip))[0], 0, 0,
+            int(cs_port), 0, 0, 0)
+        name_bytes = name.encode('latin-1') + b'\x00'
+        self.body = body + bytes.fromhex(neuron_id) + bytes([len(name_bytes)]) + name_bytes
+        self.flags = 0x20 if authenticate else 0
+        self._serve_with(sock, self._serve)
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(1024)
+            except OSError:
+                return
+            if self.closing:
+                return
+            if len(data) >= 20 and data[3] == 0x63:
+                session = struct.unpack('!I', data[8:12])[0]
+                header = struct.pack('!HBBBBHIII', 20 + len(self.body), 1, 0x71, 0,
+                                     self.flags, 0, session, 0, 0)
+                digest = bytes(16) if self.flags else b''   # stands in for the MD5 digest
+                try:
+                    self.sock.sendto(header + self.body + digest, addr)
+                except OSError:
+                    pass
+
+
+class MoxaDevice(_Listener):
+    """A Moxa NPort-style device on UDP 4800: answers the 8-byte identify
+    (function 0x01) with the 24-byte reply Metasploit's moxa_discover
+    documents, and records every request so a test can check that nothing
+    else (such as the credential "unlock" function) was ever sent."""
+
+    def __init__(self, ip: str, model_code: int, mac: str):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((ip, 4800))
+        self.requests: list[bytes] = []
+        self.reply = (bytes([0x81, 0x00, 0x00, 0x18]) + bytes(8)
+                      + struct.pack('<H', model_code) + bytes.fromhex(mac)
+                      + socket.inet_aton(ip))
+        self._serve_with(sock, self._serve)
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(1024)
+            except OSError:
+                return
+            if self.closing:
+                return
+            self.requests.append(data)
+            if data[:1] == b'\x01':
+                try:
+                    self.sock.sendto(self.reply, addr)
+                except OSError:
+                    pass
+
+
+def _ua_string(s: Optional[str]) -> bytes:
+    if s is None:
+        return struct.pack('<i', -1)
+    b = s.encode('utf-8')
+    return struct.pack('<i', len(b)) + b
+
+
+def _ua_response_header(handle: int) -> bytes:
+    # timestamp, request handle, good result, no diagnostics, no string
+    # table, null additional header
+    return struct.pack('<qII', 133_000_000_000_000_000, handle, 0) + b'\x00' \
+        + struct.pack('<i', -1) + b'\x00\x00\x00'
+
+
+class OPCUAServer(_Listener):
+    """An OPC UA server on TCP 4840 that answers the discovery exchange
+    (Hello, OpenSecureChannel with policy None, GetEndpoints, Close), encoded
+    from OPC UA Part 6. It offers an unsecured endpoint that allows anonymous
+    sessions and a Basic256Sha256 one that wants a user name."""
+
+    def __init__(self, ip: str, name: str = "BMS OPC UA Server", port: int = 4840):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((ip, port))
+        sock.listen(4)
+        self.url, self.name = f"opc.tcp://{ip}:{port}", name
+        self._serve_with(sock, self._serve)
+
+    def _endpoints(self) -> bytes:
+        def endpoint(mode: int, policy: str, tokens: list[int], level: int) -> bytes:
+            app = (_ua_string("urn:sim:bms:opcua") + _ua_string("urn:sim:bms")
+                   + b'\x02' + _ua_string(self.name)          # LocalizedText, text only
+                   + struct.pack('<i', 0)                      # Server
+                   + _ua_string(None) + _ua_string(None)
+                   + struct.pack('<i', 1) + _ua_string(self.url))
+            toks = struct.pack('<i', len(tokens)) + b''.join(
+                _ua_string(f"t{t}") + struct.pack('<i', t) + _ua_string(None) * 3
+                for t in tokens)
+            return (_ua_string(self.url) + app + struct.pack('<i', -1)   # no certificate
+                    + struct.pack('<i', mode)
+                    + _ua_string(f"http://opcfoundation.org/UA/SecurityPolicy#{policy}")
+                    + toks
+                    + _ua_string("http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary")
+                    + bytes([level]))
+        eps = [endpoint(1, "None", [0, 1], 0), endpoint(3, "Basic256Sha256", [1], 10)]
+        return struct.pack('<i', len(eps)) + b''.join(eps)
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _addr = self.sock.accept()
+            except OSError:
+                return
+            if self.closing:
+                conn.close()
+                return
+            threading.Thread(target=self._session, args=(conn,), daemon=True).start()
+
+    @staticmethod
+    def _recv(conn: socket.socket, n: int) -> bytes:
+        # Not MSG_WAITALL: Windows refuses it on a socket with a timeout.
+        out = b''
+        while len(out) < n:
+            part = conn.recv(n - len(out))
+            if not part:
+                break
+            out += part
+        return out
+
+    def _session(self, conn: socket.socket) -> None:
+        conn.settimeout(5)
+        with conn:
+            try:
+                while True:
+                    head = self._recv(conn, 8)
+                    if len(head) < 8:
+                        return
+                    body = self._recv(conn, struct.unpack('<I', head[4:8])[0] - 8)
+                    kind = head[:3]
+                    if kind == b'HEL':
+                        ack = struct.pack('<IIIII', 0, 65536, 65536, 1 << 20, 0)
+                        conn.sendall(b'ACKF' + struct.pack('<I', 8 + len(ack)) + ack)
+                    elif kind == b'OPN':
+                        # body: channel, policy string, cert, thumbprint, seq, request id, ...
+                        pos = 4
+                        pos += 4 + max(0, struct.unpack('<i', body[pos:pos + 4])[0])
+                        pos += 8                                    # two null byte strings
+                        seq, req = struct.unpack('<II', body[pos:pos + 8])
+                        out = (struct.pack('<I', 7) + _ua_string(
+                            "http://opcfoundation.org/UA/SecurityPolicy#None")
+                            + struct.pack('<ii', -1, -1) + struct.pack('<II', seq, req)
+                            + struct.pack('<BBH', 1, 0, 449) + _ua_response_header(1)
+                            + struct.pack('<IIIqI', 0, 7, 1, 133_000_000_000_000_000, 600_000)
+                            + struct.pack('<i', -1))
+                        conn.sendall(b'OPNF' + struct.pack('<I', 8 + len(out)) + out)
+                    elif kind == b'MSG':
+                        seq, req = struct.unpack('<II', body[8:16])
+                        out = (struct.pack('<IIII', 7, 1, seq, req)
+                               + struct.pack('<BBH', 1, 0, 431) + _ua_response_header(2)
+                               + self._endpoints())
+                        conn.sendall(b'MSGF' + struct.pack('<I', 8 + len(out)) + out)
+                    elif kind == b'CLO':
+                        return
+            except OSError:
+                return
+
+
 def _self_signed_cert(cn: str, org: str, workdir: str) -> Optional[tuple[str, str]]:
     """Make a throwaway certificate with openssl, if it is installed."""
     openssl = shutil.which('openssl')
@@ -1384,6 +1566,13 @@ class Site:
                       reply_to_input=True))
         self._try(f"{net}.29  KNX     KNXnet/IP interface (tunnelling, no KNX Secure)",
                   lambda: KNXGateway(f"{net}.29", "Lighting IP interface", 0x1101))
+        self._try(f"{net}.27  LON     LonWorks/IP (IP-852) router, no authentication",
+                  lambda: IP852Router(f"{net}.27", "Floor 3 LON router", "04A1B2C3D4E5",
+                                      f"{net}.27:1629"))
+        self._try(f"{net}.30  Moxa    serial device server (UDP 4800 identify)",
+                  lambda: MoxaDevice(f"{net}.30", 5150, "0090E8ABCDEF"))
+        self._try(f"{net}.21  OPC UA  server (None endpoint, anonymous allowed)",
+                  lambda: OPCUAServer(f"{net}.21"))
         self._try(f"{net}.22  HTTP    Niagara web UI",
                   lambda: WebUI(f"{net}.22", 80, "Niagara Web Server", "Niagara Web Server/4.13"))
         self._try(f"{net}.2   HTTP    Tracer SC+ web UI",

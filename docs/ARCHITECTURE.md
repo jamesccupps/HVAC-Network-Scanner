@@ -12,6 +12,10 @@ hvac_scanner/
 ├── snmp.py           Raw UDP SNMP sysDescr, one socket fanned out to every host
 ├── netsweep.py       asyncio TCP connect sweep used by modbus.py, p2.py and services.py
 ├── p2.py             Siemens APOGEE P2 detection: TCP/5033 sweep + one foreign-BLN identify frame
+├── knx.py            KNXnet/IP description request on UDP 3671
+├── lonworks.py       LonWorks/IP (IP-852) device configuration request on UDP 1628
+├── moxa.py           Moxa identify on UDP 4800 (NPort, MGate, OnCell)
+├── opcua.py          OPC UA discovery exchange: Hello, OpenSecureChannel (None), GetEndpoints
 ├── certs.py          Minimal X.509 (DER) parsing for the HTTPS probe
 ├── fingerprint.py    Cross-protocol model identification (pure function)
 ├── device_profiles.py Vendor-aware object caps and scan-depth presets

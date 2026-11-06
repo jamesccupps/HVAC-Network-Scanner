@@ -303,7 +303,7 @@ def test_engine_records_where_out_of_range_devices_answered(monkeypatch):
     monkeypatch.setattr(engine_mod, "BACnetClient", Client)
     eng = ScanEngine(ScanOptions(networks=['10.0.0.0/24'], scan_mstp=False, deep_scan=False,
                                  scan_modbus=False, scan_services=False, scan_snmp=False,
-                                 scan_p2=False, scan_knx=False, unicast_discovery='off'),
+                                 scan_p2=False, scan_knx=False, scan_lon=False, scan_gateways=False, unicast_discovery='off'),
                      callback=lines.append)
     result = eng.run()
     cov = result.to_dict()['coverage']

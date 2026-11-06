@@ -284,7 +284,7 @@ class TestCliIntegration:
         # the loopback guard, and nobody noticed. A failed pass now makes the
         # scan partial, and a partial scan does not replace a baseline.
         main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-              '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--quiet', '--print', 'none',
+              '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--no-lon', '--no-gateways', '--quiet', '--print', 'none',
               '--baseline', str(base), '--save-baseline', str(new),
               '--diff-output', str(tmp_path / 'd.txt')])
         assert new.exists()
@@ -294,6 +294,6 @@ class TestCliIntegration:
         """Reported before anything is scanned, as a bad argument (exit 1)."""
         from hvac_scanner.cli import main
         rc = main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-                   '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--quiet',
+                   '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--no-lon', '--no-gateways', '--quiet',
                    '--print', 'none', '--baseline', str(tmp_path / 'nope.json')])
         assert rc == 1

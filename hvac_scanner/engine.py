@@ -49,6 +49,8 @@ from .constants import (
 from .fingerprint import fingerprint_device
 from .modbus import ModbusScanner
 from .knx import KNXScanner
+from .lonworks import LonWorksScanner
+from .moxa import MoxaScanner
 from .p2 import P2Scanner
 from .report import trend_stopped_full
 from .services import HVACServiceScanner
@@ -77,6 +79,12 @@ class ScanOptions:
     # KNXnet/IP interfaces and routers (UDP 3671): one description request
     # per target, nothing connected. See knx.py.
     scan_knx: bool = True
+    # LonWorks/IP (IP-852) routers and nodes (UDP 1628): one device
+    # configuration request per target, nothing joined. See lonworks.py.
+    scan_lon: bool = True
+    # Serial-to-IP gateways (Moxa NPort / MGate / OnCell, UDP 4800): one
+    # identify request per target, never the credential functions. See moxa.py.
+    scan_gateways: bool = True
     deep_scan: bool = True
     # v2.1.2: scan depth preset. "devices" reads only each device's identity
     # (the fastest inventory), "quick" samples ~5% of objects per device,
@@ -166,14 +174,16 @@ UNICAST_AUTO_LIMIT = 1024
 SLOW_DEVICE_S = 60
 
 
-def _request_counts(client: Any, ip: str) -> tuple[int, int]:
-    """(requests sent to `ip`, unanswered) from a client that keeps count;
-    (0, 0) from one that does not (test doubles, older clients)."""
+def _request_counts(client: Any, ip: str) -> tuple[int, int, float]:
+    """(requests sent to `ip`, unanswered, seconds spent waiting on those)
+    from a client that keeps count; zeros from one that does not (test
+    doubles, older clients)."""
     try:
         sent, lost = client.request_counts(ip)
-        return int(sent), int(lost)
+        waited = client.lost_wait(ip) if hasattr(client, 'lost_wait') else 0.0
+        return int(sent), int(lost), float(waited)
     except (AttributeError, TypeError, ValueError):
-        return 0, 0
+        return 0, 0, 0.0
 
 
 def _duration(seconds: float) -> str:
@@ -203,7 +213,7 @@ class ScanResult:
     devices: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=lambda: {
         'bacnet': 0, 'mstp': 0, 'modbus': 0, 'services': 0, 'snmp': 0, 'p2': 0,
-        'knx': 0,
+        'knx': 0, 'lon': 0, 'gateways': 0,
         'points': 0,
     })
     # What was asked for, so an export says what it is a survey of.
@@ -565,6 +575,9 @@ class ScanEngine:
                   ('modbus', 'Modbus', self.opts.scan_modbus, self._scan_modbus),
                   ('p2', 'APOGEE P2', self.opts.scan_p2, self._scan_p2),
                   ('knx', 'KNXnet/IP', self.opts.scan_knx, self._scan_knx),
+                  ('lon', 'LonWorks/IP', self.opts.scan_lon, self._scan_lon),
+                  ('gateways', 'Serial gateways', self.opts.scan_gateways,
+                   self._scan_gateways),
                   ('services', 'Services', self.opts.scan_services, self._scan_services),
                   ('snmp', 'SNMP', self.opts.scan_snmp, self._scan_snmp))
         status = self.result.passes
@@ -636,6 +649,10 @@ class ScanEngine:
             self._log(f"  APOGEE P2:   {self.result.counts['p2']}")
         if self.opts.scan_knx:
             self._log(f"  KNXnet/IP:   {self.result.counts['knx']}")
+        if self.opts.scan_lon:
+            self._log(f"  LonWorks/IP: {self.result.counts['lon']}")
+        if self.opts.scan_gateways:
+            self._log(f"  Gateways:    {self.result.counts['gateways']}")
         self._log(f"  Total:       {len(unique_ips)} unique IP(s), "
                   f"{self.result.counts['points']} points/registers")
         timing = self._timing_summary()
@@ -649,7 +666,9 @@ class ScanEngine:
         9 min 12 s, MS/TP 12 s), Modbus 4 s, ...'."""
         s = self.result.seconds
         labels = (('bacnet', 'BACnet'), ('modbus', 'Modbus'), ('p2', 'APOGEE P2'),
-                  ('knx', 'KNXnet/IP'), ('services', 'Services'), ('snmp', 'SNMP'))
+                  ('knx', 'KNXnet/IP'), ('lon', 'LonWorks/IP'), ('gateways', 'Gateways'),
+                  ('services', 'Services'),
+                  ('snmp', 'SNMP'))
         parts = []
         for key, label in labels:
             if key not in s:
@@ -1784,18 +1803,19 @@ class ScanEngine:
         return False
 
     def _device_footer(self, dev: dict[str, Any], took: float,
-                       after: tuple[int, int], before: tuple[int, int],
+                       after: tuple[int, int, float], before: tuple[int, int, float],
                        limit: float) -> None:
         """How long a device took and how many requests it left unanswered:
         on one site four controllers took minutes each because they dropped
         about one request in ten, each a full timeout, and nothing said so."""
         sent, lost = after[0] - before[0], after[1] - before[1]
+        waited = max(0.0, after[2] - before[2])
         dev['scan_seconds'] = round(took, 1)
         dev['requests'] = {'sent': sent, 'unanswered': lost}
         note = f"    Took {_duration(took)}"
         if lost:
             note += (f"; {lost} of {sent} requests went unanswered "
-                     f"({round(100 * lost / max(sent, 1))}%), {_duration(lost * self.opts.timeout)} "
+                     f"({round(100 * lost / max(sent, 1))}%), {_duration(waited)} "
                      f"spent waiting on them")
         if getattr(self._tls, 'cut', False):
             dev['cut_short'] = f"stopped at the per-device time limit ({_duration(limit)})"
@@ -2199,6 +2219,38 @@ class ScanEngine:
                 break
             self.result.devices.append(dev)
             self.result.counts['knx'] += 1
+            self._emit_device(dev)
+
+    # -- LonWorks/IP -----------------------------------------------------
+
+    def _scan_lon(self) -> None:
+        self._log("\n" + "=" * 65)
+        self._log(self._title("LONWORKS/IP (IP-852) DISCOVERY"))
+        self._log("=" * 65)
+        scanner = LonWorksScanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
+        for dev in scanner.scan_network(
+                self._all_targets(), stop_event=self.stop_event,
+                progress=lambda done, total: self._progress("LonWorks/IP", done, total)):
+            if self._stopped():
+                break
+            self.result.devices.append(dev)
+            self.result.counts['lon'] += 1
+            self._emit_device(dev)
+
+    # -- Serial gateways -------------------------------------------------
+
+    def _scan_gateways(self) -> None:
+        self._log("\n" + "=" * 65)
+        self._log(self._title("SERIAL GATEWAY DISCOVERY"))
+        self._log("=" * 65)
+        scanner = MoxaScanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
+        for dev in scanner.scan_network(
+                self._all_targets(), stop_event=self.stop_event,
+                progress=lambda done, total: self._progress("Serial gateways", done, total)):
+            if self._stopped():
+                break
+            self.result.devices.append(dev)
+            self.result.counts['gateways'] += 1
             self._emit_device(dev)
 
     # -- APOGEE P2 ------------------------------------------------------

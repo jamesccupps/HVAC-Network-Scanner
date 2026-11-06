@@ -220,10 +220,15 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip Siemens APOGEE P2 detection (TCP 5033)")
     g.add_argument("--no-knx",    action="store_true",
                    help="Skip KNXnet/IP gateway detection (UDP 3671)")
+    g.add_argument("--no-lon",    action="store_true",
+                   help="Skip LonWorks/IP (IP-852) router and node detection (UDP 1628)")
+    g.add_argument("--no-gateways", action="store_true",
+                   help="Skip serial gateway detection (Moxa NPort/MGate/OnCell, UDP 4800)")
     g.add_argument("--no-deep",   action="store_true",
                    help="Skip deep-scan (object lists, register reads)")
     g.add_argument("--bacnet-only", action="store_true",
-                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2 --no-knx")
+                   help="Shortcut for --no-modbus --no-services --no-snmp --no-p2 --no-knx "
+                        "--no-lon --no-gateways")
 
     # Output
     o = p.add_argument_group("output")
@@ -279,7 +284,8 @@ def _print_summary(result) -> None:
     print()
     print(f"=== Scan Summary ({datetime.now():%Y-%m-%d %H:%M:%S}) ===")
     print(f"Duration:   {result.elapsed:.1f}s")
-    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2', 'knx'):
+    for key in ('bacnet', 'mstp', 'modbus', 'services', 'snmp', 'p2', 'knx', 'lon',
+                'gateways'):
         print(f"  {key:10s} {result.counts[key]:4d}")
     print(f"  {'points':10s} {result.counts['points']:4d}")
     # Match the engine's / GUI's definition: unique IPs, not summed protocol counts.
@@ -411,7 +417,8 @@ def _utf8_streams() -> None:
 _ARG_FOR_OPTION = {
     'timeout': 'timeout', 'scan_bacnet': 'no_bacnet', 'scan_mstp': 'no_mstp',
     'scan_modbus': 'no_modbus', 'scan_services': 'no_services', 'scan_snmp': 'no_snmp',
-    'scan_p2': 'no_p2', 'scan_knx': 'no_knx', 'deep_scan': 'no_deep', 'use_rpm': 'no_rpm',
+    'scan_p2': 'no_p2', 'scan_knx': 'no_knx', 'scan_lon': 'no_lon',
+    'scan_gateways': 'no_gateways', 'deep_scan': 'no_deep', 'use_rpm': 'no_rpm',
     'rate_limit_ms': 'rate_limit', 'max_objects_per_device': 'max_objects',
     'whois_chunk_size': 'whois_chunk', 'bacnet_broadcast': 'broadcast', 'bbmd': 'bbmd',
     'scan_depth': 'scan_depth', 'bacnet_workers': 'bacnet_workers',
@@ -494,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.bacnet_only:
         args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = args.no_knx = True
+        args.no_lon = args.no_gateways = True
     given = {dest for dest in _DEFAULTS if getattr(args, dest, None) is not None}
     for dest, default in _DEFAULTS.items():
         if getattr(args, dest, None) is None:
@@ -509,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
         scan_snmp=not args.no_snmp,
         scan_p2=not args.no_p2,
         scan_knx=not args.no_knx,
+        scan_lon=not args.no_lon,
+        scan_gateways=not args.no_gateways,
         deep_scan=not args.no_deep,
         use_rpm=not args.no_rpm,
         rate_limit_ms=args.rate_limit,

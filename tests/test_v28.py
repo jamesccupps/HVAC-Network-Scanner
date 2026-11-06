@@ -131,7 +131,7 @@ def site():
 
 def _scan(networks, **kw):
     opts = dict(networks=networks, timeout=1.5, scan_modbus=False,
-                scan_services=False, scan_snmp=False, scan_p2=False, scan_knx=False)
+                scan_services=False, scan_snmp=False, scan_p2=False, scan_knx=False, scan_lon=False, scan_gateways=False)
     opts.update(kw)
     logs = []
     result = ScanEngine(ScanOptions(**opts), callback=logs.append).run()
