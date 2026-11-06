@@ -308,7 +308,7 @@ Exit codes:
 
 ## What's new
 
-### v2.9.1 (unreleased)
+### v2.9.1 (2026-11-06)
 
 Fixes from an external review: robustness against broken or hostile
 devices, gentler traffic, and exports that say what they are. Full list in

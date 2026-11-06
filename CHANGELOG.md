@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [2.9.1] — Unreleased
+## [2.9.1] — 2026-11-06
 
 Fixes from an external review of 2.9.0 (2026-11-06): what a broken or hostile
 device could do to a scan, where the scanner was less gentle than it should
