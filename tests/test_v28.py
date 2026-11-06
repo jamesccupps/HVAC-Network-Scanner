@@ -483,7 +483,21 @@ def test_cli_unknown_profile_and_missing_targets(monkeypatch, tmp_path, capsys):
     assert "Building A" in capsys.readouterr().err
     with pytest.raises(SystemExit) as e:
         _run_cli(monkeypatch, [])
-    assert e.value.code == 2
+    # 1, "invalid arguments"; 2 is "interrupted" (2.9.1)
+    assert e.value.code == 1
+
+
+def test_cli_flag_equal_to_the_default_still_beats_the_profile(monkeypatch, tmp_path):
+    """`--rate-limit 0` and `--unicast auto` were taken for "not given"
+    because they equal the defaults, so the profile's values won."""
+    code, opts = _run_cli(monkeypatch, ["--profile", "Building A", "--rate-limit", "0",
+                                        "--timeout", "5", "--unicast", "auto",
+                                        "--settings-file", str(_settings_file(tmp_path))])
+    assert code == 0
+    assert opts.rate_limit_ms == 0
+    assert opts.timeout == 5.0
+    assert opts.unicast_discovery == 'auto'
+    assert opts.bacnet_workers == 2                    # not given: still the profile's
 
 
 def test_cli_lists_profiles(tmp_path, capsys):

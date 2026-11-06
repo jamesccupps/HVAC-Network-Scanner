@@ -198,11 +198,39 @@ class TestEnumerationAgainstMock:
         assert dev.rpm_batches == 0
 
     def test_fallback_gives_up_on_batching_quickly(self, ephemeral_client):
-        """A device that refuses batches must not be re-probed for every batch."""
+        """A device that refuses batches (an Error) is not asked again."""
         with MockBACnetDevice(n_objects=self.N, rpm_mode='reject') as dev:
             self._enumerate(ephemeral_client(), dev)
         wasted = dev.exchanges - self.N
-        assert wasted <= bacnet._RPM_BATCH_GIVE_UP, f"{wasted} wasted probes"
+        assert wasted <= 1, f"{wasted} wasted probes"
+
+    def test_small_controller_answers_fit_without_aborts(self, ephemeral_client):
+        """A 480-byte MS/TP controller was sent 52-index batches needing ~700
+        bytes back; it aborted each one and the scan fell back to one read
+        per index, about 30 times the traffic on the trunk."""
+        with MockBACnetDevice(n_objects=self.N, rpm_mode='full', max_apdu=480) as dev:
+            got = self._enumerate(ephemeral_client(), dev)
+        assert [i for i, _ in got] == list(range(1, self.N + 1))
+        assert dev.aborts == 0
+        assert dev.single_reads == 0
+
+    def test_an_aborted_batch_is_halved_not_abandoned(self, ephemeral_client):
+        """A device claiming more than it can send back aborts; the batch is
+        halved and asked again rather than read one index at a time."""
+        with MockBACnetDevice(n_objects=self.N, rpm_mode='full', max_apdu=300) as dev:
+            got = ephemeral_client().read_object_list_entries_indexed(
+                '127.0.0.1', 1234, range(1, self.N + 1), max_apdu=1476)
+        assert [i for i, _ in got] == list(range(1, self.N + 1))
+        assert dev.aborts >= 1
+        assert dev.single_reads == 0
+
+    def test_bogus_object_count_stops_after_a_run_of_failures(self, ephemeral_client):
+        """A count of four billion must not mean four billion requests."""
+        with MockBACnetDevice(n_objects=10, rpm_mode='reject') as dev:
+            got = ephemeral_client().read_object_list_entries_indexed(
+                '127.0.0.1', 1234, range(1, 4_294_967_296), max_apdu=1476)
+        assert len(got) == 10
+        assert dev.single_reads <= 10 + bacnet._OBJECT_LIST_GIVE_UP
 
     def test_prefer_multiple_false_uses_the_serial_path(self, ephemeral_client):
         with MockBACnetDevice(n_objects=self.N, rpm_mode='full') as dev:

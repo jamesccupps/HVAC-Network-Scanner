@@ -53,6 +53,7 @@ from .p2 import P2Scanner
 from .report import trend_stopped_full
 from .services import HVACServiceScanner
 from .snmp import SNMPScanner
+from .text import clean_log_line, clean_text, spreadsheet_cell
 
 log = logging.getLogger(__name__)
 
@@ -147,14 +148,27 @@ class ScanOptions:
     read_metadata: bool = True
     # MS/TP networks behind a router on another subnet whose devices do not
     # answer a routed Who-Is: ask each MS/TP address in turn. Off by default —
-    # it costs the trunk a reply timeout per empty address and takes about a
-    # minute per network. See BACnetClient.probe_mstp_macs.
+    # it costs the trunk a reply timeout per empty address and takes a few
+    # minutes per network. See BACnetClient.probe_mstp_macs.
     mstp_mac_probe: bool = False
 
 
 # Hosts "auto" unicast discovery will probe without being told to. A /22's
 # worth: past that, the user should ask for it explicitly with "always".
 UNICAST_AUTO_LIMIT = 1024
+
+# Settings that widen or change a scan beyond what its targets suggest, logged
+# at the start of a scan whenever they differ from the defaults.
+_ADVANCED_OPTIONS = ('timeout', 'rate_limit_ms', 'bacnet_broadcast', 'bbmd', 'bbmd_ttl',
+                     'bacnet_workers', 'unicast_discovery', 'mstp_mac_probe',
+                     'whois_chunk_size', 'max_objects_per_device', 'scan_depth',
+                     'use_rpm', 'deep_scan', 'snmp_communities')
+
+# Most objects enumerated from one device, whatever its profile allows. The
+# largest real supervisory controllers hold a few thousand; past this the
+# count is almost certainly wrong. Setting max objects per device higher
+# raises it.
+OBJECT_CEILING = 20_000
 
 
 @dataclass
@@ -169,8 +183,20 @@ class ScanResult:
     })
     # What was asked for, so an export says what it is a survey of.
     targets: list[str] = field(default_factory=list)
+    # What was and was not scanned, so an empty section is not read as a
+    # clean result: per pass 'scanned', 'off', 'failed', 'skipped: why',
+    # 'stopped partway' or 'stopped before it ran'.
+    passes: dict[str, str] = field(default_factory=dict)
+    stopped: bool = False
+    options: dict[str, Any] = field(default_factory=dict)
 
     # -- export helpers -------------------------------------------------
+
+    @property
+    def complete(self) -> bool:
+        """Whether every pass that was asked for ran to the end."""
+        return not self.stopped and all(
+            s in ('scanned', 'off') for s in self.passes.values())
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -178,22 +204,27 @@ class ScanResult:
             'elapsed_seconds': round(self.elapsed, 2),
             'scanner': f'HVAC Network Scanner v{__version__}',
             'targets': self.targets,
+            'coverage': {'stopped': self.stopped, 'passes': dict(self.passes),
+                         'options': dict(self.options)},
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
         }
 
     def write_json(self, path: str) -> None:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(self.to_dict(), f, indent=2, default=str)
+        # Written beside the target and moved into place, so a crash or a
+        # full disk never leaves a truncated file where a good one was (the
+        # baseline for --baseline is one of these).
+        write_json_atomic(path, self.to_dict())
 
     def write_csv(self, path: str) -> None:
         with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.writer(f)
+            writer = _SafeCsvWriter(f)
             writer.writerow([
                 'Protocol', 'IP', 'Port', 'Device ID',
                 'Object Name',
                 'Identified Model', 'Device Type', 'Vendor',
-                'Web UI URL', 'Default Credentials', 'Description',
+                'Web UI URL', 'Factory Default Login (published, not tried)',
+                'Description',
                 'MSTP Network', 'MSTP MAC',
                 'Max APDU', 'Segmentation', 'Vendor ID',
                 'Banner', 'Page Title',
@@ -249,7 +280,7 @@ class ScanResult:
         integrator actually takes away from a site survey.
         """
         with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.writer(f)
+            writer = _SafeCsvWriter(f)
             writer.writerow([
                 'Device IP', 'Device ID', 'Device Name', 'MSTP Network', 'MSTP MAC',
                 'Object Type', 'Instance', 'Name', 'Present Value', 'Units',
@@ -279,17 +310,18 @@ class ScanResult:
         """Write a plain-text classification report (v2.2).
 
         This report is intended for users to attach when submitting a
-        device-profile contribution on GitHub. It contains no point
-        values or sensitive data — just the metadata needed to add a
-        profile entry: vendor, model, object count, classification
-        path hit, cap applied, and whether the scan succeeded.
+        device-profile contribution on GitHub, which is public. So it holds
+        nothing that identifies the site: devices are numbered, not given by
+        address, instance or name (object names often carry serials and room
+        numbers). What a profile entry needs is vendor, model, firmware,
+        object count, the classification path hit and the cap applied.
         """
         with open(path, 'w', encoding='utf-8') as f:
             # Header
             f.write("HVAC Network Scanner — Classification Report\n")
-            f.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
-            f.write(f"Scan started: {self.started_at}\n")
-            f.write(f"Elapsed: {self.elapsed:.1f}s\n")
+            f.write(f"Scanner: v{__version__}\n")
+            f.write("Holds no addresses, device names or instance numbers: devices\n"
+                    "are numbered in scan order.\n")
             f.write("=" * 70 + "\n\n")
 
             # Tally classification paths across devices
@@ -319,17 +351,17 @@ class ScanResult:
                         default_count += 1
 
             # Per-device detail
+            n = 0
             for dev in self.devices:
                 if not dev.get('protocol', '').startswith('BACnet'):
                     continue
-                ip = dev.get('ip', '?')
-                inst = dev.get('instance', '?')
+                n += 1
                 props = dev.get('properties', {}) or {}
-                obj_name = props.get('object_name', '')
-                f.write(f"{ip}  device={inst}")
-                if obj_name:
-                    f.write(f"  name={obj_name!r}")
-                f.write("\n")
+                f.write(f"Device {n}  ({dev.get('protocol')}, vendor ID "
+                        f"{dev.get('vendor_id', '?')}")
+                if props.get('firmware_revision'):
+                    f.write(f", firmware {clean_text(props['firmware_revision'])!r}")
+                f.write(")\n")
 
                 c = dev.get('_classification')
                 if not c:
@@ -393,7 +425,11 @@ class ScanEngine:
         from .netrange import split_targets
         options = replace(options, networks=split_targets(options.networks))
         self.opts = options
-        self.callback = callback or (lambda msg: None)
+        # Every pass logs through this, device-chosen text included (names,
+        # banners, titles), so control characters and terminal escapes are
+        # stripped here once: the CLI prints log lines to a terminal as-is.
+        user_callback = callback or (lambda msg: None)
+        self.callback = lambda msg: user_callback(clean_log_line(msg))
         # Fired as each device finishes, so a UI can show results while the
         # scan is still running rather than sitting blank until the end. The
         # device dict is the same object stored in result.devices; treat it as
@@ -472,6 +508,7 @@ class ScanEngine:
             for target, reason in bad:
                 self._log(f"  [!] Invalid target {target!r}: {reason}")
             self._log("Nothing scanned — fix the target list and re-run.")
+            self.result.passes['all'] = 'skipped: invalid target'
             return self._finish(start)
 
         # v2.1.1: MSTP scanning piggybacks on the BACnet client. If the user
@@ -482,37 +519,37 @@ class ScanEngine:
                       "enabling BACnet for this scan")
             self.opts = replace(self.opts, scan_bacnet=True)
 
+        self._log_non_default_options()
+        passes = (('bacnet', 'BACnet', self.opts.scan_bacnet, self._scan_bacnet),
+                  ('modbus', 'Modbus', self.opts.scan_modbus, self._scan_modbus),
+                  ('p2', 'APOGEE P2', self.opts.scan_p2, self._scan_p2),
+                  ('knx', 'KNXnet/IP', self.opts.scan_knx, self._scan_knx),
+                  ('services', 'Services', self.opts.scan_services, self._scan_services),
+                  ('snmp', 'SNMP', self.opts.scan_snmp, self._scan_snmp))
+        status = self.result.passes
+        if not self.opts.scan_mstp:
+            status['mstp'] = 'off'
         try:
-            if self.opts.scan_bacnet and not self._stopped():
+            for key, label, wanted, run_pass in passes:
+                if not wanted:
+                    status[key] = 'off'
+                    continue
+                if self._stopped():
+                    status[key] = 'stopped before it ran'
+                    continue
                 try:
-                    self._scan_bacnet()
-                except Exception:
-                    log.exception("BACnet scan pass failed")
-            if self.opts.scan_modbus and not self._stopped():
-                try:
-                    self._scan_modbus()
-                except Exception:
-                    log.exception("Modbus scan pass failed")
-            if self.opts.scan_p2 and not self._stopped():
-                try:
-                    self._scan_p2()
-                except Exception:
-                    log.exception("APOGEE P2 scan pass failed")
-            if self.opts.scan_knx and not self._stopped():
-                try:
-                    self._scan_knx()
-                except Exception:
-                    log.exception("KNXnet/IP scan pass failed")
-            if self.opts.scan_services and not self._stopped():
-                try:
-                    self._scan_services()
-                except Exception:
-                    log.exception("Services scan pass failed")
-            if self.opts.scan_snmp and not self._stopped():
-                try:
-                    self._scan_snmp()
-                except Exception:
-                    log.exception("SNMP scan pass failed")
+                    run_pass()
+                except Exception as e:
+                    # Logged where the user sees it too: an exception here
+                    # used to empty a whole pass with nothing in the GUI.
+                    log.exception("%s scan pass failed", label)
+                    self._log(f"  [!] {label} pass failed: {clean_text(str(e))[:200]}")
+                    status[key] = 'failed'
+                    continue
+                if key not in status:
+                    status[key] = 'stopped partway' if self._stopped() else 'scanned'
+            if self.opts.scan_mstp and 'mstp' not in status:
+                status['mstp'] = status.get('bacnet', 'not reached')
         finally:
             # Always fingerprint whatever we collected. Even on stop_event
             # or scan-pass exceptions, partial results are still useful and
@@ -524,8 +561,21 @@ class ScanEngine:
 
         return self._finish(start)
 
+    def _log_non_default_options(self) -> None:
+        """Say which settings differ from the defaults, at the top of the
+        scan. Advanced settings persist between sessions while their panel
+        stays closed, so a leftover broadcast override, BBMD or 'always'
+        unicast would otherwise widen a scan without anyone noticing."""
+        defaults = coverage_options(ScanOptions())
+        changed = [f"{k}={v}" for k, v in coverage_options(self.opts).items()
+                   if k in _ADVANCED_OPTIONS and v != defaults.get(k)]
+        if changed:
+            self._log("Advanced settings in effect: " + ", ".join(changed))
+
     def _finish(self, start: float) -> ScanResult:
         self.result.elapsed = time.time() - start
+        self.result.stopped = self._stopped()
+        self.result.options = coverage_options(self.opts)
 
         # "Total devices" counts unique IPs across protocols. A single IP with
         # BACnet + HTTPS + FTP is one device, not three.
@@ -610,6 +660,21 @@ class ScanEngine:
         # Try plain CIDR first.
         try:
             net = ipaddress.ip_network(network, strict=False)
+            if net.prefixlen < 24 and not net.is_loopback:
+                # Wider than a /24. If this PC is on it, its broadcast address
+                # (10.0.255.255 for 10.0.0.0/16) is usually not the physical
+                # subnet's: sent from a /24 it goes to the gateway as unicast
+                # and is dropped. The limited broadcast reaches the whole
+                # local segment, whatever its size.
+                src = self._source_address(str(net.network_address + 1))
+                if src is not None and ipaddress.ip_address(src) in net:
+                    self._log(f"  {network} is wider than a /24 and this PC is on it "
+                              f"({src}); Who-Is broadcasting to 255.255.255.255, "
+                              f"which reaches the whole local segment. Parts of "
+                              f"{network} behind a router need unicast discovery "
+                              f"or a BBMD.")
+                    return "255.255.255.255"
+                return str(net.broadcast_address)
             if net.prefixlen <= 24:
                 return str(net.broadcast_address)
             if net.prefixlen == 32:
@@ -705,6 +770,10 @@ class ScanEngine:
                               f"47808 is reachable, and that the device is "
                               f"configured to accept foreign device "
                               f"registrations. Skipping BACnet discovery.")
+                    why = f"skipped: could not register with BBMD {self.opts.bbmd}"
+                    self.result.passes['bacnet'] = why
+                    if self.opts.scan_mstp:
+                        self.result.passes['mstp'] = why
                     return
 
             # v2.1.2: consolidate broadcasts by unique destination. When the
@@ -742,6 +811,13 @@ class ScanEngine:
                           f"(we send Who-Is — we do not send I-Am)")
                 self._progress("BACnet discovery", 0, 0)
                 devices = self._discover_whois_on(client, bcast)
+                if not devices and not self._stopped():
+                    alt = self._fallback_bcast(bcast, networks_for_bcast)
+                    if alt:
+                        self._log(f"  Nothing answered; trying once more with a "
+                                  f"broadcast to {alt} (the physical subnet may be "
+                                  f"{'larger than a /24' if alt.endswith('255.255.255') else 'reached through another interface'}).")
+                        devices = self._discover_whois_on(client, alt)
                 heard_any = heard_any or bool(devices)
 
                 # Filter: drop I-Am responses from IPs the user didn't ask for.
@@ -973,15 +1049,52 @@ class ScanEngine:
         """
         net = str(ipaddress.ip_network(f"{ip}/24", strict=False))
         if net not in self._local_cache:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.connect((ip, 47808))
-                    local = s.getsockname()[0]
-                self._local_cache[net] = (
-                    str(ipaddress.ip_network(f"{local}/24", strict=False)) == net)
-            except OSError:
-                self._local_cache[net] = True      # unroutable: unicast won't help
+            local = self._source_address(ip)
+            self._local_cache[net] = (
+                local is None                      # unroutable: unicast won't help
+                or str(ipaddress.ip_network(f"{local}/24", strict=False)) == net)
         return self._local_cache[net]
+
+    def _source_address(self, ip: str) -> Optional[str]:
+        """This PC's address on the interface it would use to reach `ip`,
+        found by "connecting" a UDP socket (which sends nothing); None if
+        there is no route."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((ip, 47808))
+                return s.getsockname()[0]
+        except OSError:
+            return None
+
+    def _fallback_bcast(self, bcast: str, networks: list[str]) -> Optional[str]:
+        """Another broadcast to try once when `bcast` got no answer at all
+        from a subnet this PC is on.
+
+        A /24's broadcast address is an ordinary host on a /23 or wider
+        physical subnet, so it reaches nobody there; the limited broadcast
+        255.255.255.255 reaches the whole segment whatever its mask. The
+        other way round, Windows sends the limited broadcast out of one
+        interface only, which on a PC with several may not be the one facing
+        the building network; the /24 broadcast of this PC's own address on
+        that network goes out the right one.
+        """
+        if self.opts.bacnet_broadcast or self.opts.bbmd:
+            return None
+        try:
+            first = parse_first_host(networks)
+        except ValueError:
+            return None
+        if first is None or ipaddress.ip_address(first).is_loopback:
+            return None
+        if bcast != "255.255.255.255":
+            return "255.255.255.255" if self._is_local(first) else None
+        src = self._source_address(first)
+        if src is None or ipaddress.ip_address(src).is_loopback:
+            return None
+        if not any(_contains(n, src) for n in networks):
+            return None
+        alt = str(ipaddress.ip_network(f"{src}/24", strict=False).broadcast_address)
+        return alt if alt != bcast else None
 
     # -- deep scan ----------------------------------------------------------
 
@@ -1053,9 +1166,13 @@ class ScanEngine:
         Chunked mode (`whois_chunk_size > 0`): Who-Is low=N high=N+chunk-1 in a
         loop from 0 to `whois_max_instance`. Intended for large/busy sites where
         a global Who-Is would produce a damaging I-Am storm. Each chunk sleeps
-        `whois_chunk_delay_ms` between broadcasts. Stops early after 10
-        consecutive empty chunks (avoids scanning the full 4M instance space
-        on a small network).
+        `whois_chunk_delay_ms` between broadcasts.
+
+        Across an empty stretch the range doubles with each empty chunk, and
+        drops back to the chunk size at the first answer. That covers all
+        4,194,303 instances in a dozen or so requests past the last device,
+        where stopping after ten empty chunks (as until 2.9.1) never asked
+        about a site numbered 1-500 and 100,001 upward.
         """
         via_bbmd = bool(self.opts.bbmd)
         chunk = self.opts.whois_chunk_size
@@ -1069,14 +1186,18 @@ class ScanEngine:
                   f"in steps of {chunk}")
         seen: set[tuple[str, int]] = set()
         out: list[dict] = []
-        empty_streak = 0
+        # Listen briefly per chunk: replies to a narrow range come quickly,
+        # and a full timeout per chunk made a large site's discovery crawl.
+        wait = min(self.opts.timeout, 3.0)
+        size = chunk
         low = 0
         while low <= self.opts.whois_max_instance and not self._stopped():
-            high = min(low + chunk - 1, self.opts.whois_max_instance)
+            high = min(low + size - 1, self.opts.whois_max_instance)
             if via_bbmd:
-                batch = client.discover_who_is_via_bbmd(low=low, high=high)
+                batch = client.discover_who_is_via_bbmd(low=low, high=high, wait=wait)
             else:
-                batch = client.discover_who_is(target_ip=bcast, low=low, high=high)
+                batch = client.discover_who_is(target_ip=bcast, low=low, high=high,
+                                               wait=wait)
             new_in_batch = 0
             for dev in batch:
                 key = (dev['ip'], dev.get('instance'))
@@ -1088,13 +1209,9 @@ class ScanEngine:
             if new_in_batch:
                 self._log(f"    {low}–{high}: +{new_in_batch} device(s) "
                           f"(total {len(out)})")
-                empty_streak = 0
+                size = chunk
             else:
-                empty_streak += 1
-                if empty_streak >= 10:
-                    self._log(f"    10 empty chunks in a row — stopping "
-                              f"early at instance {high}")
-                    break
+                size *= 2
             if self.opts.whois_chunk_delay_ms > 0:
                 time.sleep(self.opts.whois_chunk_delay_ms / 1000.0)
             low = high + 1
@@ -1300,11 +1417,11 @@ class ScanEngine:
                 if d.get('source_network') == net}
             macs = [m for m in range(top + 1) if m not in known]
             self._log(f"  Network {net} via {route['ip']}: asking MS/TP addresses "
-                      f"0–{top} a few at a time...")
+                      f"0–{top} two at a time...")
             self._progress(f"MS/TP address probe (network {net})", 0, len(macs))
             devs = client.probe_mstp_macs(
                 route['ip'], net, macs, stop_fn=self._stopped,
-                timeout=min(self.opts.timeout, 2.0),
+                timeout=3.0,
                 progress=lambda done, total, net=net: self._progress(
                     f"MS/TP address probe (network {net})", done, total))
             if not devs:
@@ -1314,7 +1431,7 @@ class ScanEngine:
             bbmds = [d['ip'] for d in remote if d.get('bbmd')]
             via = (f"register with the BBMD at {bbmds[0]} (--bbmd {bbmds[0]})" if bbmds
                    else "register with a BBMD on that subnet (--bbmd)")
-            how = (f"turn on the MS/TP address probe (--mstp-probe; about a minute "
+            how = (f"turn on the MS/TP address probe (--mstp-probe; a few minutes "
                    f"per network) or {via}")
             if silent:
                 self._log(f"  Network(s) {', '.join(str(n) for n in silent)} did not "
@@ -1353,7 +1470,7 @@ class ScanEngine:
         if cap <= 0 or total_count <= 0:
             return []
         if cap >= total_count:
-            return list(range(1, total_count + 1))
+            return range(1, total_count + 1)
         step = total_count / cap
         chosen = sorted({min(total_count, int(i * step) + 1) for i in range(cap)})
         self._log(f"    Sampling {len(chosen)} of {total_count} objects by "
@@ -1399,7 +1516,7 @@ class ScanEngine:
         # expensive is the per-point property reads later.
         self._log(f"    Probing full object type layout "
                   f"({total_count} entries)...")
-        all_indices = list(range(1, total_count + 1))
+        all_indices = range(1, total_count + 1)
         full_map = client.read_object_list_entries_indexed(
             ip, instance, all_indices, dnet=dnet, dadr=dadr,
             stop_fn=self._stopped,
@@ -1570,6 +1687,17 @@ class ScanEngine:
             profile, depth_note = apply_scan_depth(profile, self.opts.scan_depth)
             profile, override_note = apply_max_objects_override(
                 profile, self.opts.max_objects_per_device)
+            # Whatever the profile says, no device is enumerated past the
+            # ceiling unless the user raised it by setting max objects. The
+            # count is the device's own claim: 4,294,967,295 from a broken or
+            # hostile one used to mean a list that size, then days of reads.
+            ceiling = max(OBJECT_CEILING, self.opts.max_objects_per_device or 0)
+            if profile.object_cap > ceiling:
+                profile = replace(profile, object_cap=ceiling)
+                if total_count > ceiling:
+                    override_note = " | ".join(n for n in (
+                        override_note, f"capped at {ceiling:,} objects "
+                        f"(raise with max objects per device)") if n)
             notes = " | ".join(n for n in (depth_note, override_note) if n)
             self._log(f"    Classified: {explanation}"
                       + (f" | {notes}" if notes else ""))
@@ -1598,7 +1726,7 @@ class ScanEngine:
                     dnet=dnet, dadr=dadr, max_apdu=dev.get('max_apdu'),
                 )
             else:
-                indices = list(range(1, total_count + 1))
+                indices = range(1, total_count + 1)
 
             try:
                 obj_list = client.read_object_list_entries(
@@ -1648,6 +1776,7 @@ class ScanEngine:
                 prefer_multiple=self.opts.use_rpm,
                 dnet=dnet, dadr=dadr,
                 stop_fn=self._stopped,
+                max_apdu=dev.get('max_apdu'),
             )
         except Exception as e:
             log.debug("batched point read %s failed: %s", ip, e)
@@ -1712,7 +1841,8 @@ class ScanEngine:
                     meta = client.read_points_batched(
                         ip, instance, meta_wanted,
                         prefer_multiple=self.opts.use_rpm,
-                        dnet=dnet, dadr=dadr, stop_fn=self._stopped)
+                        dnet=dnet, dadr=dadr, stop_fn=self._stopped,
+                        max_apdu=dev.get('max_apdu'))
                 except Exception as e:
                     log.debug("metadata read %s failed: %s", ip, e)
                     meta = []
@@ -2130,6 +2260,37 @@ def _mac_int(mac: Any) -> Optional[int]:
         return None
 
 
+def parse_first_host(networks: list[str]) -> Optional[str]:
+    """The first address any of `networks` covers, without expanding them."""
+    from .netrange import parse_targets, InvalidTargetSyntaxError
+    for n in networks:
+        try:
+            net = ipaddress.ip_network(n, strict=False)
+            return str(net.network_address + (1 if net.num_addresses > 2 else 0))
+        except ValueError:
+            pass
+        try:
+            hosts = parse_targets(n)
+        except InvalidTargetSyntaxError:
+            continue
+        if hosts:
+            return hosts[0]
+    return None
+
+
+def _contains(network: str, ip: str) -> bool:
+    """Whether target spec `network` covers `ip`."""
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(network, strict=False)
+    except ValueError:
+        pass
+    from .netrange import parse_targets, InvalidTargetSyntaxError
+    try:
+        return ip in parse_targets(network)
+    except InvalidTargetSyntaxError:
+        return False
+
+
 def _ip_key(ip: str) -> tuple:
     try:
         return tuple(int(p) for p in ip.split('.'))
@@ -2152,7 +2313,7 @@ def _safe_str(val: Any) -> str:
     elif isinstance(val, bytes):
         s = val.hex()
     else:
-        s = str(val)
+        s = _str(val)
     # Strip control chars that break TreeView rendering
     s = ''.join(c for c in s if c.isprintable() or c in ' \t')
     if len(s) > _MAX_CELL_LEN:
@@ -2176,17 +2337,82 @@ def _format_present_value(val: Any) -> str:
     return _safe_str(val)
 
 
+_COMMON_COMMUNITIES = ('public', 'private')
+
+
+def coverage_options(opts: "ScanOptions") -> dict[str, Any]:
+    """The options a scan ran with, as an export records them.
+
+    SNMP community strings other than the well-known defaults are a site's
+    credential, so an export keeps only that one was set, not what it was.
+    """
+    from dataclasses import asdict
+    out = asdict(opts)
+    out.pop('networks', None)
+    out['snmp_communities'] = [c if c in _COMMON_COMMUNITIES else '(custom)'
+                               for c in (opts.snmp_communities or [])]
+    return out
+
+
+def write_json_atomic(path: str, data: Any) -> None:
+    """json.dump to a temporary file beside `path`, then move it into place."""
+    import os
+    tmp = f"{path}.tmp-{os.getpid()}"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=_str)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+class _SafeCsvWriter:
+    """csv.writer whose cells cannot start a spreadsheet formula.
+
+    Device names, descriptions, banners and page titles are chosen by
+    whoever controls the device (BACnet names are writable by anyone on the
+    network). A point renamed to ``=HYPERLINK(...)`` would otherwise run as a
+    formula when the integrator opens the point list. See
+    text.spreadsheet_cell.
+    """
+
+    def __init__(self, f):
+        self._w = csv.writer(f)
+
+    def writerow(self, row: list[Any]) -> None:
+        self._w.writerow([spreadsheet_cell(_str(v) if isinstance(v, int)
+                                           and not isinstance(v, bool) else v)
+                          for v in row])
+
+
+def _str(val: Any) -> str:
+    """str() that cannot raise: Python refuses to print an integer of more
+    than 4,300 digits, and one from a device used to end every export."""
+    try:
+        return str(val)
+    except ValueError:
+        return f"<{type(val).__name__} too large to show>"
+
+
 def _sanitize_for_json(dev: dict[str, Any]) -> dict[str, Any]:
     """Strip un-serializable private fields and stringify anything weird."""
     out: dict[str, Any] = {}
     for k, v in dev.items():
         if k.startswith('_'):
             continue
+        if k == 'community' and v not in _COMMON_COMMUNITIES:
+            # The SNMP community that worked. A site's own one is a
+            # credential; say only that it was not a default.
+            out[k] = '(custom)'
+            continue
         try:
             json.dumps(v)
             out[k] = v
         except (TypeError, ValueError):
-            out[k] = str(v)
+            out[k] = _str(v)
 
     fp = dev.get('_fingerprint', {})
     if fp:

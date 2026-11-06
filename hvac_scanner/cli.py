@@ -29,8 +29,60 @@ from . import __version__
 from .engine import ScanEngine, ScanOptions
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argument errors exit 1, as documented. argparse's own 2 is this
+    tool's "interrupted", so a scheduled job with a mistyped flag was
+    reported as a scan that had been stopped."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
+def _number(kind, low=None, high=None, name="value"):
+    """An argparse type: `kind` (int or float) within [low, high]. A typo
+    used to fall through to a default such as no rate limit at all."""
+    def parse(text: str):
+        try:
+            value = kind(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+        if (low is not None and value < low) or (high is not None and value > high):
+            bounds = (f"at least {low}" if high is None else
+                      f"between {low} and {high}" if low is not None else f"at most {high}")
+            raise argparse.ArgumentTypeError(f"{name} must be {bounds}, not {text}")
+        return value
+    return parse
+
+
+def _ipv4(text: str) -> str:
+    import ipaddress
+    try:
+        return str(ipaddress.IPv4Address(text.strip()))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an IPv4 address") from None
+
+
+def _positive_timeout(text: str) -> float:
+    value = _number(float, name="timeout")(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"timeout must be more than 0, not {text}")
+    return value
+
+
+# Defaults for the options that take a value. The parser's own default for
+# each is None, so main() can tell "given on the command line" (which beats a
+# site profile) from "not given" (the profile, else these): comparing with
+# the default could not tell `--unicast auto` from no flag at all.
+_DEFAULTS = {
+    'timeout': 5.0, 'rate_limit': 0, 'scan_depth': 'normal', 'bacnet_workers': 4,
+    'whois_chunk': 0, 'whois_max_instance': 4_194_303, 'whois_chunk_delay': 50,
+    'bbmd_ttl': 60, 'unicast': 'auto', 'max_hosts': 65_536,
+}
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="hvac-scanner",
         description="Multi-protocol HVAC / BAS network scanner.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -51,28 +103,31 @@ def _build_parser() -> argparse.ArgumentParser:
     # merged in main() instead.
     p.add_argument("--networks", dest="networks_flag", nargs="+", default=None,
                    help=argparse.SUPPRESS)
-    p.add_argument("--broadcast", type=str, default=None, metavar="IP",
+    p.add_argument("--broadcast", type=_ipv4, default=None, metavar="IP",
                    help="Override BACnet Who-Is broadcast target (e.g. "
                         "10.0.0.255 or 255.255.255.255). Needed when "
                         "scanning a narrower CIDR than the physical subnet.")
     p.add_argument("--scan-depth", choices=["quick", "normal", "full"],
-                   default="normal",
+                   default=None,
                    help="Scan depth. 'quick' samples ~5%% of each device's "
                         "points (fast overview). 'normal' uses vendor-aware "
                         "caps (default). 'full' reads every object (slow on "
                         "supervisory controllers).")
-    p.add_argument("--timeout", type=float, default=5.0,
+    p.add_argument("--timeout", type=_positive_timeout, default=None,
                    help="Per-operation timeout in seconds (default: 5)")
-    p.add_argument("--rate-limit", type=int, default=0, metavar="MS",
+    p.add_argument("--rate-limit", type=_number(int, 0, name="rate limit"),
+                   default=None, metavar="MS",
                    help="Minimum ms between BACnet packets to the same IP (0=off)")
-    p.add_argument("--max-objects", type=int, default=None, metavar="N",
+    p.add_argument("--max-objects", type=_number(int, 1, name="max objects"),
+                   default=None, metavar="N",
                    help="Hard ceiling on objects enumerated per BACnet device. "
                         "Applied on top of the vendor-aware profile cap and "
                         "only ever lowers it. Omit to use the profile cap "
                         "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
-    p.add_argument("--bacnet-workers", type=int, default=4, metavar="N",
+    p.add_argument("--bacnet-workers", type=_number(int, 1, 64, name="BACnet workers"),
+                   default=None, metavar="N",
                    help="BACnet devices deep-scanned at once (default: 4). Each "
                         "worker owns one IP address, so no device sees more "
                         "than one request at a time either way; 1 scans "
@@ -91,27 +146,35 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Large-network probing
     d = p.add_argument_group("large-network probing")
-    d.add_argument("--whois-chunk", type=int, default=0, metavar="SIZE",
+    d.add_argument("--whois-chunk", type=_number(int, 0, name="Who-Is chunk"),
+                   default=None, metavar="SIZE",
                    help="Split Who-Is by instance range in steps of SIZE "
                         "(default: 0 = single broadcast). Gentler on big "
                         "sites that would otherwise I-Am-storm on a global.")
-    d.add_argument("--whois-max-instance", type=int, default=4_194_303,
+    d.add_argument("--whois-max-instance",
+                   type=_number(int, 0, 4_194_303, name="Who-Is max instance"),
+                   default=None,
                    metavar="N",
                    help="Upper bound on instance ranges when chunking "
                         "(default: 4194303, the BACnet max). Only used "
                         "with --whois-chunk.")
-    d.add_argument("--whois-chunk-delay", type=int, default=50, metavar="MS",
+    d.add_argument("--whois-chunk-delay", type=_number(int, 0, name="Who-Is chunk delay"),
+                   default=None, metavar="MS",
                    help="Sleep between chunked Who-Is broadcasts (default: 50ms)")
-    d.add_argument("--bbmd", metavar="IP",
+    d.add_argument("--bbmd", type=_ipv4, metavar="IP",
                    help="Register as a Foreign Device with this BBMD and send "
                         "Who-Is through it. Discovers devices on subnets the "
                         "scanner cannot broadcast to - one host can then scan "
                         "several buildings. Without this, discovery only sees "
                         "the local subnet.")
-    d.add_argument("--bbmd-ttl", type=int, default=60, metavar="SECONDS",
-                   help="Foreign Device registration lease (default: 60). "
-                        "Renewed automatically during long scans.")
-    d.add_argument("--unicast", choices=["auto", "always", "off"], default="auto",
+    d.add_argument("--bbmd-ttl", type=_number(int, 10, 300, name="BBMD TTL"),
+                   default=None, metavar="SECONDS",
+                   help="Foreign Device registration lease, 10-300 (default: "
+                        "60). Registering adds an entry to the BBMD's "
+                        "foreign-device table, the one write this tool makes; "
+                        "it is renewed during long scans and expires on its "
+                        "own after.")
+    d.add_argument("--unicast", choices=["auto", "always", "off"], default=None,
                    help="Unicast BACnet discovery for targets a broadcast "
                         "cannot reach. 'auto' (default) probes target "
                         "addresses on other subnets that did not answer the "
@@ -120,12 +183,17 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--snmp-community", action="append", metavar="NAME",
                    help="SNMP community to try (repeatable; default: public). "
                         "Each one is tried only against hosts that did not "
-                        "answer the previous.")
+                        "answer the previous. A community is a password of "
+                        "sorts: agents may log or trap a wrong one.")
+    d.add_argument("--max-hosts", type=_number(int, 1, name="max hosts"),
+                   default=None, metavar="N",
+                   help="Refuse to scan more than N addresses in total "
+                        "(default: 65536). A guard against a mistyped prefix.")
     d.add_argument("--mstp-probe", action="store_true",
                    help="For MS/TP networks behind a router on another subnet, "
-                        "ask each MS/TP address in turn (about a minute per "
-                        "network). Finds devices whose I-Am broadcasts cannot "
-                        "reach this subnet, without a BBMD.")
+                        "ask each MS/TP address in turn, two at a time (a few "
+                        "minutes per network). Finds devices whose I-Am "
+                        "broadcasts cannot reach this subnet, without a BBMD.")
     d.add_argument("--no-bbmd-tables", action="store_true",
                    help="Do not read BBMDs' broadcast and foreign-device tables")
     d.add_argument("--no-metadata", action="store_true",
@@ -240,18 +308,57 @@ def _print_json(result) -> None:
     print(_json.dumps(result.to_dict(), indent=2, default=str))
 
 
-def _handle_baseline(args, result) -> bool:
+_UNREADABLE = object()
+
+
+def _read_baseline(args):
+    """The --baseline scan, None if there is none to compare with, or
+    _UNREADABLE (after saying why) if it exists and cannot be used.
+
+    A missing file is the first run of a schedule when --save-baseline
+    names the same path: the run creates it. A damaged one is an error
+    before anything is scanned; a schedule that kept going past it used to
+    fail every night and never write a replacement.
+    """
+    if not args.baseline:
+        return None
+    from pathlib import Path
+    from . import diff as diffmod
+    if not Path(args.baseline).exists():
+        if args.save_baseline:
+            print(f"No baseline at {args.baseline} yet; this run will be the first "
+                  f"one compared against.", file=sys.stderr)
+            return None
+        print(f"ERROR: baseline {args.baseline} does not exist", file=sys.stderr)
+        return _UNREADABLE
+    try:
+        return diffmod.load_scan(args.baseline)
+    except (OSError, ValueError) as e:
+        print(f"ERROR: could not read baseline {args.baseline}: {e}. Delete or "
+              f"replace it (a scan with --save-baseline writes a new one).",
+              file=sys.stderr)
+        return _UNREADABLE
+
+
+def _handle_baseline(args, result, baseline=None) -> bool:
     """Compare against a baseline and/or save one. Returns True if changed.
 
     Saving happens even when the comparison found changes, so an unattended
     schedule rolls its baseline forward and reports each night's delta rather
-    than re-reporting the same drift forever.
+    than re-reporting the same drift forever. A partial scan (stopped, or a
+    pass skipped or failed) is not saved: rolling forward on it made the next
+    night report everything it missed as new.
     """
     from . import diff as diffmod
 
+    if not result.complete:
+        gaps = ", ".join(f"{k} {v}" for k, v in result.passes.items()
+                         if v not in ('scanned', 'off'))
+        print(f"Warning: this scan is partial ({'stopped' if result.stopped else gaps}); "
+              f"devices it did not reach may show as gone.", file=sys.stderr)
+
     changed = False
-    if args.baseline:
-        baseline = diffmod.load_scan(args.baseline)
+    if baseline is not None:
         d = diffmod.diff_scans(baseline, result.to_dict())
         changed = d.has_changes
         if args.diff_output:
@@ -264,7 +371,11 @@ def _handle_baseline(args, result) -> bool:
         else:
             print(diffmod.format_text(d))
 
-    if args.save_baseline:
+    if args.save_baseline and not result.complete:
+        print(f"Not saving the baseline: the scan was partial, so "
+              f"{args.save_baseline} still holds the last complete one.",
+              file=sys.stderr)
+    elif args.save_baseline:
         result.write_json(args.save_baseline)
         if not args.quiet:
             print(f"Wrote baseline: {args.save_baseline}", file=sys.stderr)
@@ -350,15 +461,33 @@ def main(argv: list[str] | None = None) -> int:
     # reported before anything is sent rather than as a scan that "completed"
     # with nothing in it.
     from .netrange import parse_targets, InvalidTargetSyntaxError
+    total_hosts = 0
     for n in networks:
         try:
-            parse_targets(n)
+            total_hosts += len(parse_targets(n))
         except InvalidTargetSyntaxError as e:
             print(f"ERROR: invalid target {n!r}: {e}", file=sys.stderr)
             return 1
+    # The per-entry limit stops one mistyped prefix; this stops several.
+    max_hosts = args.max_hosts or _DEFAULTS['max_hosts']
+    if total_hosts > max_hosts:
+        print(f"ERROR: the targets cover {total_hosts:,} addresses, more than "
+              f"--max-hosts ({max_hosts:,}). Check the prefixes, or raise "
+              f"--max-hosts if that many is intended.", file=sys.stderr)
+        return 1
+
+    # Read the baseline before scanning, so a missing or damaged one is
+    # reported before the network is touched rather than after an hour.
+    baseline = _read_baseline(args)
+    if baseline is _UNREADABLE:
+        return 1
 
     if args.bacnet_only:
         args.no_modbus = args.no_services = args.no_snmp = args.no_p2 = args.no_knx = True
+    given = {dest for dest in _DEFAULTS if getattr(args, dest, None) is not None}
+    for dest, default in _DEFAULTS.items():
+        if getattr(args, dest, None) is None:
+            setattr(args, dest, default)
 
     kw = dict(
         networks=networks,
@@ -381,17 +510,22 @@ def main(argv: list[str] | None = None) -> int:
         bbmd=args.bbmd,
         bbmd_ttl=args.bbmd_ttl,
         scan_depth=args.scan_depth,
-        bacnet_workers=max(1, args.bacnet_workers),
+        bacnet_workers=args.bacnet_workers,
         unicast_discovery=args.unicast,
         snmp_communities=args.snmp_community or ["public"],
         read_bbmd_tables=not args.no_bbmd_tables,
         read_metadata=not args.no_metadata,
         mstp_mac_probe=args.mstp_probe,
     )
-    # The profile fills in whatever was not given on the command line.
+    # The profile fills in whatever was not given on the command line. A
+    # value option was given if it is not None (its parser default); an
+    # on/off flag if it is set, since a flag can only turn something on.
     for option, value in profile_kw.items():
         dest = _ARG_FOR_OPTION.get(option)
-        if dest is not None and getattr(args, dest) == parser.get_default(dest):
+        if dest is None:
+            continue
+        explicit = dest in given if dest in _DEFAULTS else bool(getattr(args, dest, None))
+        if not explicit:
             kw[option] = value
     opts = ScanOptions(**kw)
 
@@ -460,7 +594,7 @@ def main(argv: list[str] | None = None) -> int:
     changed = False
     if args.baseline or args.save_baseline:
         try:
-            changed = _handle_baseline(args, result)
+            changed = _handle_baseline(args, result, baseline)
         except (OSError, ValueError) as e:
             print(f"ERROR: baseline comparison failed: {e}", file=sys.stderr)
             return 3
@@ -475,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(result)
     # "none" prints nothing to stdout
 
-    if stop_event.is_set():
+    if stop_event.is_set() or result.stopped:
         return 2
     if changed and args.fail_on_change:
         return 4

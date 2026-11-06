@@ -158,11 +158,24 @@ class TestBatchingBehaviour:
         assert len(out) == self.N
         assert all(props.get('objectName') for _t, _i, props in out)
 
-    def test_batch_window_shrinks_when_a_device_refuses(self, client):
+    def test_batches_stop_when_a_device_refuses_even_one_object(self, client):
+        """Once one-object batches fail too, no more are sent: each object
+        used to cost a refused batch before its single reads."""
         c = client()
         with MockBACnetDevice(n_objects=self.N, rpm_mode='reject') as dev:
             c.read_points_batched('127.0.0.1', 1234, _objects(dev, self.N))
-        assert c._point_batch[('127.0.0.1', 1234)] == bacnet._POINT_BATCH_MIN
+            refused = dev.exchanges - dev.single_reads
+        assert c._point_batch[('127.0.0.1', 1234)] == 0
+        assert refused <= 6, f"{refused} refused batches"
+
+    def test_request_is_trimmed_to_the_device_apdu(self, client):
+        """A device that accepts 128-byte requests is never sent a bigger one."""
+        with MockBACnetDevice(n_objects=self.N, rpm_mode='full', max_apdu=128) as dev:
+            out = client().read_points_batched('127.0.0.1', 1234,
+                                               _objects(dev, self.N), max_apdu=128)
+            biggest = dev.largest_request_apdu
+        assert all(props.get('objectName') for _t, _i, props in out)
+        assert biggest <= 128
 
     def test_batch_window_grows_on_a_cooperative_device(self, client):
         c = client()

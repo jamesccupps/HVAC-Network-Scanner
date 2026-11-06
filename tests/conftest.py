@@ -108,3 +108,19 @@ def _targets_are_on_link(monkeypatch, request):
         return
     from hvac_scanner.engine import ScanEngine
     monkeypatch.setattr(ScanEngine, "_is_local", lambda self, ip: True)
+    # Nor may the PC's own address decide anything (wide-CIDR broadcasts).
+    monkeypatch.setattr(ScanEngine, "_source_address", lambda self, ip: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_limited_broadcast(monkeypatch):
+    """No test may send a Who-Is to 255.255.255.255: that one really goes
+    out on whatever LAN the test machine is on."""
+    from hvac_scanner import bacnet
+    real = bacnet.BACnetClient.discover_who_is
+
+    def guarded(self, target_ip="255.255.255.255", *a, **kw):
+        assert target_ip != "255.255.255.255", \
+            "test would send a limited-broadcast Who-Is onto the LAN"
+        return real(self, target_ip, *a, **kw)
+    monkeypatch.setattr(bacnet.BACnetClient, "discover_who_is", guarded)

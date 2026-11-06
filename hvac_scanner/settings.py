@@ -7,8 +7,10 @@ again on each launch. They now persist in a small JSON file:
     Windows:  %APPDATA%\\HVACNetworkScanner\\settings.json
     elsewhere: $XDG_CONFIG_HOME/hvac-scanner/settings.json (~/.config/...)
 
-Nothing here is required: a missing, unreadable or corrupt file simply means
-defaults, and a failed save is logged and ignored.
+Nothing here is required: a missing file means defaults, and a failed save is
+logged and ignored. A damaged file is renamed aside (settings.json.bad-<time>)
+rather than overwritten, since it may hold site profiles worth recovering, and
+a file that cannot be read at all is left alone.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -31,22 +34,80 @@ def default_path() -> Path:
     return Path(base) / 'hvac-scanner' / 'settings.json'
 
 
-def load(path: "Path | None") -> dict[str, Any]:
+def _read(path: "Path | None") -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """(settings, problem). Settings is None when the file exists but could
+    not be read, which means: do not write over it."""
     if path is None:
-        return {}
+        return {}, None
     try:
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
-        return {}
-    except (OSError, ValueError) as e:
-        log.warning("ignoring unreadable settings file %s: %s", path, e)
-        return {}
+        return {}, None
+    except ValueError as e:
+        return {}, _set_aside(path, f"was damaged ({e})")
+    except OSError as e:
+        return None, f"Could not read the settings file {path}: {e}"
+    if not isinstance(data, dict):
+        return {}, _set_aside(path, "did not hold settings")
+    return data, None
+
+
+def _set_aside(path: Path, why: str) -> str:
+    """Rename a damaged settings file so the next save does not destroy it."""
+    aside = path.with_name(f"{path.name}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
+    try:
+        os.replace(path, aside)
+    except OSError as e:
+        return f"The settings file {path} {why} and could not be set aside ({e})."
+    return (f"The settings file {path} {why}; it was kept as {aside.name} and the "
+            f"defaults are in use. Saved site profiles are in that copy.")
+
+
+def load_checked(path: "Path | None") -> tuple[dict[str, Any], Optional[str]]:
+    """The settings, and a sentence for the user if something was wrong."""
+    data, problem = _read(path)
+    if problem:
+        log.warning(problem)
+    return data or {}, problem
+
+
+def load(path: "Path | None") -> dict[str, Any]:
+    return load_checked(path)[0]
 
 
 def save(path: "Path | None", data: dict[str, Any]) -> None:
-    _save(path, data)
+    """Save the GUI's settings. The site profiles already in the file are
+    kept as they are: they change only through `update_profiles`, so two
+    windows open at once cannot drop each other's new profiles."""
+    if path is None:
+        return
+    current, problem = _read(path)
+    if current is None:
+        log.warning("%s; not saving over it", problem)
+        return
+    out = {k: v for k, v in data.items() if k != 'profiles'}
+    if 'profiles' in current:
+        out['profiles'] = current['profiles']
+    _save(path, out)
+
+
+def update_profiles(path: "Path | None",
+                    change: Callable[[dict[str, dict[str, Any]]], None]
+                    ) -> Optional[dict[str, dict[str, Any]]]:
+    """Apply `change` to the profiles as they are in the file now, save, and
+    return them; None if the file could not be read (nothing is written)."""
+    if path is None:
+        return None
+    current, problem = _read(path)
+    if current is None:
+        log.warning("%s; profile not saved", problem)
+        return None
+    profs = profiles(current)
+    change(profs)
+    current['profiles'] = profs
+    _save(path, current)
+    return profs
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +189,7 @@ def _save(path: "Path | None", data: dict[str, Any]) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix('.tmp')
+        tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, path)

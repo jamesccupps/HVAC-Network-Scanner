@@ -31,6 +31,18 @@ from .constants import (
 
 log = logging.getLogger(__name__)
 
+# Longest foreign-device registration asked of a BBMD, in seconds. Renewed at
+# two thirds while a scan runs, so this only bounds how long an entry outlives
+# a scan that stopped.
+MAX_BBMD_TTL = 300
+
+# Devices kept from one Who-Is window: per source address (a router answering
+# for the MS/TP trunks behind it legitimately sends hundreds) and in total.
+# Past these, an address is flooding I-Ams, and every one kept would become a
+# device to deep-scan.
+_IAM_PER_IP_LIMIT = 1000
+_IAM_TOTAL_LIMIT = 20000
+
 # Consecutive failed individual reads of one property on one device before the
 # client stops trying to fill that property from RPM gaps. Low on purpose: the
 # cost of being wrong is three wasted round trips per device, and the cost of
@@ -49,7 +61,12 @@ _RPM_ELEMENT_RESPONSE_BYTES = 13  # ctx2 propId + ctx3 index + tags + objId
 _RPM_FRAMING_OVERHEAD = 60        # BVLC + NPDU + APDU header + objId + tags
 _RPM_MAX_BATCH = 100              # keeps the blast radius of one bad batch small
 _RPM_OUR_MAX_APDU = 1476          # what build_read_property_multiple advertises
-_RPM_BATCH_GIVE_UP = 2            # failed batches before falling back entirely
+_RPM_MIN_BATCH = 4                # below this a failed batch means "no RPM here"
+
+# objectList entries that fail to read one after another before enumeration
+# stops. A device reporting a bogus count (a firmware bug, or 4,294,967,295
+# from a hostile one) would otherwise be asked for every index it claims.
+_OBJECT_LIST_GIVE_UP = 20
 
 # Batched per-point property reads.
 #
@@ -96,10 +113,10 @@ class BACnetClient:
         self._reader_active = False
         self._sock: Optional[socket.socket] = None
         self._bound_port: Optional[int] = None
-        # (ip, property_name) -> consecutive individual-read failures, used to
-        # stop retrying a property a device clearly will not answer. See
-        # read_point_properties.
-        self._partial_fill_failures: dict[tuple[str, str], int] = {}
+        # (ip, dnet, dadr, property_name) -> consecutive individual-read
+        # failures, used to stop retrying a property a device clearly will
+        # not answer. See read_point_properties.
+        self._partial_fill_failures: dict[tuple, int] = {}
         # (ip, device_instance) -> current point-read batch size. Adaptive:
         # see _POINT_BATCH_INITIAL.
         self._point_batch: dict[tuple[str, int], int] = {}
@@ -117,7 +134,20 @@ class BACnetClient:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Never share 47808. With SO_REUSEADDR the bind succeeded alongside
+        # BACnet software already running on this PC (a front-end, YABE, a
+        # vendor tool), and the two then split each other's traffic: the
+        # front-end lost replies and alarm notifications for as long as the
+        # scan ran. On Windows a plain bind can still share the port with a
+        # socket that allowed reuse, so ask for it exclusively.
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            # Large I-Am bursts arrive faster than they are read; a small
+            # default buffer drops them without a trace.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        except OSError:
+            pass
         sock.settimeout(self.timeout)
 
         try:
@@ -127,7 +157,10 @@ class BACnetClient:
         except OSError:
             sock.bind(("", 0))
             self._bound_port = sock.getsockname()[1]
-            self._log(f"  Port {BACNET_PORT} in use, bound to ephemeral port {self._bound_port}")
+            self._log(f"  Port {BACNET_PORT} is in use by other BACnet software on "
+                      f"this PC; using port {self._bound_port}. Devices answer "
+                      f"most requests there, but broadcast I-Ams go to {BACNET_PORT}, "
+                      f"so discovery may find fewer devices.")
 
         self._sock = sock
         return self._bound_port
@@ -182,11 +215,13 @@ class BACnetClient:
     def discover_who_is(self, target_ip: str = "255.255.255.255",
                         low: Optional[int] = None, high: Optional[int] = None,
                         dnet: Optional[int] = None,
-                        extra_wait: float = 0.0) -> list[dict[str, Any]]:
+                        extra_wait: float = 0.0,
+                        wait: Optional[float] = None) -> list[dict[str, Any]]:
         """Send a Who-Is broadcast and collect I-Am responses.
 
         dnet restricts the broadcast to a single remote BACnet network
-        (used for MSTP probing through routers).
+        (used for MSTP probing through routers). `wait` replaces the timeout
+        as the listening window (chunked discovery listens briefly per chunk).
         """
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
@@ -202,7 +237,8 @@ class BACnetClient:
             self._log(f"  Who-Is send error: {e}")
             return []
 
-        return self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+        window = self.timeout if wait is None else wait
+        return self._collect_iam(deadline=time.time() + window + extra_wait)
 
     def discover_who_is_networks(self, target_ip: str, dnets: "list[int]",
                                  extra_wait: float = 0.0,
@@ -249,6 +285,11 @@ class BACnetClient:
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
 
+        # Registering writes an entry into the BBMD's foreign-device table,
+        # the one change this scanner makes anywhere. Keep it short-lived:
+        # renewal (below) keeps a long scan registered, and an entry left by
+        # a scan that stopped is gone within minutes, not hours.
+        ttl = max(10, min(int(ttl), MAX_BBMD_TTL))
         pkt = codec.build_register_foreign_device(ttl)
         try:
             self._sock.sendto(pkt, (bbmd_ip, BACNET_PORT))
@@ -307,7 +348,8 @@ class BACnetClient:
 
     def discover_who_is_via_bbmd(self, low: Optional[int] = None,
                                  high: Optional[int] = None,
-                                 extra_wait: float = 0.0) -> list[dict[str, Any]]:
+                                 extra_wait: float = 0.0,
+                                 wait: Optional[float] = None) -> list[dict[str, Any]]:
         """Who-Is through the registered BBMD instead of a local broadcast."""
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
@@ -323,7 +365,8 @@ class BACnetClient:
         except OSError as e:
             self._log(f"  BBMD Who-Is send error: {e}")
             return []
-        return self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+        window = self.timeout if wait is None else wait
+        return self._collect_iam(deadline=time.time() + window + extra_wait)
 
     def discover_routers(self, target_ip: str = "255.255.255.255") -> tuple[list[dict], list[int]]:
         """Send Who-Is-Router-To-Network. Returns (routers, networks)."""
@@ -477,6 +520,8 @@ class BACnetClient:
         assert self._sock is not None
         out: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
+        per_ip: dict[str, int] = {}
+        flooding: set[str] = set()
         old_timeout = self._sock.gettimeout()
         try:
             while time.time() < deadline:
@@ -496,7 +541,19 @@ class BACnetClient:
                 key = (device.ip, device.instance)
                 if key in seen:
                     continue
+                if per_ip.get(device.ip, 0) >= _IAM_PER_IP_LIMIT:
+                    if device.ip not in flooding:
+                        flooding.add(device.ip)
+                        self._log(f"  [!] {device.ip} sent I-Ams for more than "
+                                  f"{_IAM_PER_IP_LIMIT} devices; ignoring the rest "
+                                  f"from it")
+                    continue
+                if len(out) >= _IAM_TOTAL_LIMIT:
+                    self._log(f"  [!] More than {_IAM_TOTAL_LIMIT} devices answered "
+                              f"one Who-Is; ignoring the rest")
+                    break
                 seen.add(key)
+                per_ip[device.ip] = per_ip.get(device.ip, 0) + 1
                 out.append(_iam_to_dict(device))
                 # v2.1.2: Don't log per-I-Am here. The engine applies a
                 # target-spec filter to the results and logs the kept
@@ -794,7 +851,7 @@ class BACnetClient:
         ))
 
     def probe_mstp_macs(self, router_ip: str, dnet: int, macs: "list[int]",
-                        stop_fn=None, in_flight: int = 4,
+                        stop_fn=None, in_flight: int = 2,
                         timeout: Optional[float] = None,
                         progress=None) -> list[dict[str, Any]]:
         """Find the devices on one MS/TP network by asking each address.
@@ -805,17 +862,23 @@ class BACnetClient:
         is a confirmed request, so its answer is routed back to the scanner
         like any other reply.
 
-        Only `in_flight` addresses are asked at a time. An absent MS/TP node
-        costs the trunk a reply timeout (about a quarter of a second) on every
-        request, and the trunk is shared with the building's own traffic.
-        Returns device dicts with ``discovered_via='mac-probe'``.
+        Only `in_flight` addresses are asked at a time (two), each request
+        waits at least three seconds for its answer, and the rate limit
+        applies between them. An absent MS/TP node costs the trunk a reply
+        timeout (about a quarter of a second) on every request, the trunk is
+        shared with the building's own traffic, and on a 9,600-baud or busy
+        trunk four back-to-back requests filled the router's queue ahead of
+        the building's own. Returns device dicts with
+        ``discovered_via='mac-probe'``.
         """
         if self._sock is None:
             raise RuntimeError("BACnetClient not opened")
+        timeout = max(3.0, timeout or 0.0)
         found: dict[int, int] = {}
         for i in range(0, len(macs), max(1, in_flight)):
             if stop_fn and stop_fn():
                 break
+            self._throttle(router_ip)
             reqs = []
             for mac in macs[i:i + max(1, in_flight)]:
                 inv = self._next_invoke_id(router_ip)
@@ -938,10 +1001,10 @@ class BACnetClient:
         aligned across those gaps.
 
         With `prefer_multiple`, indices are batched into ReadPropertyMultiple
-        requests carrying propertyArrayIndex — one round trip per ~100 objects
-        instead of per object. A device that will not answer batched requests
-        falls back to one read per index after `_RPM_BATCH_GIVE_UP` failures,
-        so the slow path stays available without being the default.
+        requests carrying propertyArrayIndex — one round trip per ~30-100
+        objects instead of per object. A batch the device aborts is halved and
+        asked again; a device that refuses batched requests outright, or even
+        small batches, is read one index at a time.
         """
         if not prefer_multiple or len(indices) < 2:
             return self._object_list_one_by_one(ip, instance, indices,
@@ -949,37 +1012,44 @@ class BACnetClient:
 
         out: list[tuple[int, tuple[str, int]]] = []
         batch_size = self._object_list_batch_size(max_apdu)
-        failures = 0
         pos = 0
         while pos < len(indices):
             if stop_fn and stop_fn():
                 break
             batch = indices[pos:pos + batch_size]
             got = self._object_list_rpm_batch(ip, instance, batch, dnet, dadr)
-            if got is None:
-                failures += 1
+            if got is None or got is _REFUSED:
+                # An Abort or silence usually means the answer did not fit:
+                # halve and ask again for the same indices. A device that
+                # refuses the request (Error, Reject), or even small
+                # batches, is read one index at a time.
+                if got is None and batch_size > _RPM_MIN_BATCH:
+                    batch_size = max(_RPM_MIN_BATCH, batch_size // 2)
+                    continue
+                self._log("    %s does not answer batched objectList reads; "
+                          "falling back to one read per index" % ip)
                 out.extend(self._object_list_one_by_one(
-                    ip, instance, batch, dnet, dadr, stop_fn))
-                if failures >= _RPM_BATCH_GIVE_UP:
-                    self._log("    %s does not answer batched objectList reads; "
-                              "falling back to one read per index" % ip)
-                    out.extend(self._object_list_one_by_one(
-                        ip, instance, indices[pos + batch_size:],
-                        dnet, dadr, stop_fn))
-                    break
-            else:
-                out.extend(got)
-            pos += batch_size
+                    ip, instance, indices[pos:], dnet, dadr, stop_fn))
+                break
+            out.extend(got)
+            pos += len(batch)
         return out
 
     @staticmethod
     def _object_list_batch_size(device_max_apdu: Optional[int]) -> int:
-        """How many array indices fit in one exchange, bounded at both ends."""
+        """How many array indices fit in one exchange, bounded at both ends.
+
+        The request must fit what the device accepts, and so must the
+        answer: the device sends it in one APDU (these requests do not accept
+        a segmented reply), so a 480-byte MS/TP controller asked for more than
+        480 bytes of objectList aborts, however large our own buffer is.
+        """
         # Unknown device APDU: assume the smallest common size rather than
         # guessing high and having the request rejected outright.
         dev = device_max_apdu if device_max_apdu else 480
+        reply_limit = min(dev, _RPM_OUR_MAX_APDU)
         by_request = (dev - _RPM_FRAMING_OVERHEAD) // _RPM_ELEMENT_REQUEST_BYTES
-        by_response = ((_RPM_OUR_MAX_APDU - _RPM_FRAMING_OVERHEAD)
+        by_response = ((reply_limit - _RPM_FRAMING_OVERHEAD)
                        // _RPM_ELEMENT_RESPONSE_BYTES)
         return max(1, min(by_request, by_response, _RPM_MAX_BATCH))
 
@@ -987,9 +1057,11 @@ class BACnetClient:
                                dnet=None, dadr=None):
         """Read one batch of objectList indices in a single RPM exchange.
 
-        Returns the entries that came back, or None if the device did not
-        answer the batched form at all — which the caller treats as a signal to
-        fall back, not as an empty object list.
+        Returns the entries that came back; None if the device aborted or did
+        not answer (the batch may simply have been too big); `_REFUSED` if it
+        answered with an Error or Reject (it does not do batched reads). The
+        caller treats the last two as a signal to shrink or fall back, not as
+        an empty object list.
         """
         self._throttle(ip)
         invoke_id = self._next_invoke_id(ip)
@@ -998,9 +1070,9 @@ class BACnetClient:
             invoke_id=invoke_id, dnet=dnet, dadr=dadr,
         )
         entries = self._request_response(
-            ip, pkt, invoke_id,
-            parser=codec.parse_read_property_multiple_ack_full,
-        )
+            ip, pkt, invoke_id, parser=_rpm_full_or_refusal)
+        if entries is _REFUSED:
+            return _REFUSED
         if not entries:
             return None
         out: list[tuple[int, tuple[str, int]]] = []
@@ -1018,6 +1090,7 @@ class BACnetClient:
                                 dnet=None, dadr=None, stop_fn=None
                                 ) -> list[tuple[int, tuple[str, int]]]:
         out: list[tuple[int, tuple[str, int]]] = []
+        misses = 0
         for i in indices:
             if stop_fn and stop_fn():
                 break
@@ -1025,6 +1098,13 @@ class BACnetClient:
                                         array_index=i, dnet=dnet, dadr=dadr)
             if isinstance(result, tuple) and len(result) == 2:
                 out.append((i, result))
+                misses = 0
+                continue
+            misses += 1
+            if misses >= _OBJECT_LIST_GIVE_UP:
+                self._log(f"    [!] {_OBJECT_LIST_GIVE_UP} objectList entries in a "
+                          f"row did not read at {ip}; stopping at index {i}")
+                break
         return out
 
     def read_object_list(self, ip: str, instance: int,
@@ -1123,7 +1203,10 @@ class BACnetClient:
                 num = PROP_IDS.get(name)
                 if num is None or num in raw:
                     continue
-                key = (ip, name)
+                # Per device, not per address: behind a router every MS/TP
+                # device shares the router's IP, and one device lacking a
+                # property used to stop gap-filling it for the whole trunk.
+                key = (ip, dnet, str(dadr), name)
                 if self._partial_fill_failures.get(key, 0) >= _PARTIAL_FILL_GIVE_UP:
                     continue
                 val = self.read_property(ip, obj_type, obj_instance, name,
@@ -1157,7 +1240,8 @@ class BACnetClient:
                             prefer_multiple: bool = True,
                             dnet: Optional[int] = None,
                             dadr: "str | int | bytes | None" = None,
-                            stop_fn=None
+                            stop_fn=None,
+                            max_apdu: Optional[int] = None,
                             ) -> "list[tuple[str, int, dict[str, Any]]]":
         """Read per-point properties for many objects, batching where possible.
 
@@ -1170,6 +1254,10 @@ class BACnetClient:
         Falls back to one exchange per object for anything a batch does not
         answer, so a device with a partial or absent RPM implementation still
         produces a complete result — just more slowly.
+
+        `max_apdu` is the largest request the device accepts (from its
+        I-Am). A batch is trimmed until its request fits: a request bigger
+        than a device says it takes is a known way to crash fragile stacks.
         """
         results: "dict[tuple[str, int], dict[str, Any]]" = {}
         if not prefer_multiple:
@@ -1186,14 +1274,23 @@ class BACnetClient:
         while pos < len(objects):
             if stop_fn and stop_fn():
                 break
+            # 0 = this device has failed even one-object batches: stop
+            # sending them, or every object costs a wasted request first.
             size = self._point_batch.get(key, _POINT_BATCH_INITIAL)
-            batch = objects[pos:pos + size]
-            got = self._point_batch_once(ip, batch, dnet, dadr)
+            batch = (_fit_request(objects[pos:pos + size], max_apdu, dnet, dadr)
+                     if size else [])
+            got = self._point_batch_once(ip, batch, dnet, dadr) if batch else None
+            if got is None and batch and size > _POINT_BATCH_MIN:
+                # Shrink and retry the same slice.
+                self._point_batch[key] = max(_POINT_BATCH_MIN, size // 2)
+                continue
             if got is None:
-                # Shrink and retry the same slice; at the floor, read singly.
-                if size > _POINT_BATCH_MIN:
-                    self._point_batch[key] = max(_POINT_BATCH_MIN, size // 2)
-                    continue
+                if batch:
+                    self._point_batch[key] = 0
+                else:
+                    # Batches are off for this device, or not even one
+                    # object's request fits: read property by property.
+                    batch = objects[pos:pos + 1]
                 for otype, oinst, props in batch:
                     if stop_fn and stop_fn():
                         break
@@ -1285,6 +1382,37 @@ def _rpm_values(data: bytes) -> dict[int, Any]:
     """{property: value} from a one-object RPM-ACK, structured properties raw."""
     return {e.prop_id: (e.raw if e.prop_id in _RAW_PROP_IDS else e.value)
             for e in codec.parse_read_property_multiple_ack_full(data)}
+
+
+def _fit_request(batch: "list[tuple[str, int, list[str]]]",
+                 max_apdu: Optional[int], dnet=None, dadr=None
+                 ) -> "list[tuple[str, int, list[str]]]":
+    """The longest leading part of `batch` whose RPM request fits in
+    `max_apdu` (empty if not even one object's does)."""
+    if not max_apdu or not batch:
+        return batch
+    npdu_len = len(codec.build_npdu(expecting_reply=True, dnet=dnet, dadr=dadr))
+    n = len(batch)
+    while n:
+        specs = [(t, i, [p for p in props if p in PROP_IDS])
+                 for t, i, props in batch[:n]]
+        pkt = codec.build_read_property_multiple_objects(specs, dnet=dnet, dadr=dadr)
+        if len(pkt) - 4 - npdu_len <= max_apdu:
+            return batch[:n]
+        n -= 1
+    return []
+
+
+# A batched request the device answered with an Error or Reject: it does not
+# do this kind of request, and a smaller batch will not change its mind (an
+# Abort, by contrast, usually means the answer was too big to send).
+_REFUSED = object()
+
+
+def _rpm_full_or_refusal(data: bytes) -> Any:
+    if codec.apdu_type(data) in (codec.APDU_ERROR, codec.APDU_REJECT):
+        return _REFUSED
+    return codec.parse_read_property_multiple_ack_full(data)
 
 
 def _iam_to_dict(device: IAmDevice) -> dict[str, Any]:

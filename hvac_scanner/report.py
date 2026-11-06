@@ -23,6 +23,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from . import __version__
@@ -301,6 +302,19 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "secure gateways.",
             ["Address", "Name", "KNX address", "Offers"], rows))
 
+    # Offering KNX Secure does not mean plain access is off: a gateway can
+    # list the Security family and still accept unsecured tunnels.
+    rows = [[d.get('ip'), d.get('name', ''), d.get('knx_address', '')]
+            for d in devices if d.get('protocol') == 'KNXnet/IP'
+            and (d.get('tunnelling') or d.get('routing')) and d.get('secure')]
+    if rows:
+        out.append(Finding(
+            "info", "KNXnet/IP gateways offering KNX Secure",
+            "These gateways list KNX IP Secure. That shows it is available, not "
+            "that it is enforced: check in ETS that unsecured tunnelling and "
+            "routing are turned off.",
+            ["Address", "Name", "KNX address"], rows))
+
     # Niagara AX is past end of support
     rows = [[d.get('ip'), str(d.get('port')), (d.get('fox') or {}).get('station.name', ''),
              (d.get('fox') or {}).get('app.version', '')]
@@ -425,6 +439,20 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "confirming for everything else.",
             ["Address", "Device instance", "Device"], rows))
 
+    # One instance number, several devices
+    from .diff import duplicate_instances
+    dups = duplicate_instances(devices)
+    if dups:
+        out.append(Finding(
+            "medium", "Duplicate BACnet device instances",
+            "More than one device answers to these instance numbers. A device "
+            "instance must be unique across the BACnet network: a front-end or "
+            "another controller addressing one of them may read from, or "
+            "command, the other.",
+            ["Device instance", "Answering at (address / MS/TP network / MAC)"],
+            [[inst, ", ".join(where)] for inst, where in
+             sorted(dups.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0)]))
+
     out.sort(key=lambda f: SEVERITIES.index(f.severity))
     return out
 
@@ -462,8 +490,10 @@ h3 { font-size: 15px; margin: 0; }
   padding: 14px 16px; margin: 0 0 14px; background: var(--panel); }
 .finding p { margin: 6px 0 10px; color: var(--dim); }
 .sev { display: inline-block; min-width: 64px; text-align: center; font-size: 11px; font-weight: 700;
-  text-transform: uppercase; color: #fff; background: var(--sev); border-radius: 10px;
+  text-transform: uppercase; color: var(--sev-text, #fff); background: var(--sev); border-radius: 10px;
   padding: 1px 8px; margin-right: 8px; vertical-align: 2px; }
+@media (prefers-color-scheme: dark) { .sev { --sev-text: #0d1117; } }
+.coverage { border: 1px solid var(--medium); border-radius: 8px; padding: 10px 14px; margin: 0 0 24px; }
 .high { --sev: var(--high); } .medium { --sev: var(--medium); }
 .low { --sev: var(--low); } .info { --sev: var(--info); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -493,12 +523,81 @@ def _table(columns: list[str], rows: list[list[Any]], mono: tuple[int, ...] = (0
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
 
+_PASS_LABELS = {'bacnet': 'BACnet/IP', 'mstp': 'BACnet MS/TP', 'modbus': 'Modbus TCP',
+                'p2': 'APOGEE P2', 'knx': 'KNXnet/IP', 'services': 'Service ports',
+                'snmp': 'SNMP', 'all': 'Everything'}
+_CARD_PASS = {'BACnet/IP': 'bacnet', 'MS/TP': 'mstp', 'Modbus': 'modbus',
+              'Service ports': 'services', 'SNMP': 'snmp', 'APOGEE P2': 'p2',
+              'KNXnet/IP': 'knx'}
+
+
+def coverage_gaps(scan: dict[str, Any]) -> list[tuple[str, str]]:
+    """[(pass label, why)] for every pass that did not run to the end.
+    Empty for an export from before 2.9.1, which did not record this."""
+    passes = (scan.get('coverage') or {}).get('passes') or {}
+    return [(_PASS_LABELS.get(k, k), v) for k, v in passes.items() if v != 'scanned']
+
+
+def _not_scanned(scan: dict[str, Any], key: str) -> Optional[str]:
+    """Why pass `key` produced nothing, if it did not run; None if it ran
+    (or the export predates coverage, and so cannot say)."""
+    status = ((scan.get('coverage') or {}).get('passes') or {}).get(key)
+    if status in (None, 'scanned'):
+        return None
+    return status
+
+
+def _metadata_gap(scan: dict[str, Any]) -> Optional[str]:
+    """Why trend logs, schedules and alarm routing were not read, if not."""
+    why = _not_scanned(scan, 'bacnet')
+    if why:
+        return f"BACnet {why}"
+    opts = (scan.get('coverage') or {}).get('options') or {}
+    if opts.get('deep_scan') is False:
+        return "deep scan off"
+    if opts.get('read_metadata') is False:
+        return "metadata reads off"
+    return None
+
+
+def _gap_note(why: str) -> str:
+    return f'<p class="none">Not scanned ({_e(why)}).</p>'
+
+
+def _footer_scope(scan: dict[str, Any]) -> str:
+    """What the scan sent that a reader might care about, said plainly."""
+    cov = scan.get('coverage') or {}
+    opts = cov.get('options') or {}
+    passes = cov.get('passes') or {}
+    write = "Nothing was written to any device"
+    if opts.get('bbmd'):
+        write += (f" apart from a foreign-device registration with the BBMD at "
+                  f"{opts['bbmd']}, which lets the scan's broadcasts reach other subnets "
+                  f"and expires on its own within minutes")
+    if not cov:
+        snmp = (" SNMP, where it ran, asked for the system description using a community "
+                "string (\"public\" unless set otherwise), the one place a credential is "
+                "tried.")
+    elif passes.get('snmp') in (None, 'off'):
+        snmp = ""
+    else:
+        comms = opts.get('snmp_communities') or ['public']
+        snmp = (" SNMP asked for the system description using the community string"
+                f"{'s' if len(comms) > 1 else ''} {', '.join(comms)}, the one place a "
+                "credential is tried.")
+    return (f"{write}, and no logins or passwords were tried.{snmp} Default credentials "
+            f"listed here are the vendors' published factory defaults, shown so the owner "
+            f"can confirm they were changed; they were not tried.")
+
+
 def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
     """The report for a scan in its JSON form, as one HTML document."""
     now = now or datetime.now(timezone.utc)
     devices = scan.get('devices', [])
     counts = scan.get('counts', {})
     findings = build_findings(scan, now)
+    gaps = coverage_gaps(scan)
+    stopped = bool((scan.get('coverage') or {}).get('stopped'))
     primary = [d for d in devices if d.get('protocol') in _PRIMARY]
     primary_ips = {d.get('ip') for d in primary}
     service_only = {}
@@ -518,8 +617,22 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
              ("APOGEE P2", counts.get('p2', 0)), ("KNXnet/IP", counts.get('knx', 0)),
              ("Points", f"{counts.get('points', 0):,}"), ("Flagged points", flagged),
              ("Trend logs", len(trends)), ("Schedules", len(schedules))]
+    # A pass that did not run shows a dash, not a 0 that reads as "none here".
+    cards = [(k, "—" if k in _CARD_PASS and _not_scanned(scan, _CARD_PASS[k]) else v)
+             for k, v in cards]
     cards_html = "".join(f'<div class="card"><b>{_e(v)}</b><span>{_e(k)}</span></div>'
                          for k, v in cards)
+
+    coverage_html = ""
+    if gaps or stopped:
+        lines = []
+        if stopped:
+            lines.append("<b>The scan was stopped before it finished.</b> "
+                         "Everything below is partial.")
+        if gaps:
+            lines.append("Not scanned: " + "; ".join(f"{_e(label)} ({_e(why)})"
+                                                    for label, why in gaps) + ".")
+        coverage_html = f'<div class="coverage">{"<br>".join(lines)}</div>'
 
     parts = []
     if findings:
@@ -528,9 +641,14 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
                 f'<div class="finding {f.severity}"><h3><span class="sev">{f.severity}</span>'
                 f'{_e(f.title)} <span class="meta">({len(f.rows)})</span></h3>'
                 f'<p>{_e(f.why)}</p>{_table(f.columns, f.rows)}</div>')
+    elif gaps or stopped:
+        parts.append('<p class="none">Nothing to report from what was scanned. '
+                     'Some of the network was not scanned (above).</p>')
     else:
         parts.append('<p class="none">Nothing to report.</p>')
     findings_html = "".join(parts)
+    meta_gap = _metadata_gap(scan)
+    services_gap = _not_scanned(scan, 'services')
 
     inv_rows = []
     for d in sorted(primary, key=lambda d: (_ip_key(d.get('ip')), str(d.get('instance')))):
@@ -600,6 +718,7 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
 <h1>Building automation network survey</h1>
 <p class="meta">Targets <span class="mono">{_e(targets)}</span> · scanned {_e(scanned)}
  · {_e(round(scan.get('elapsed_seconds', 0) or 0, 1))} s · findings: {_e(summary)}</p>
+{coverage_html}
 <div class="cards">{cards_html}</div>
 
 <h2>Findings</h2>
@@ -610,24 +729,27 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
          "Points", "Flagged"], inv_rows)}
 
 <h2>Trend logs</h2>
-{_table(["Address", "Device", "Trend log", "Logs", "Interval", "Records", "State"], trend_rows)}
+{_gap_note(meta_gap) if meta_gap and not trend_rows else
+ _table(["Address", "Device", "Trend log", "Logs", "Interval", "Records", "State"], trend_rows)}
 
 <h2>Schedules and calendars</h2>
-{_table(["Address", "Device", "Object", "Name", "Controls", "Weekly programme", "Default",
+{_gap_note(meta_gap) if meta_gap and not sched_rows else
+ _table(["Address", "Device", "Object", "Name", "Controls", "Weekly programme", "Default",
          "Now"], sched_rows)}
 
 <h2>Alarm routing</h2>
-{_table(["Address", "Device", "Class", "Name", "Recipients",
+{_gap_note(meta_gap) if meta_gap and not alarm_rows else
+ _table(["Address", "Device", "Class", "Name", "Recipients",
          "Priority (offnormal / fault / normal)", "Acknowledge"], alarm_rows)}
 
 <h2>Open service ports</h2>
-{_table(["Address", "Port", "Service", "Vendor", "Title / product", "TLS certificate"], svc_rows)}
+{_gap_note(services_gap) if services_gap and not svc_rows else
+ _table(["Address", "Port", "Service", "Vendor", "Title / product", "TLS certificate"], svc_rows)}
 
 <footer>
 Generated {_e(now.astimezone().strftime('%Y-%m-%d %H:%M'))} by HVAC Network Scanner
-{_e(__version__)} ({_e(scan.get('scanner', ''))} produced the scan). Discovery is read-only:
-nothing was written to any device and no credentials were tried. Default credentials are the
-vendors' published factory defaults, listed so the owner can confirm they were changed.
+{_e(__version__)} ({_e(scan.get('scanner', ''))} produced the scan). The scan reads; it does not
+change settings. {_e(_footer_scope(scan))}
 </footer>
 </main>
 </body>
@@ -656,7 +778,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not isinstance(scan, dict) or 'devices' not in scan:
         print(f"ERROR: {args.scan} is not a scan export", file=sys.stderr)
         return 1
-    out = args.output or (args.scan.rsplit('.', 1)[0] + ".html")
+    # Path.with_suffix, not rsplit('.'): a folder with a dot in its name
+    # (C:\Users\j.smith\scans\site) used to become C:\Users\j.html.
+    out = args.output or str(Path(args.scan).with_suffix(".html"))
     write_html(scan, out)
     print(f"Wrote {out}")
     return 0

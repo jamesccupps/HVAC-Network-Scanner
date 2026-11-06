@@ -257,11 +257,25 @@ def test_a_success_resets_the_failure_counter():
     """Intermittent failures must not permanently disable a property."""
     client = _ScriptedClient(rpm_result={85: 1.0}, single_results={})
     client.read_point_properties('10.0.0.21', 'Analog Input', 0)
-    assert client._partial_fill_failures[('10.0.0.21', 'objectName')] == 1
+    key = ('10.0.0.21', None, 'None', 'objectName')
+    assert client._partial_fill_failures[key] == 1
     client._single_results = {'objectName': 'recovered'}
     out = client.read_point_properties('10.0.0.21', 'Analog Input', 1)
     assert out['objectName'] == 'recovered'
-    assert ('10.0.0.21', 'objectName') not in client._partial_fill_failures
+    assert key not in client._partial_fill_failures
+
+
+def test_one_mstp_device_does_not_stop_fills_for_its_trunk():
+    """MS/TP devices behind one router share its IP; the give-up counter is
+    per device, so one lacking a property leaves the others alone."""
+    client = _ScriptedClient(rpm_result={85: 1.0}, single_results={})
+    for i in range(10):
+        client.read_point_properties('10.0.0.21', 'Analog Input', i, dnet=5, dadr=7)
+    before = len(client.single_reads)
+    client._single_results = {'objectName': 'VAV-4 DAT'}
+    out = client.read_point_properties('10.0.0.21', 'Analog Input', 0, dnet=5, dadr=8)
+    assert len(client.single_reads) > before
+    assert out['objectName'] == 'VAV-4 DAT'
 
 
 def test_empty_rpm_still_retries_every_property():

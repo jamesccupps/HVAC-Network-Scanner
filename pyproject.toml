@@ -32,7 +32,8 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "pytest-cov>=4.1"]
 # Build-only. Never imported at runtime, so the package stays
-# zero-dependency for anyone who installs it with pip.
+# zero-dependency for anyone who installs it with pip. CI builds the release
+# executable from packaging/requirements-build.txt instead (hash-pinned).
 build = ["pyinstaller>=6.0"]
 
 [project.urls]
@@ -42,6 +43,9 @@ Changelog = "https://github.com/jamesccupps/HVAC-Network-Scanner/blob/main/CHANG
 
 [project.scripts]
 hvac-scanner = "hvac_scanner.cli:main"
+
+# A GUI script, so on Windows the launcher opens no console window beside it.
+[project.gui-scripts]
 hvac-scanner-gui = "hvac_scanner.gui:main"
 
 [tool.setuptools.packages.find]

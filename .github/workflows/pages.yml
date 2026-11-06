@@ -1,0 +1,57 @@
+# The project page on GitHub Pages (https://jamesccupps.github.io/HVAC-Network-Scanner/):
+# site/index.html with the screenshots from docs/screenshots and the icon, which
+# hvac_scanner/icon.py draws (so no image of it is kept twice). Runs when any of
+# those change on main, or by hand. The page asks GitHub for the latest version
+# itself and its download links point at releases/latest, so a release needs no
+# new deploy. Needs Settings -> Pages -> Source set to "GitHub Actions".
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "docs/screenshots/**", "hvac_scanner/icon.py", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Make the site
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Put the page, screenshots and icon together
+        run: |
+          mkdir -p _site/images
+          cp -r site/. _site/
+          cp docs/screenshots/*.png _site/images/
+          python3 -c "from hvac_scanner.icon import png_bytes; [open(f'_site/images/icon-{n}.png', 'wb').write(png_bytes(n)) for n in (32, 256)]"
+          find _site | sort
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

@@ -21,6 +21,7 @@ hvac_scanner/
 ├── cli.py            Headless command-line entry point
 ├── gui.py            Tk GUI, thin wrapper over ScanEngine
 ├── settings.py       Remembered GUI settings (JSON in the user's config dir)
+├── text.py           Device text made safe for logs and spreadsheets
 ├── icon.py           The application icon, drawn in code (PNG and ICO writers)
 ├── __main__.py       `python -m hvac_scanner` → GUI
 └── __init__.py       Public API, version
@@ -72,7 +73,10 @@ testable against captured byte fixtures with no mocking.
 
 One long-lived UDP socket per `BACnetClient`, bound to port 47808 where
 possible (some devices reply to 47808 whatever port asked) and an ephemeral
-port otherwise. Every packet goes out and comes back through it.
+port otherwise. Every packet goes out and comes back through it. The port is
+never shared: no `SO_REUSEADDR`, and `SO_EXCLUSIVEADDRUSE` on Windows, so a
+front-end or other BACnet tool already on 47808 keeps its traffic and the
+scanner takes an ephemeral port.
 
 Confirmed requests may be in flight from several threads at once, each to a
 different device. There is no background receive thread. A request
@@ -88,7 +92,13 @@ another 255 requests.
 
 Discovery (Who-Is, Who-Is-Router-To-Network, BBMD registration, unicast
 probing) reads the socket directly and runs as its own phase, never
-overlapping confirmed requests.
+overlapping confirmed requests. One Who-Is window keeps at most 1,000
+devices per source address and 20,000 in all.
+
+ReadPropertyMultiple batches are sized from the device's max APDU at both
+ends: the request must fit what it accepts and the reply what it can send
+(requests never accept a segmented reply). A batch the device aborts is
+halved; one it refuses with an Error or Reject means no batches for it.
 
 ### Deep scans (engine.py)
 
@@ -111,9 +121,16 @@ attempts pending at once, targets pulled lazily from an iterator so a /16 is
 never materialised. Targets are ordered port-major — every host on one port,
 then the next port — so a given host sees about one attempt at a time.
 
+No host has more than two attempts open at once (a semaphore per address),
+which matters when the target list is short and port-major order cannot
+spread the load.
+
 After the sweep, hosts are identified on a small thread pool (16), one host
 per worker, each host's ports in sequence: Modbus unit-ID probing over one
-TCP session, or the service banner probes.
+TCP session, or the service banner probes. A service probe is cut off 15
+seconds after connecting (its socket is shut down from a timer), however
+slowly the peer sends; a Modbus request has one deadline for everything it
+reads.
 
 ### SNMP
 
@@ -129,6 +146,19 @@ scans, MS/TP), Modbus, APOGEE P2, services, SNMP, then fingerprinting. A
 `threading.Event` (`stop_event`) is checked between passes, between devices
 and between batches for cooperative abort; partial results are always
 fingerprinted and returned.
+
+`ScanResult.passes` records what each pass did (`scanned`, `off`, `failed`,
+`skipped: why`, `stopped partway`, `stopped before it ran`), and
+`ScanResult.stopped` and `.options` go with it into the JSON's `coverage`
+block. The report reads them so a pass that did not run is "Not scanned"
+rather than an empty, clean-looking section, and the CLI does not roll a
+baseline forward on a partial scan (`ScanResult.complete`).
+
+Every log line goes through `text.clean_log_line`, which strips control
+characters and escape sequences: device names, banners and titles end up in
+log lines, and the CLI prints them to a terminal. CSV cells and the GUI's
+copy go through `text.spreadsheet_cell`, so device text cannot become a
+spreadsheet formula.
 
 The engine reports through three callbacks: `callback(msg)` for log lines,
 `device_callback(dev)` as each device finishes, and

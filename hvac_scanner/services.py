@@ -15,16 +15,18 @@ import re
 import socket
 import ssl
 import struct
+import threading
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager, nullcontext
 from typing import Any, Callable, Optional
 
 from . import __version__
 from .certs import parse_der_certificate
 from .constants import HTTP_FINGERPRINTS, HVAC_TCP_PORTS, PORT_TO_SERVICE
 from .netsweep import tcp_sweep
+from .text import clean_text
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +45,34 @@ _BSC_SUBPROTOCOLS = ("hub.bsc.bacnet.org", "dc.bsc.bacnet.org")
 # probed one after another: an embedded web server often serves a single
 # connection at a time.
 _IDENTIFY_WORKERS = 16
+
+# Longest any one probe may take once connected. Each read has the probe
+# timeout, but a peer sending one byte just inside it, again and again,
+# could otherwise hold a probe (and the scan, which Stop could not end) for
+# hours.
+_PROBE_TIME_LIMIT_S = 15.0
+
+
+@contextmanager
+def _time_limit(sock: socket.socket, seconds: Optional[float] = None):
+    """Shut `sock` down if the block has not finished within `seconds`
+    (default _PROBE_TIME_LIMIT_S), which ends any read in progress on it."""
+    seconds = _PROBE_TIME_LIMIT_S if seconds is None else seconds
+    def expire() -> None:
+        try:
+            # The plain socket's shutdown, even for a TLS socket: the TLS
+            # one also drops its TLS state, which another thread may be
+            # using at this moment.
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        except OSError:
+            pass
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
 
 
 def _tls_context() -> ssl.SSLContext:
@@ -214,6 +244,14 @@ class HVACServiceScanner:
         elif port in (1883, 8883):
             info['product'] = 'MQTT Broker'
 
+        # Whatever the device said about itself goes to the log, the GUI and
+        # the exports: no control characters or terminal escapes in it.
+        for k, v in list(info.items()):
+            if isinstance(v, str):
+                info[k] = clean_text(v)
+            elif k == 'fox' and isinstance(v, dict):
+                info[k] = {clean_text(fk): clean_text(fv) for fk, fv in v.items()}
+
         # Regex-match fingerprints over combined text
         all_text = ' '.join(str(info.get(k, '')) for k in
                             ('banner', 'title', 'server', 'product',
@@ -238,35 +276,11 @@ class HVACServiceScanner:
             else:
                 conn = http.client.HTTPConnection(ip, port, timeout=self.timeout)
             conn.request("GET", "/", headers={"User-Agent": f"HVAC-Scanner/{__version__}"})
-
-            # Capture the certificate before reading the response. The probe
-            # already establishes TLS and threw this away; BAS controllers put
-            # the product line and often the panel name in the subject CN, and
-            # the expiry date is operational information the owner wants.
-            # Verification is off (self-signed is the norm on this gear), so
-            # the DER has to be decoded directly rather than via getpeercert().
-            if use_ssl and getattr(conn, 'sock', None) is not None:
-                try:
-                    der = conn.sock.getpeercert(binary_form=True)
-                    cert = parse_der_certificate(der)
-                except (AttributeError, ValueError, OSError) as e:
-                    log.debug("cert read %s:%d: %s", ip, port, e)
-
-            resp = conn.getresponse()
-            info['server'] = resp.getheader('Server', '')
-            info['banner'] = f"HTTP/{resp.status} {resp.reason} | Server: {info['server']}"
-            body = resp.read(4096).decode('utf-8', errors='replace')
-
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', body, re.IGNORECASE)
-            if title_match:
-                info['title'] = title_match.group(1).strip()
-            if not info['title']:
-                login_match = re.search(
-                    r'(login|sign.?in|webctrl|niagara|metasys|desigo)',
-                    body, re.IGNORECASE
-                )
-                if login_match:
-                    info['title'] = f"[Login Page: {login_match.group(1)}]"
+            limit = (_time_limit(conn.sock) if getattr(conn, 'sock', None) is not None
+                     else nullcontext())
+            with limit:
+                self._read_http(conn, ip, port, use_ssl, info, cert_out := [])
+            cert = cert_out[0] if cert_out else None
         except ssl.SSLError as e:
             log.debug("HTTP probe %s:%d: %s", ip, port, e)
             if _client_cert_demanded(e):
@@ -287,11 +301,45 @@ class HVACServiceScanner:
             days = cert.days_until_expiry()
             if days is not None and days < 0:
                 self._log(f"  [!] {ip}:{port} TLS certificate expired "
-                          f"{-days} day(s) ago ({cert.subject_cn or 'no CN'})")
+                          f"{-days} day(s) ago ({clean_text(cert.subject_cn) or 'no CN'})")
             elif days is not None and days < 30:
                 self._log(f"  [!] {ip}:{port} TLS certificate expires in "
-                          f"{days} day(s) ({cert.subject_cn or 'no CN'})")
+                          f"{days} day(s) ({clean_text(cert.subject_cn) or 'no CN'})")
         return info
+
+    @staticmethod
+    def _read_http(conn, ip: str, port: int, use_ssl: bool,
+                   info: dict[str, Any], cert_out: list) -> None:
+        """Read the certificate and the response of a request already sent.
+
+        Capture the certificate before reading the response. BAS controllers
+        put the product line and often the panel name in the subject CN, and
+        the expiry date is operational information the owner wants.
+        Verification is off (self-signed is the norm on this gear), so the
+        DER has to be decoded directly rather than via getpeercert().
+        """
+        if use_ssl and getattr(conn, 'sock', None) is not None:
+            try:
+                der = conn.sock.getpeercert(binary_form=True)
+                cert_out.append(parse_der_certificate(der))
+            except (AttributeError, ValueError, OSError) as e:
+                log.debug("cert read %s:%d: %s", ip, port, e)
+
+        resp = conn.getresponse()
+        info['server'] = resp.getheader('Server', '')
+        info['banner'] = f"HTTP/{resp.status} {resp.reason} | Server: {info['server']}"
+        body = resp.read(4096).decode('utf-8', errors='replace')
+
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', body, re.IGNORECASE)
+        if title_match:
+            info['title'] = title_match.group(1).strip()
+        if not info['title']:
+            login_match = re.search(
+                r'(login|sign.?in|webctrl|niagara|metasys|desigo)',
+                body, re.IGNORECASE
+            )
+            if login_match:
+                info['title'] = f"[Login Page: {login_match.group(1)}]"
 
     def probe_bacnet_sc(self, ip: str, port: int) -> Optional[dict[str, Any]]:
         """A service entry for a BACnet/SC endpoint at `ip`:`port`, or None.
@@ -337,7 +385,8 @@ class HVACServiceScanner:
         response = b''
         refused = ''
         try:
-            with socket.create_connection((ip, port), timeout=self.timeout) as raw:
+            with socket.create_connection((ip, port), timeout=self.timeout) as raw, \
+                    _time_limit(raw):
                 with _tls_context().wrap_socket(raw) as tls:
                     try:
                         cert = parse_der_certificate(tls.getpeercert(binary_form=True))
@@ -437,7 +486,8 @@ class HVACServiceScanner:
         cert = None
         resp = b''
         try:
-            with socket.create_connection((ip, port), timeout=self.timeout) as raw:
+            with socket.create_connection((ip, port), timeout=self.timeout) as raw, \
+                    _time_limit(raw):
                 sock = _tls_context().wrap_socket(raw) if port == 4911 else raw
                 try:
                     if port == 4911:

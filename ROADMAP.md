@@ -6,7 +6,8 @@ missing, open an issue — that is how items get onto this list and how they
 move up it.
 
 Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently the
-alarm routing inventory and router tables (2.9.0), and before that MS/TP
+fixes from an external review (2.9.1), the alarm routing inventory and
+router tables (2.9.0), and before that MS/TP
 behind remote routers, BBMD tables, trend log and schedule inventory,
 BACnet/SC detection and saved site profiles (2.8.0).
 
@@ -52,6 +53,27 @@ vendor software, and never a write to a panel.
   recipients.
 - **BACnet/SC identity**: with a certificate the site provides, read the
   hub's own Device object. Opt-in, since it joins the secure network.
+- **What each device supports**: read `protocolServicesSupported` once per
+  device, skip ReadPropertyMultiple where it is not, and show the list.
+- **`databaseRevision` in the diff**, as a "program changed" signal.
+- **Give up on a silent device sooner**: one that answers I-Am but no reads
+  costs about a minute today, one after another behind a router.
+
+### Reports and the operator
+
+From the 2026-11-06 review's feature ideas:
+
+- **A "gentle" preset**: rate-limited routed traffic, one device at a time,
+  MS/TP-length timeouts and a summary of what the scan will send before it
+  starts (hosts, protocols, estimated load).
+- **A share-safe export**: hosts as H1…Hn, with serials, locations, host IDs
+  and communities removed, for sending a scan to a vendor.
+- **Duplicate MS/TP MACs** on one trunk as a finding (duplicate device
+  instances already are).
+- **A findings-only CSV/JSON** for ticketing systems.
+- **GUI**: a visible keyboard focus, keyboard access to the right-click
+  actions, rescaling when the window moves between monitors, and faster
+  filtering and sorting of very large point lists.
 
 ## Later / under consideration
 

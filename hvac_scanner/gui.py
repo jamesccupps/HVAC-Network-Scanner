@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import logging
 import os
 import queue
 import re
@@ -37,6 +38,9 @@ from . import settings as settings_mod
 from .engine import ScanEngine, ScanOptions
 from .report import (recipient_summary, trend_interval, trend_records, trend_state,
                      week_summary)
+from .text import clean_text, spreadsheet_cell
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +80,12 @@ _ADVANCED_DEFAULTS = {
     'unicast': "auto", 'bbmd': "", 'broadcast': "", 'max_objects': "",
     'communities': "public",
 }
+# The on/off options in the Advanced panel, with their defaults.
+_ADVANCED_TOGGLES = {'deep_scan': True, 'use_rpm': True, 'read_metadata': True,
+                     'read_bbmd_tables': True, 'mstp_mac_probe': False}
+
+# Total addresses a scan may cover before the GUI asks first.
+_CONFIRM_HOSTS = 1024
 
 _LOG_MAX_LINES = 20000
 _HEADING = re.compile(r"[A-Z][A-Z /]{6,}")      # BACNET/IP DISCOVERY, not "SNMP:  1"
@@ -132,7 +142,10 @@ class HVACNetworkScannerGUI:
         self._setup_styles()
         self._build_ui()
         self._bind_keys()
-        self._apply_settings(settings_mod.load(settings_path))
+        data, problem = settings_mod.load_checked(settings_path)
+        self._apply_settings(data)
+        if problem:
+            self.log_message(f"[!] {problem}")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Destroy>", self._on_destroy, add="+")
@@ -206,6 +219,12 @@ class HVACNetworkScannerGUI:
                         bordercolor=C.BG_PANEL, lightcolor=C.BG_PANEL, darkcolor=C.BG_PANEL,
                         padding=(6, 2), font=self._f(9))
         style.map("Link.TButton", foreground=[("active", C.ACCENT_HOVER)],
+                  background=[("active", C.BG_PANEL)])
+        # The Advanced button while settings in it differ from the defaults.
+        style.configure("Warn.TButton", background=C.BG_PANEL, foreground=C.YELLOW,
+                        bordercolor=C.BG_PANEL, lightcolor=C.BG_PANEL, darkcolor=C.BG_PANEL,
+                        padding=(6, 2), font=self._f(9, "bold"))
+        style.map("Warn.TButton", foreground=[("active", C.ACCENT_HOVER)],
                   background=[("active", C.BG_PANEL)])
 
         # Inputs
@@ -300,7 +319,8 @@ class HVACNetworkScannerGUI:
         self.stop_btn.pack(side=tk.RIGHT, padx=(6, 0))
         self.network_entry = ttk.Entry(row1, font=self._f(11, mono=True))
         self.network_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.network_entry.insert(0, "192.168.1.0/24")
+        # Blank on first run: a prefilled office-LAN guess meant one press of
+        # Enter scanned a network nobody had chosen.
         self.network_entry.bind("<Key>", lambda _e: self.network_entry.configure(style="TEntry"))
 
         hint = ttk.Frame(cfg, style="Card.TFrame")
@@ -514,15 +534,35 @@ class HVACNetworkScannerGUI:
         ttk.Checkbutton(chk, text="Probe MS/TP addresses behind remote routers (slow)",
                         variable=self.mstp_mac_probe).pack(side=tk.LEFT)
         self._adv_open = False
+        for var in (*self.adv_vars.values(), *(getattr(self, k) for k in _ADVANCED_TOGGLES)):
+            var.trace_add('write', lambda *_a: self._update_adv_label())
+
+    def _advanced_changes(self) -> list[str]:
+        """The advanced settings that differ from the defaults. They are
+        remembered between sessions while their panel stays folded away, so
+        the button says how many are in effect."""
+        changed = [k for k, v in self.adv_vars.items()
+                   if v.get().strip() != _ADVANCED_DEFAULTS.get(k, '')]
+        changed += [k for k, default in _ADVANCED_TOGGLES.items()
+                    if getattr(self, k).get() != default]
+        return changed
+
+    def _update_adv_label(self) -> None:
+        n = len(self._advanced_changes())
+        arrow = "▴" if self._adv_open else "▾"
+        text = f"Advanced ({n} changed) {arrow}" if n else f"Advanced {arrow}"
+        try:
+            self.adv_btn.configure(text=text, style="Warn.TButton" if n else "Link.TButton")
+        except tk.TclError:
+            pass
 
     def _toggle_advanced(self, show: Optional[bool] = None) -> None:
         self._adv_open = (not self._adv_open) if show is None else show
         if self._adv_open:
             self.adv_frame.pack(fill=tk.X, padx=14, pady=(0, 12))
-            self.adv_btn.configure(text="Advanced ▴")
         else:
             self.adv_frame.pack_forget()
-            self.adv_btn.configure(text="Advanced ▾")
+        self._update_adv_label()
 
     def _menu(self, parent) -> tk.Menu:
         return tk.Menu(parent, tearoff=0, bg=Colors.BG_PANEL, fg=Colors.TEXT,
@@ -871,8 +911,13 @@ class HVACNetworkScannerGUI:
         if not sel:
             return "break"
         heads = [tree.heading(c, "text").rstrip(" ▲▼") for c in tree["columns"]]
-        lines = ["\t".join(heads)] + ["\t".join(str(v) for v in tree.item(i, 'values'))
-                                      for i in sel]
+        # Pasted into a spreadsheet, a device-chosen name such as
+        # "=HYPERLINK(...)" would become a formula; tabs and line breaks
+        # inside a value would shift it into other cells.
+        lines = ["\t".join(heads)] + [
+            "\t".join(spreadsheet_cell(clean_text(str(v)))
+                      for v in tree.item(i, 'values'))
+            for i in sel]
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(lines))
         self._set_status(f"Copied {len(sel)} row(s)", Colors.TEXT_DIM)
@@ -977,9 +1022,30 @@ class HVACNetworkScannerGUI:
                 self._show_progress(*progress)
             if done is not None:
                 self._scan_finished(*done)
+        except tk.TclError:
+            if not self._alive():
+                return                               # window is gone
+            log.exception("GUI update failed")
+        except Exception:
+            # Anything else used to end the pump for good, leaving the window
+            # on "Scanning…" with every later message stuck in the queue.
+            log.exception("GUI update failed")
+            if done is not None and self.scan_running:
+                self.scan_running = False
+                self.scan_btn.configure(state='normal')
+                self.stop_btn.configure(state='disabled')
+                self._set_status("Scan finished; showing results failed — see the log",
+                                 Colors.RED)
+        try:
             self._pump_id = self.root.after(100, self._pump)
         except tk.TclError:
-            return                                   # window is gone
+            return
+
+    def _alive(self) -> bool:
+        try:
+            return bool(self.root.winfo_exists())
+        except tk.TclError:
+            return False
 
     def _on_destroy(self, event) -> None:
         if event.widget is self.root and self._pump_id:
@@ -1020,6 +1086,8 @@ class HVACNetworkScannerGUI:
         opts = self._build_options()
         if opts is None:
             return
+        if not self._confirm_size(opts.networks):
+            return
 
         self.scan_running = True
         self.result = None
@@ -1048,6 +1116,26 @@ class HVACNetworkScannerGUI:
         threading.Thread(target=self._run_scan, args=(opts,), daemon=True,
                          name="hvac-scan").start()
 
+    def _confirm_size(self, networks: list[str]) -> bool:
+        """Ask before a scan of more than _CONFIRM_HOSTS addresses in all.
+        Each target is limited to a /16 on its own, but several of them, or
+        one /16 typed for a /24, started without a word."""
+        from .netrange import parse_targets, InvalidTargetSyntaxError
+        total = 0
+        for n in networks:
+            try:
+                total += len(parse_targets(n))
+            except InvalidTargetSyntaxError:
+                pass
+        if total <= _CONFIRM_HOSTS:
+            return True
+        changes = self._advanced_changes()
+        note = (f"\n\nAdvanced settings in effect: {', '.join(changes)}." if changes else "")
+        return messagebox.askyesno(
+            "Large scan",
+            f"The targets cover {total:,} addresses. Scan all of them?{note}",
+            parent=self.root)
+
     def stop_scan(self) -> None:
         if not self.scan_running:
             return
@@ -1057,11 +1145,12 @@ class HVACNetworkScannerGUI:
         self.log_message("Scan stop requested — finishing the current step…")
 
     def _read_number(self, entry, label: str, default, cast, minimum=None):
-        """Read a numeric entry field, falling back to `default` on junk input.
+        """Read a numeric entry field: `default` when blank, ValueError (with
+        a sentence for the user) when it is not a usable number.
 
-        Previously the timeout field was parsed with a bare float(), so a typo
-        raised out of _run_scan and the user got a traceback in the log instead
-        of a scan. The chunk field was guarded and the timeout field was not.
+        A typo used to fall back to the default with only a log line, and the
+        defaults are the least gentle settings (no rate limit, four devices at
+        once), so a mistyped "50" became full speed on a fragile site.
         """
         raw = (entry.get() or "").strip()
         if not raw:
@@ -1069,11 +1158,9 @@ class HVACNetworkScannerGUI:
         try:
             value = cast(raw)
         except (TypeError, ValueError):
-            self.log_message(f"  [!] {label} {raw!r} is not a number — using {default}")
-            return default
+            raise ValueError(f"{label} {raw!r} is not a number") from None
         if minimum is not None and value < minimum:
-            self.log_message(f"  [!] {label} {value} is below {minimum} — using {default}")
-            return default
+            raise ValueError(f"{label} must be at least {minimum}, not {raw}")
         return value
 
     def _build_options(self) -> Optional[ScanOptions]:
@@ -1108,13 +1195,24 @@ class HVACNetworkScannerGUI:
         except ValueError as e:
             return self._reject(str(e))
 
-        max_objects = self._read_number(self.adv_vars['max_objects'], "Max objects",
-                                        None, int, minimum=1)
+        numbers = {}
+        for key, entry, label, default, cast, minimum in (
+                ('max_objects', self.adv_vars['max_objects'], "Max objects", None, int, 1),
+                ('timeout', self.timeout_entry, "Timeout", 5.0, float, 0.1),
+                ('whois_chunk', self.whois_chunk_entry, "Who-Is chunk", 0, int, 0),
+                ('rate_limit', self.rate_limit_entry, "Rate limit", 0, int, 0),
+                ('workers', self.workers_entry, "Parallel devices", 4, int, 1)):
+            try:
+                numbers[key] = self._read_number(entry, label, default, cast, minimum)
+            except ValueError as e:
+                if key != 'max_objects':
+                    self._toggle_advanced(True)
+                return self._reject(str(e), entry if hasattr(entry, 'configure') else None)
         communities = [c.strip() for c in self.adv_vars['communities'].get().split(",")
                        if c.strip()] or ["public"]
         return ScanOptions(
             networks=networks,
-            timeout=self._read_number(self.timeout_entry, "Timeout", 5.0, float, minimum=0.1),
+            timeout=numbers['timeout'],
             scan_bacnet=self.scan_bacnet.get(),
             scan_mstp=self.scan_mstp.get(),
             scan_modbus=self.scan_modbus.get(),
@@ -1124,17 +1222,14 @@ class HVACNetworkScannerGUI:
             scan_knx=self.scan_knx.get(),
             deep_scan=self.deep_scan.get(),
             use_rpm=self.use_rpm.get(),
-            whois_chunk_size=self._read_number(self.whois_chunk_entry, "Who-Is chunk", 0,
-                                               int, minimum=0),
-            rate_limit_ms=self._read_number(self.rate_limit_entry, "Rate limit", 0, int,
-                                            minimum=0),
+            whois_chunk_size=numbers['whois_chunk'],
+            rate_limit_ms=numbers['rate_limit'],
             scan_depth=self.scan_depth_var.get(),
-            bacnet_workers=self._read_number(self.workers_entry, "Parallel devices", 4,
-                                             int, minimum=1),
+            bacnet_workers=numbers['workers'],
             unicast_discovery=self.adv_vars['unicast'].get() or "auto",
             bbmd=bbmd,
             bacnet_broadcast=broadcast,
-            max_objects_per_device=max_objects,
+            max_objects_per_device=numbers['max_objects'],
             snmp_communities=communities,
             read_bbmd_tables=self.read_bbmd_tables.get(),
             read_metadata=self.read_metadata.get(),
@@ -1175,9 +1270,8 @@ class HVACNetworkScannerGUI:
         self.progress.configure(mode='determinate', maximum=1, value=1 if result else 0)
         self.scan_btn.configure(state='normal')
         self.stop_btn.configure(state='disabled')
-        has_devices = bool(result and result.devices)
-        self.export_btn.configure(state='normal' if has_devices else 'disabled')
-        self.compare_btn.configure(state='normal' if has_devices else 'disabled')
+        self.export_btn.configure(state='normal' if result else 'disabled')
+        self.compare_btn.configure(state='normal' if result else 'disabled')
         if result:
             self._populate_results()
         if error:
@@ -1745,9 +1839,17 @@ class HVACNetworkScannerGUI:
         def _do_ping():
             try:
                 windows = os.name == 'nt'
+                # The full path on Windows: a bare "ping" is looked up in the
+                # program's own folder first, and the downloaded exe usually
+                # sits in Downloads beside whatever else was downloaded.
+                exe = (os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                                    'System32', 'PING.EXE') if windows else 'ping')
                 result = subprocess.run(
-                    ['ping', '-n' if windows else '-c', '4', ip],
-                    capture_output=True, text=True, timeout=15,
+                    [exe, '-n' if windows else '-c', '4', ip],
+                    capture_output=True, timeout=15,
+                    # ping writes in the console's OEM code page on Windows.
+                    encoding='oem' if windows else None, errors='replace',
+                    text=True,
                     # The packaged GUI has no console; without this, ping
                     # flashes one up on Windows.
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if windows else 0)
@@ -1775,7 +1877,9 @@ class HVACNetworkScannerGUI:
     # -- export -----------------------------------------------------------
 
     def _export(self, kind: str) -> None:
-        if not self.result or not self.result.devices:
+        # A scan that found nothing still exports: "these addresses, these
+        # protocols, nothing answered" is a result worth keeping.
+        if not self.result:
             messagebox.showinfo("Export", "Run a scan first.")
             return
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1900,8 +2004,19 @@ class HVACNetworkScannerGUI:
         self.log_message(f"Site profile {name!r}: {prof.get('targets', '')}")
         self._save_settings()
 
+    def _change_profiles(self, change) -> None:
+        """Apply `change` to the saved profiles. With a settings file, to the
+        profiles in the file as it is now, so a profile another window saved
+        meanwhile is kept rather than written over."""
+        saved = settings_mod.update_profiles(self.settings_path, change)
+        if saved is None:
+            change(self._profiles)
+        else:
+            self._profiles = saved
+
     def _store_profile(self, name: str) -> None:
-        self._profiles[name] = self._profile_data()
+        data = self._profile_data()
+        self._change_profiles(lambda profs: profs.__setitem__(name, data))
         self.profile_var.set(name)
         self._refresh_profiles()
         self._save_settings()
@@ -1922,7 +2037,7 @@ class HVACNetworkScannerGUI:
         self.log_message(f"Saved site profile {name!r} (CLI: hvac-scanner --profile \"{name}\")")
 
     def _remove_profile(self, name: str) -> None:
-        self._profiles.pop(name, None)
+        self._change_profiles(lambda profs: profs.pop(name, None))
         if self.profile_var.get() == name:
             self.profile_var.set('')
         self._refresh_profiles()

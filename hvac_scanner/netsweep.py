@@ -31,6 +31,12 @@ log = logging.getLogger(__name__)
 # table starts to notice.
 MAX_CONCURRENCY = 512
 
+# Connection attempts open to one address at a time. Port-major order spreads
+# a sweep of many hosts by itself, but a short target list (three controllers)
+# used to give each host ~25 simultaneous connections, and a small gateway
+# with 4-8 TCP sockets then refused the building system's own session.
+PER_HOST_LIMIT = 2
+
 
 def tcp_sweep(targets: Iterable[tuple[str, int]], *,
               timeout: float,
@@ -38,19 +44,26 @@ def tcp_sweep(targets: Iterable[tuple[str, int]], *,
               total: int = 0,
               stop_event=None,
               on_open: Optional[Callable[[str, int], None]] = None,
-              progress: Optional[Callable[[int, int], None]] = None
+              progress: Optional[Callable[[int, int], None]] = None,
+              per_host: int = PER_HOST_LIMIT,
               ) -> list[tuple[str, int]]:
     """Try a TCP connection to each (ip, port); return the ones that accepted.
 
     `total`, if known, is passed to `progress(done, total)`, which is called
     every few dozen attempts. `on_open(ip, port)` fires as each open port is
     found. A set `stop_event` ends the sweep after the attempts in flight.
+    No address has more than `per_host` attempts open at once.
     Runs its own event loop, so call it from a plain (non-async) thread.
     """
     concurrency = max(1, min(concurrency, MAX_CONCURRENCY))
+    per_host = max(1, per_host)
     found: list[tuple[str, int]] = []
     done = 0
     it = iter(targets)
+    # One semaphore per address with attempts pending, dropped when idle so a
+    # /16 does not leave 65,536 of them behind.
+    limits: dict[str, asyncio.Semaphore] = {}
+    users: dict[str, int] = {}
 
     def report() -> None:
         if progress:
@@ -72,12 +85,27 @@ def tcp_sweep(targets: Iterable[tuple[str, int]], *,
             pass
         return True
 
+    async def limited(ip: str, port: int) -> bool:
+        sem = limits.get(ip)
+        if sem is None:
+            sem = limits[ip] = asyncio.Semaphore(per_host)
+        users[ip] = users.get(ip, 0) + 1
+        try:
+            async with sem:
+                if stop_event is not None and stop_event.is_set():
+                    return False
+                return await attempt(ip, port)
+        finally:
+            users[ip] -= 1
+            if not users[ip]:
+                del users[ip], limits[ip]
+
     async def worker() -> None:
         nonlocal done
         for ip, port in it:                 # shared iterator: safe on one loop
             if stop_event is not None and stop_event.is_set():
                 return
-            if await attempt(ip, port):
+            if await limited(ip, port):
                 found.append((ip, port))
                 if on_open:
                     try:

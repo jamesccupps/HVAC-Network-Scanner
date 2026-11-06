@@ -24,6 +24,7 @@ import logging
 import re
 import socket
 import struct
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
@@ -57,6 +58,11 @@ class _ModbusSession:
         self.sock: Optional[socket.socket] = None
         self.txn = 0
         self._stale_possible = False
+        # Whether the last request went unanswered (as opposed to failing to
+        # connect), and whether a gateway answered that nothing is at that
+        # unit ID (exception 0x0A or 0x0B). Either way the unit is empty.
+        self.timed_out = False
+        self.no_device = False
 
     def close(self) -> None:
         if self.sock is not None:
@@ -74,7 +80,15 @@ class _ModbusSession:
         self.close()
 
     def request(self, unit_id: int, pdu: bytes) -> Optional[bytes]:
-        """Send one PDU and return the full response frame, or None."""
+        """Send one PDU and return the full response frame, or None.
+
+        Each attempt has one deadline for everything it reads. Frames with
+        the wrong transaction ID are skipped, and without the deadline a
+        server sending one every so often kept this loop (and the scan)
+        going for ever.
+        """
+        self.timed_out = False
+        self.no_device = False
         for attempt in (0, 1):
             try:
                 if self.sock is None:
@@ -83,18 +97,22 @@ class _ModbusSession:
                 self.txn = (self.txn + 1) & 0xFFFF
                 self.sock.sendall(struct.pack('!HHHB', self.txn, 0, len(pdu) + 1, unit_id)
                                   + pdu)
+                deadline = time.monotonic() + self.timeout
                 while True:
-                    resp = ModbusScanner._recv_frame(self.sock)
+                    resp = ModbusScanner._recv_frame(self.sock, deadline)
                     if len(resp) < 8:
                         raise ConnectionError("connection closed")
                     got = struct.unpack('!H', resp[0:2])[0]
                     if got == self.txn or not self._stale_possible:
+                        self.no_device = (len(resp) >= 9 and bool(resp[7] & 0x80)
+                                          and resp[8] in _GATEWAY_NO_DEVICE)
                         return resp
                     log.debug("%s:%d stale Modbus reply (txn %d)", self.ip, self.port, got)
             except socket.timeout:
                 # The device is up but silent for this unit. Do not retry: the
                 # next request would just wait out the same timeout again.
                 self._stale_possible = True
+                self.timed_out = True
                 return None
             except OSError:
                 self.close()
@@ -123,10 +141,18 @@ class ModbusScanner:
     # -- framing ----------------------------------------------------------
 
     @staticmethod
-    def _recv_exact(sock: socket.socket, n: int) -> bytes:
-        """Read exactly n bytes, or return what arrived before the stream ended."""
+    def _recv_exact(sock: socket.socket, n: int,
+                    deadline: Optional[float] = None) -> bytes:
+        """Read exactly n bytes, or return what arrived before the stream
+        ended. With `deadline` (time.monotonic), raises socket.timeout once it
+        passes, however slowly the bytes trickle in."""
         buf = bytearray()
         while len(buf) < n:
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise socket.timeout("Modbus reply deadline passed")
+                sock.settimeout(left)
             chunk = sock.recv(n - len(buf))
             if not chunk:
                 break
@@ -134,7 +160,8 @@ class ModbusScanner:
         return bytes(buf)
 
     @classmethod
-    def _recv_frame(cls, sock: socket.socket) -> bytes:
+    def _recv_frame(cls, sock: socket.socket,
+                    deadline: Optional[float] = None) -> bytes:
         """Read one complete Modbus TCP frame.
 
         Every probe here used a single recv() and treated whatever came back
@@ -143,13 +170,14 @@ class ModbusScanner:
         first segment silently truncated the register list. The MBAP header
         declares the length, so read the header then exactly that many bytes.
         """
-        header = cls._recv_exact(sock, 7)          # txn(2) proto(2) len(2) unit(1)
+        header = cls._recv_exact(sock, 7, deadline)  # txn(2) proto(2) len(2) unit(1)
         if len(header) < 7:
             return header
         length = struct.unpack('!H', header[4:6])[0]
-        if not 1 <= length <= 253:                 # per the Modbus TCP spec
+        # Unit ID plus a PDU of up to 253 bytes: 254 at most (a 260-byte ADU).
+        if not 1 <= length <= 254:
             return header
-        return header + cls._recv_exact(sock, length - 1)
+        return header + cls._recv_exact(sock, length - 1, deadline)
 
     # -- request PDUs -----------------------------------------------------
 
@@ -172,13 +200,17 @@ class ModbusScanner:
             for uid in unit_ids:
                 # Try Device Identification (FC 0x2B, MEI 0x0E) first, then
                 # Report Server ID (FC 0x11), which older devices answer
-                # instead.
-                info = self._device_id_via(session, uid)
-                if info is None:
-                    info = self._server_id_via(session, uid)
-                if info is None:
-                    # Fall back to a minimal holding register read
-                    info = self._holding_read_via(session, uid)
+                # instead, then a one-register read. Each step happens only
+                # if the unit is there: behind a gateway every request to an
+                # empty unit ID is a serial timeout on the bus the building
+                # polls through, so silence or a gateway's "no device" ends
+                # the probing of that unit.
+                info = None
+                for step in (self._device_id_via, self._server_id_via,
+                             self._holding_read_via):
+                    info = step(session, uid)
+                    if info is not None or session.timed_out or session.no_device:
+                        break
                 if info:
                     info.update({'ip': ip, 'port': port, 'unit_id': uid})
                     results.append(info)
