@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Firmware covered by published advisories.** The report compares the firmware
+  each BACnet controller reports with CISA ICS advisories, taken from CISA's own
+  CSAF data: Trane Tracer SC+ (ICSA-26-071-01), Siemens APOGEE PXC on BACnet
+  firmware (ICSA-22-349-16, -22-286-12, -26-295-08, and three advisories with no
+  fix yet), Desigo PXC4/5/7 and DXR2 (ICSA-22-132-10, -26-225-08), Desigo CC
+  (ICSA-26-209-01). A device older than its advisory's fix is listed with the
+  version to update to; one whose reported version is too short to place (a DXR2
+  saying "v01.21" against a fix at 01.21.142.5) is listed to check by hand.
+  Versions are compared only; nothing is tested.
+
 ## [2.11.0] — 2026-11-06
 
 ### Added

@@ -60,6 +60,7 @@ a = Analysis(
     # submodules lazily inside functions (device_profiles, netrange, diff,
     # certs), which static analysis does not always follow.
     hiddenimports=[
+        'hvac_scanner.advisories',
         'hvac_scanner.bacnet',
         'hvac_scanner.certs',
         'hvac_scanner.cli',

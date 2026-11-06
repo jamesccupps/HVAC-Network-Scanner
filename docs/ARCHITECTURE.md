@@ -23,6 +23,7 @@ hvac_scanner/
 ├── diff.py           Baseline comparison
 ├── engine.py         ScanEngine orchestrator + ScanResult export
 ├── report.py         HTML survey report built from a ScanResult or its JSON
+├── advisories.py     CISA ICS advisories (from CISA's CSAF data) matched to reported firmware
 ├── cli.py            Headless command-line entry point
 ├── gui.py            Tk GUI, thin wrapper over ScanEngine
 ├── settings.py       Remembered GUI settings (JSON in the user's config dir)
