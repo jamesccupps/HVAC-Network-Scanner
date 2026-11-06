@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from datetime import datetime
@@ -87,6 +88,9 @@ _ADVANCED_TOGGLES = {'deep_scan': True, 'use_rpm': True, 'read_metadata': True,
 # Total addresses a scan may cover before the GUI asks first.
 _CONFIRM_HOSTS = 1024
 
+# How often the quiet update check runs (when it is on).
+_UPDATE_CHECK_EVERY_S = 24 * 3600
+
 _LOG_MAX_LINES = 20000
 _HEADING = re.compile(r"[A-Z][A-Z /]{6,}")      # BACNET/IP DISCOVERY, not "SNMP:  1"
 
@@ -104,8 +108,10 @@ def _pick_font(candidates: list[str], fallback: str) -> str:
 
 class HVACNetworkScannerGUI:
     def __init__(self, root: "tk.Tk | tk.Toplevel",
-                 settings_path: "Path | None" = None):
+                 settings_path: "Path | None" = None,
+                 start_note: Optional[str] = None):
         self.root = root
+        self.last_update_check = 0.0       # when the daily check last ran
         self.root.title(f"HVAC Network Scanner {__version__}")
         # Fit smaller laptop screens (leave room for the taskbar).
         w = min(1480, self.root.winfo_screenwidth() - 40)
@@ -146,10 +152,17 @@ class HVACNetworkScannerGUI:
         self._apply_settings(data)
         if problem:
             self.log_message(f"[!] {problem}")
+        if start_note:
+            self.log_message(start_note)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Destroy>", self._on_destroy, add="+")
         self._pump_id = self.root.after(100, self._pump)
+        # The quiet daily check, only for the real app (tests and demos pass
+        # no settings file) and never more than once a day.
+        if (settings_path is not None and self.check_updates_var.get()
+                and time.time() - self.last_update_check > _UPDATE_CHECK_EVERY_S):
+            self.root.after(3000, lambda: self._check_for_update(quiet=True))
 
     # -- styling ----------------------------------------------------------
 
@@ -300,6 +313,13 @@ class HVACNetworkScannerGUI:
                   style="Version.TLabel").pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
         ttk.Button(hdr, text="About", style="Ghost.TButton",
                    command=self._show_about).pack(side=tk.RIGHT)
+        # "Check for updates" until a newer release is known, then
+        # "Update to X" (see _update_clicked).
+        self._update = None
+        self._update_busy = False
+        self.update_btn = ttk.Button(hdr, text="Check for updates", style="Link.TButton",
+                                     command=self._update_clicked)
+        self.update_btn.pack(side=tk.RIGHT, padx=(0, 6))
         self.status_var = tk.StringVar(value="Ready")
         self.status_label = ttk.Label(hdr, textvariable=self.status_var, style="Status.TLabel")
         self.status_label.pack(side=tk.RIGHT, padx=(0, 16))
@@ -532,7 +552,10 @@ class HVACNetworkScannerGUI:
         ttk.Checkbutton(chk, text="BBMD tables",
                         variable=self.read_bbmd_tables).pack(side=tk.LEFT, padx=(0, 18))
         ttk.Checkbutton(chk, text="Probe MS/TP addresses behind remote routers (slow)",
-                        variable=self.mstp_mac_probe).pack(side=tk.LEFT)
+                        variable=self.mstp_mac_probe).pack(side=tk.LEFT, padx=(0, 18))
+        self.check_updates_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(chk, text="Check for updates daily",
+                        variable=self.check_updates_var).pack(side=tk.LEFT)
         self._adv_open = False
         for var in (*self.adv_vars.values(), *(getattr(self, k) for k in _ADVANCED_TOGGLES)):
             var.trace_add('write', lambda *_a: self._update_adv_label())
@@ -1010,6 +1033,8 @@ class HVACNetworkScannerGUI:
                     self._stream_device(payload)
                 elif kind == 'progress':
                     progress = payload
+                elif kind.startswith('update-'):
+                    self._update_event(kind, payload)
                 elif kind == 'done':
                     done = payload
                     break
@@ -1874,6 +1899,102 @@ class HVACNetworkScannerGUI:
             "https://github.com/jamesccupps/HVAC-Network-Scanner",
             parent=self.root)
 
+    # -- updates ------------------------------------------------------------
+    #
+    # The check and the download run on threads and report through the event
+    # queue as ('update-…', payload); see updater.py for what is checked.
+
+    def _check_for_update(self, quiet: bool = False) -> None:
+        if self._update_busy:
+            return
+        self._update_busy = True
+        self.update_btn.configure(text="Checking…", state='disabled')
+
+        def work():
+            from . import updater
+            try:
+                self._events.put(('update-found', (updater.check(), quiet)))
+            except Exception as e:                       # network, bad manifest
+                self._events.put(('update-error', (str(e), quiet)))
+        threading.Thread(target=work, daemon=True, name="update-check").start()
+
+    def _update_clicked(self) -> None:
+        if self._update is None:
+            self._check_for_update(quiet=False)
+            return
+        from . import updater
+        up = self._update
+        if not up.can_install:
+            # Run from source or pip: nothing to swap; the release page has it.
+            if messagebox.askyesno(
+                    "Update available",
+                    f"Version {up.version} is available. This copy runs from Python, "
+                    f"so update it with git or pip, or download the executable.\n\n"
+                    f"Open the releases page?", parent=self.root):
+                webbrowser.open(updater.RELEASES_URL)
+            return
+        if self.scan_running:
+            messagebox.showinfo("Update", "Finish or stop the scan first.", parent=self.root)
+            return
+        if not messagebox.askyesno(
+                "Update",
+                f"Download and install version {up.version}?\n\nThe download is checked "
+                f"against the release's signed manifest, then the scanner closes and "
+                f"opens again as {up.version}.", parent=self.root):
+            return
+        self._update_busy = True
+        self.update_btn.configure(state='disabled')
+
+        def work():
+            try:
+                path = updater.download(
+                    up, progress=lambda d, t: self._events.put(('update-progress', (d, t))))
+                self._events.put(('update-ready', path))
+            except Exception as e:
+                self._events.put(('update-error', (str(e), False)))
+        threading.Thread(target=work, daemon=True, name="update-download").start()
+
+    def _update_event(self, kind: str, payload) -> None:
+        from . import updater
+        if kind == 'update-found':
+            up, quiet = payload
+            self._update_busy = False
+            self.last_update_check = time.time()
+            self._update = up
+            if up is None:
+                self.update_btn.configure(text="Check for updates", state='normal')
+                if not quiet:
+                    self.log_message(f"Up to date: {__version__} is the latest release.")
+            else:
+                self.update_btn.configure(text=f"Update to {up.version}", state='normal',
+                                          style="Warn.TButton")
+                self.log_message(f"Version {up.version} is available "
+                                 f"({'Update to install it' if up.can_install else updater.RELEASES_URL}).")
+        elif kind == 'update-progress':
+            done, total = payload
+            self._show_progress(f"Downloading {self._update.version}", done, total)
+        elif kind == 'update-ready':
+            try:
+                updater.apply(self._update, payload)
+            except Exception as e:
+                self._update_event('update-error', (str(e), False))
+                return
+            self.log_message(f"Installing {self._update.version}; the scanner will reopen.")
+            self._save_settings()
+            self.root.after(300, self.root.destroy)
+        elif kind == 'update-error':
+            msg, quiet = payload
+            self._update_busy = False
+            self.update_btn.configure(state='normal',
+                                      text=(f"Update to {self._update.version}" if self._update
+                                            else "Check for updates"))
+            self.progress_label.configure(text="")
+            if quiet:
+                log.info("update check failed: %s", msg)
+            else:
+                self.log_message(f"  [!] Update: {msg}")
+                messagebox.showwarning("Update", msg, parent=self.root)
+
     # -- export -----------------------------------------------------------
 
     def _export(self, kind: str) -> None:
@@ -1944,6 +2065,8 @@ class HVACNetworkScannerGUI:
             'toggles': {k: getattr(self, k).get() for k in self._PROTOCOL_VARS},
             'profiles': self._profiles,
             'profile': self.profile_var.get(),
+            'check_updates': self.check_updates_var.get(),
+            'last_update_check': self.last_update_check,
         }
         try:
             if self.root.state() == 'normal':
@@ -1960,6 +2083,10 @@ class HVACNetworkScannerGUI:
             self.network_entry.insert(0, data['targets'])
         if data.get('depth') in ("quick", "normal", "full"):
             self.scan_depth_var.set(data['depth'])
+        if isinstance(data.get('check_updates'), bool):
+            self.check_updates_var.set(data['check_updates'])
+        if isinstance(data.get('last_update_check'), (int, float)):
+            self.last_update_check = float(data['last_update_check'])
         for k, v in (data.get('advanced') or {}).items():
             if k in self.adv_vars and isinstance(v, str):
                 self.adv_vars[k].set(v)
@@ -2063,7 +2190,26 @@ class HVACNetworkScannerGUI:
         self.root.destroy()
 
 
+def _update_args(argv: list[str]) -> "tuple[Optional[int], Optional[str]]":
+    """Handle the updater's command-line arguments (see updater.py).
+    Returns (exit code, or None to go on and open the window; a note for
+    the log)."""
+    from . import updater
+    if len(argv) >= 4 and argv[1] == "--finish-update":
+        return updater.finish_update(argv[2], argv[3]), None
+    if "--updated" in argv[1:]:
+        updater.cleanup_after_update()
+        return None, f"Updated to {__version__}."
+    if "--update-failed" in argv[1:]:
+        return None, (f"  [!] The update could not be installed; this is still "
+                      f"{__version__}. Details: {updater.update_log()}")
+    return None, None
+
+
 def main() -> None:
+    code, start_note = _update_args(sys.argv)
+    if code is not None:
+        sys.exit(code)
     # Windows DPI awareness — must be before Tk() creation
     try:
         import ctypes
@@ -2088,7 +2234,8 @@ def main() -> None:
     except Exception:
         pass
 
-    HVACNetworkScannerGUI(root, settings_path=settings_mod.default_path())
+    HVACNetworkScannerGUI(root, settings_path=settings_mod.default_path(),
+                          start_note=start_note)
     root.mainloop()
 
 

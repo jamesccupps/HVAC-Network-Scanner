@@ -146,6 +146,15 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Write-Host "executable started and stayed running"
 
+      - name: Update test
+        # The previous release with an updater (until there is one, this
+        # build) updates itself to this build for real: check, signed
+        # manifest, download, swap, restart. Works on copies; dist is untouched.
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # only to ask which release came before
+        run: ./packaging/test_update.ps1
+
       - name: Size and SHA-256
         # The hash in the build log, and as a file beside the executable, is
         # what the release notes publish: anyone can check the downloaded

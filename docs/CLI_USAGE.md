@@ -71,7 +71,7 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 
 | Flag | Description |
 |------|-------------|
-| `--json PATH` | Write structured results to a JSON file. Its `coverage` block records the options, whether the scan was stopped, and which passes ran (`scanned`, `off`, `failed`, `skipped: why`, `stopped partway`, `stopped before it ran`). |
+| `--json PATH` | Write structured results to a JSON file. Its `coverage` block records the options, whether the scan was stopped, and which passes ran (`scanned`, `off`, `failed`, `skipped: why`, `stopped partway`, `stopped before it ran`); also `bacnet_port` (the UDP port BACnet ran on: not 47808 when another program held it), `local_address` (the address the scan went out from) and `outside_targets` (devices that answered from outside the targets and were not scanned, counted by /24). |
 | `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). A device-supplied value that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is written as text. |
 | `--points-csv PATH` | Write the point list: one row per BACnet point and Modbus register, with value, units and status. |
 | `--html PATH` | Write a self-contained HTML survey report: findings ranked by severity, device inventory, open services. `python -m hvac_scanner.report scan.json -o out.html` builds the same report from a saved JSON export. |

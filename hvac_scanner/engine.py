@@ -189,6 +189,14 @@ class ScanResult:
     passes: dict[str, str] = field(default_factory=dict)
     stopped: bool = False
     options: dict[str, Any] = field(default_factory=dict)
+    # Where the scan ran from, as BACnet saw it: the UDP port it listened on
+    # (47808 unless other BACnet software on this PC had it) and the address
+    # it reached the targets from.
+    bacnet_port: Optional[int] = None
+    local_address: Optional[str] = None
+    # Devices that answered the Who-Is from outside the targets, by /24.
+    # They are not scanned, but they show where the rest of a site is.
+    outside_targets: dict[str, int] = field(default_factory=dict)
 
     # -- export helpers -------------------------------------------------
 
@@ -205,7 +213,10 @@ class ScanResult:
             'scanner': f'HVAC Network Scanner v{__version__}',
             'targets': self.targets,
             'coverage': {'stopped': self.stopped, 'passes': dict(self.passes),
-                         'options': dict(self.options)},
+                         'options': dict(self.options),
+                         'bacnet_port': self.bacnet_port,
+                         'local_address': self.local_address,
+                         'outside_targets': dict(self.outside_targets)},
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
         }
@@ -748,6 +759,13 @@ class ScanEngine:
 
         try:
             client.open()
+            try:
+                self.result.bacnet_port = client._sock.getsockname()[1]
+            except (AttributeError, OSError):
+                self.result.bacnet_port = getattr(client, '_bound_port', None)
+            first = parse_first_host(self.opts.networks)
+            if first and self.result.local_address is None:
+                self.result.local_address = self._source_address(first)
 
             # v2.1.2: compute the authoritative set of IPs the user asked
             # for, so we can drop I-Am responses from devices outside their
@@ -826,10 +844,16 @@ class ScanEngine:
                 kept = []
                 dropped = 0
                 duplicates = 0
+                outside: dict[str, int] = {}
                 for dev in devices:
                     ip = dev.get('ip', '')
                     if allowed_ips is not None and ip not in allowed_ips:
                         dropped += 1
+                        try:
+                            net = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+                        except ValueError:
+                            net = str(ip)
+                        outside[net] = outside.get(net, 0) + 1
                         continue
                     dedup_key = (ip, dev.get('instance'))
                     if dedup_key in seen_devices:
@@ -841,6 +865,17 @@ class ScanEngine:
                 self._log(f"  Discovered {len(devices)} device(s); "
                           f"kept {len(kept)} in target range "
                           f"(dropped {dropped} out-of-range{dup_note}).")
+                if outside:
+                    # Where they were: often the rest of the site, reached
+                    # through a BBMD, and what to add to the targets.
+                    for net, n in outside.items():
+                        self.result.outside_targets[net] = (
+                            self.result.outside_targets.get(net, 0) + n)
+                    shown = sorted(outside.items(), key=lambda kv: -kv[1])
+                    self._log("    Answered from outside the targets (not scanned): "
+                              + ", ".join(f"{net} ({n})" for net, n in shown[:8])
+                              + (f" and {len(shown) - 8} more subnet(s)" if len(shown) > 8 else "")
+                              + ". Add them to the targets to scan them.")
                 # v2.1.2: if the user had a specific target but got zero
                 # matches, the device may be offline, not BACnet/IP, or
                 # firewalled. Tell them instead of leaving them guessing.

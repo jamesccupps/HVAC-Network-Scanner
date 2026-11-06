@@ -161,6 +161,17 @@ def _days_left(tls: dict[str, Any], now: datetime) -> Optional[int]:
     return (when - now).days
 
 
+# Rows repeated this many times or more (the same point on identical
+# controllers, identical KNX gateways) are shown as one.
+_GROUP_MIN = 3
+
+
+def _addresses(ips) -> str:
+    """A list of addresses, short: the first three and how many more."""
+    ips = sorted({str(i) for i in ips}, key=_ip_key)
+    return ", ".join(ips[:3]) + (f" and {len(ips) - 3} more" if len(ips) > 3 else "")
+
+
 def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list[Finding]:
     """Findings, most severe first, from a scan in its JSON form."""
     now = now or datetime.now(timezone.utc)
@@ -250,22 +261,41 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "low", "TLS certificates expiring within 30 days", "Renew before they lapse.",
             ["Address", "Port", "Subject CN", "Expires", "Status"], expiring))
 
-    # Point status
+    # Point status. The same point flagged on several controllers of one
+    # model is one row: 51 identical room controllers each reporting an
+    # unused input as faulted made a table of 1,224 rows that said one thing.
     alarm_rows, override_rows = [], []
+    flagged: dict[tuple, list] = {}
     for d in primary:
+        model = ((d.get('properties') or {}).get('model_name')
+                 or d.get('identified_model') or '')
         for p in d.get('objects') or []:
             status = p.get('status') or ''
             if not status:
                 continue
-            row = [d.get('ip'), _label(d), f"{p.get('type')} {p.get('instance')}",
-                   p.get('name', ''), f"{p.get('present_value', '')} {p.get('units', '')}".strip(),
-                   status]
-            (alarm_rows if ('alarm' in status or 'fault' in status) else override_rows).append(row)
+            key = (model, p.get('type'), p.get('instance'), p.get('name', ''), status)
+            flagged.setdefault(key, []).append((d, p))
+    for (model, otype, inst, name, status), hits in sorted(
+            flagged.items(), key=lambda kv: -len(kv[1])):
+        if len(hits) >= _GROUP_MIN and model:
+            values = {f"{p.get('present_value', '')} {p.get('units', '')}".strip()
+                      for _d, p in hits}
+            row = [_addresses(d.get('ip') for d, _p in hits), f"{model} ({len(hits)} devices)",
+                   f"{otype} {inst}", name, values.pop() if len(values) == 1 else "varies", status]
+            rows = [row]
+        else:
+            rows = [[d.get('ip'), _label(d), f"{otype} {inst}", name,
+                     f"{p.get('present_value', '')} {p.get('units', '')}".strip(), status]
+                    for d, p in hits]
+        (alarm_rows if ('alarm' in status or 'fault' in status) else override_rows).extend(rows)
     cols = ["Address", "Device", "Object", "Name", "Value", "Status"]
     if alarm_rows:
         out.append(Finding(
             "medium", "Points in alarm or fault",
-            "The controller itself reports these points as in alarm or faulted.",
+            "The controller itself reports these points as in alarm or faulted. The same "
+            "point faulted on many identical controllers is usually a function they "
+            "don't use (an input with no sensor), not a failure; a point faulted on one "
+            "controller is the one to look at.",
             cols, alarm_rows))
     if override_rows:
         out.append(Finding(
@@ -286,12 +316,22 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "automation network. Firmware 3.x panels can move to BACnet/IP.",
             ["Address", "Role", "Evidence"], rows))
 
-    # KNX gateways that let anyone onto the bus
-    rows = [[d.get('ip'), d.get('name', ''), d.get('knx_address', ''),
-             ", ".join(f for f, on in (("tunnelling", d.get('tunnelling')),
-                                       ("routing", d.get('routing'))) if on)]
-            for d in devices if d.get('protocol') == 'KNXnet/IP'
-            and (d.get('tunnelling') or d.get('routing')) and not d.get('secure')]
+    # KNX gateways that let anyone onto the bus; identical ones (every room
+    # controller of a model) as one row.
+    knx: dict[tuple, list] = {}
+    for d in devices:
+        if (d.get('protocol') == 'KNXnet/IP' and (d.get('tunnelling') or d.get('routing'))
+                and not d.get('secure')):
+            offers = ", ".join(f for f, on in (("tunnelling", d.get('tunnelling')),
+                                               ("routing", d.get('routing'))) if on)
+            knx.setdefault((d.get('name', ''), d.get('knx_address', ''), offers), []).append(d)
+    rows = []
+    for (name, kaddr, offers), ds in sorted(knx.items(), key=lambda kv: -len(kv[1])):
+        if len(ds) >= _GROUP_MIN:
+            rows.append([_addresses(d.get('ip') for d in ds), f"{name} ({len(ds)} gateways)",
+                         kaddr, offers])
+        else:
+            rows.extend([d.get('ip'), name, kaddr, offers] for d in ds)
     if rows:
         out.append(Finding(
             "medium", "KNXnet/IP gateways without KNX Secure",
@@ -624,14 +664,30 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
                          for k, v in cards)
 
     coverage_html = ""
-    if gaps or stopped:
-        lines = []
-        if stopped:
-            lines.append("<b>The scan was stopped before it finished.</b> "
-                         "Everything below is partial.")
-        if gaps:
-            lines.append("Not scanned: " + "; ".join(f"{_e(label)} ({_e(why)})"
-                                                    for label, why in gaps) + ".")
+    cov = scan.get('coverage') or {}
+    port = cov.get('bacnet_port')
+    outside = cov.get('outside_targets') or {}
+    lines = []
+    if stopped:
+        lines.append("<b>The scan was stopped before it finished.</b> "
+                     "Everything below is partial.")
+    if gaps:
+        lines.append("Not scanned: " + "; ".join(f"{_e(label)} ({_e(why)})"
+                                                for label, why in gaps) + ".")
+    if isinstance(port, int) and port != 47808:
+        lines.append(f"BACnet ran on UDP port {port}: other BACnet software on the scanning PC "
+                     f"had 47808. Devices still answered requests, but broadcasts sent to "
+                     f"47808 (I-Am replies from some devices, routers' network announcements) "
+                     f"did not reach the scanner, so devices and MS/TP networks may be missing. "
+                     f"Close that software and scan again for a complete picture.")
+    if outside:
+        total = sum(outside.values())
+        nets = sorted(outside.items(), key=lambda kv: -kv[1])
+        lines.append(f"{total} device(s) answered from outside the targets and were not "
+                     f"scanned: " + ", ".join(f"{_e(n)} ({c})" for n, c in nets[:8])
+                     + (f" and {len(nets) - 8} more" if len(nets) > 8 else "")
+                     + ". Add those subnets to the targets to include them.")
+    if lines:
         coverage_html = f'<div class="coverage">{"<br>".join(lines)}</div>'
 
     parts = []

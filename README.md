@@ -166,6 +166,15 @@ gh attestation verify .\HVACNetworkScanner.exe --repo jamesccupps/HVAC-Network-S
 If you would rather not trust a binary at all, build it yourself with the two
 commands above; it is the same spec file and the same pinned tooling CI uses.
 
+**Updates.** From 2.10 the executable checks for a new release once a day and
+offers it in the header (**Update to …**). One click downloads it and checks
+it against the release's `latest.json`, a manifest signed with the project's
+Ed25519 key (the public half is built into the app), then swaps the new exe
+in and reopens; if anything fails, the previous one is put back. Turn the
+daily check off in Advanced, or press **Check for updates** whenever you
+like. A copy run from Python is told about new versions instead. Copies
+older than 2.10 need one manual download.
+
 ## Using the GUI
 
 ```bash
@@ -493,6 +502,9 @@ hvac_scanner/
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
 ├── text.py            # Device text made safe for logs and spreadsheets
+├── updater.py         # In-app updates: signed manifest check, download, swap
+├── ed25519.py         # Ed25519 signature check for the update manifest
+├── update_key.py      # The public key releases are signed with
 ├── icon.py            # The app icon, drawn in code
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
@@ -501,11 +513,13 @@ tools/
 ├── sim_site.py        # Simulated BAS site on loopback (tests, demos, screenshots)
 └── gui_demo.py        # Drive the GUI through a simulated scan and screenshot it
 
-packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entry point
+packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entry point,
+                       # signing.py (signs the release's latest.json),
+                       # test_update.ps1 (a real update to the new build)
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 727 tests
+tests/                 # 757 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions
@@ -515,6 +529,7 @@ tests/                 # 727 tests
 ├── test_engine.py, test_streaming.py, test_diff.py, test_fingerprint.py, ...
 ├── test_gui_options.py              # GUI controls reach ScanOptions (skips headless)
 ├── test_v291.py                     # 2.9.1: the external review's findings, one by one
+├── test_v210.py                     # 2.10: updater, signing, report grouping, coverage
 ├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
 ```

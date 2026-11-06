@@ -5,6 +5,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Updates from inside the app.** The Windows executable checks for a new
+  release once a day (Advanced → *Check for updates daily*; the header's
+  **Check for updates** asks now) and, on a click, downloads and installs it:
+  the download must match `latest.json`, a manifest each release now carries,
+  signed with the project's Ed25519 key and checked against the public key
+  built into the app. The new exe swaps itself in and reopens; if anything
+  fails the previous one is put back. A copy run from Python is told about
+  the new version instead. Copies older than this one update by hand once.
+  The same design as PingerPlot and UniFi Stock Watcher.
+- **Where the rest of the site answered from.** Devices that answer the
+  Who-Is from outside the targets (often other subnets behind a BBMD) were
+  dropped with only a count. The log and the report now name their subnets,
+  and the export's `coverage` records them (`outside_targets`).
+- The export records the UDP port BACnet ran on and the address it scanned
+  from (`coverage.bacnet_port`, `coverage.local_address`); the report says
+  when other BACnet software had 47808, which hides broadcasts (some I-Ams,
+  routers' network announcements) from the scan.
+
+### Changed
+
+- The report shows the same flagged point on three or more controllers of
+  one model as one row (with the addresses and a count), and identical KNX
+  gateways likewise: a site of 51 identical room controllers gave 1,224
+  near-identical fault rows and 51 identical KNX rows.
+
 ### Tests
 
 - About fifteen tests against the simulated site skipped on every Linux CI
@@ -14,6 +41,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that address could not start. The simulator now shuts each socket down and
   waits for its thread, and the Modbus Report Server ID test takes a free
   port instead of 502 (root only on Linux).
+- Every executable build now updates a copy of the previous release (until
+  one has an updater, a copy of itself) to the new exe for real
+  (`packaging/test_update.ps1`): the old copy's own updater checks a release
+  signed with a throwaway key, downloads, verifies and applies, and the test
+  confirms the swap, the restart and the clean-up.
 
 ## [2.9.1] — 2026-11-06
 
