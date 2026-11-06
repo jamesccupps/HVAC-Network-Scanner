@@ -78,10 +78,15 @@ class ScanOptions:
     # per target, nothing connected. See knx.py.
     scan_knx: bool = True
     deep_scan: bool = True
-    # v2.1.2: scan depth preset. "quick" samples ~5% of objects per device
-    # (useful for fast inventory), "normal" honors vendor-aware caps,
-    # "full" reads every object regardless of cap.
+    # v2.1.2: scan depth preset. "devices" reads only each device's identity
+    # (the fastest inventory), "quick" samples ~5% of objects per device,
+    # "normal" honors vendor-aware caps, "full" reads every object
+    # regardless of cap.
     scan_depth: str = "normal"
+    # Seconds one device's deep scan may take before the scan keeps what it
+    # has and moves on (0 = no limit). A controller that drops requests
+    # costs a timeout for each, and one site's took minutes apiece.
+    device_time_limit: float = 180.0
     # Performance tuning:
     use_rpm: bool = True                 # ReadPropertyMultiple for deep reads
     rate_limit_ms: int = 0               # per-IP inter-packet delay
@@ -157,12 +162,32 @@ class ScanOptions:
 # worth: past that, the user should ask for it explicitly with "always".
 UNICAST_AUTO_LIMIT = 1024
 
+# A device deep scan running this long is named in the progress text.
+SLOW_DEVICE_S = 60
+
+
+def _request_counts(client: Any, ip: str) -> tuple[int, int]:
+    """(requests sent to `ip`, unanswered) from a client that keeps count;
+    (0, 0) from one that does not (test doubles, older clients)."""
+    try:
+        sent, lost = client.request_counts(ip)
+        return int(sent), int(lost)
+    except (AttributeError, TypeError, ValueError):
+        return 0, 0
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 10:
+        return f"{seconds:.1f} s"
+    s = int(seconds)
+    return f"{s // 60} min {s % 60:02d} s" if s >= 60 else f"{s} s"
+
 # Settings that widen or change a scan beyond what its targets suggest, logged
 # at the start of a scan whenever they differ from the defaults.
 _ADVANCED_OPTIONS = ('timeout', 'rate_limit_ms', 'bacnet_broadcast', 'bbmd', 'bbmd_ttl',
                      'bacnet_workers', 'unicast_discovery', 'mstp_mac_probe',
                      'whois_chunk_size', 'max_objects_per_device', 'scan_depth',
-                     'use_rpm', 'deep_scan', 'snmp_communities')
+                     'device_time_limit', 'use_rpm', 'deep_scan', 'snmp_communities')
 
 # Most objects enumerated from one device, whatever its profile allows. The
 # largest real supervisory controllers hold a few thousand; past this the
@@ -189,6 +214,16 @@ class ScanResult:
     passes: dict[str, str] = field(default_factory=dict)
     stopped: bool = False
     options: dict[str, Any] = field(default_factory=dict)
+    # Where the scan ran from, as BACnet saw it: the UDP port it listened on
+    # (47808 unless other BACnet software on this PC had it) and the address
+    # it reached the targets from.
+    bacnet_port: Optional[int] = None
+    local_address: Optional[str] = None
+    # Devices that answered the Who-Is from outside the targets, by /24.
+    # They are not scanned, but they show where the rest of a site is.
+    outside_targets: dict[str, int] = field(default_factory=dict)
+    # Seconds each pass took (and the BACnet deep scan and MS/TP within it).
+    seconds: dict[str, float] = field(default_factory=dict)
 
     # -- export helpers -------------------------------------------------
 
@@ -205,7 +240,11 @@ class ScanResult:
             'scanner': f'HVAC Network Scanner v{__version__}',
             'targets': self.targets,
             'coverage': {'stopped': self.stopped, 'passes': dict(self.passes),
-                         'options': dict(self.options)},
+                         'options': dict(self.options),
+                         'bacnet_port': self.bacnet_port,
+                         'local_address': self.local_address,
+                         'outside_targets': dict(self.outside_targets),
+                         'seconds': {k: round(v, 1) for k, v in self.seconds.items()}},
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
         }
@@ -444,6 +483,7 @@ class ScanEngine:
         self._result_lock = threading.Lock()
         self._log_lock = threading.Lock()
         self._tls = threading.local()           # per-worker log buffer
+        self._t0 = time.monotonic()             # reset when run() starts
         self._bcast_cache: dict[str, str] = {}
         self._local_cache: dict[str, bool] = {}
 
@@ -490,6 +530,7 @@ class ScanEngine:
 
     def run(self) -> ScanResult:
         start = time.time()
+        self._t0 = time.monotonic()
         self.result.targets = list(self.opts.networks)
 
         if not self.opts.networks:
@@ -537,6 +578,7 @@ class ScanEngine:
                 if self._stopped():
                     status[key] = 'stopped before it ran'
                     continue
+                began = time.monotonic()
                 try:
                     run_pass()
                 except Exception as e:
@@ -546,6 +588,8 @@ class ScanEngine:
                     self._log(f"  [!] {label} pass failed: {clean_text(str(e))[:200]}")
                     status[key] = 'failed'
                     continue
+                finally:
+                    self.result.seconds[key] = time.monotonic() - began
                 if key not in status:
                     status[key] = 'stopped partway' if self._stopped() else 'scanned'
             if self.opts.scan_mstp and 'mstp' not in status:
@@ -594,8 +638,36 @@ class ScanEngine:
             self._log(f"  KNXnet/IP:   {self.result.counts['knx']}")
         self._log(f"  Total:       {len(unique_ips)} unique IP(s), "
                   f"{self.result.counts['points']} points/registers")
+        timing = self._timing_summary()
+        if timing:
+            self._log(f"  Time:        {timing}")
         self._log("=" * 65)
         return self.result
+
+    def _timing_summary(self) -> str:
+        """Where the time went, pass by pass: 'BACnet 9 min 41 s (deep scan
+        9 min 12 s, MS/TP 12 s), Modbus 4 s, ...'."""
+        s = self.result.seconds
+        labels = (('bacnet', 'BACnet'), ('modbus', 'Modbus'), ('p2', 'APOGEE P2'),
+                  ('knx', 'KNXnet/IP'), ('services', 'Services'), ('snmp', 'SNMP'))
+        parts = []
+        for key, label in labels:
+            if key not in s:
+                continue
+            text = f"{label} {_duration(s[key])}"
+            if key == 'bacnet':
+                inner = [f"{name} {_duration(s[sub])}"
+                         for sub, name in (('bacnet_deep', 'deep scan'), ('mstp', 'MS/TP'))
+                         if sub in s]
+                if inner:
+                    text += f" ({', '.join(inner)})"
+            parts.append(text)
+        return ", ".join(parts)
+
+    def _title(self, title: str) -> str:
+        """A section heading with the clock time and time since the start."""
+        return (f"{title}  ·  {time.strftime('%H:%M:%S')}, "
+                f"+{_duration(time.monotonic() - self._t0)}")
 
     # -- BACnet ---------------------------------------------------------
 
@@ -737,7 +809,7 @@ class ScanEngine:
 
     def _scan_bacnet(self) -> None:
         self._log("=" * 65)
-        self._log("BACNET/IP DISCOVERY")
+        self._log(self._title("BACNET/IP DISCOVERY"))
         self._log("=" * 65)
 
         client = BACnetClient(
@@ -748,6 +820,13 @@ class ScanEngine:
 
         try:
             client.open()
+            try:
+                self.result.bacnet_port = client._sock.getsockname()[1]
+            except (AttributeError, OSError):
+                self.result.bacnet_port = getattr(client, '_bound_port', None)
+            first = parse_first_host(self.opts.networks)
+            if first and self.result.local_address is None:
+                self.result.local_address = self._source_address(first)
 
             # v2.1.2: compute the authoritative set of IPs the user asked
             # for, so we can drop I-Am responses from devices outside their
@@ -826,10 +905,16 @@ class ScanEngine:
                 kept = []
                 dropped = 0
                 duplicates = 0
+                outside: dict[str, int] = {}
                 for dev in devices:
                     ip = dev.get('ip', '')
                     if allowed_ips is not None and ip not in allowed_ips:
                         dropped += 1
+                        try:
+                            net = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+                        except ValueError:
+                            net = str(ip)
+                        outside[net] = outside.get(net, 0) + 1
                         continue
                     dedup_key = (ip, dev.get('instance'))
                     if dedup_key in seen_devices:
@@ -841,6 +926,17 @@ class ScanEngine:
                 self._log(f"  Discovered {len(devices)} device(s); "
                           f"kept {len(kept)} in target range "
                           f"(dropped {dropped} out-of-range{dup_note}).")
+                if outside:
+                    # Where they were: often the rest of the site, reached
+                    # through a BBMD, and what to add to the targets.
+                    for net, n in outside.items():
+                        self.result.outside_targets[net] = (
+                            self.result.outside_targets.get(net, 0) + n)
+                    shown = sorted(outside.items(), key=lambda kv: -kv[1])
+                    self._log("    Answered from outside the targets (not scanned): "
+                              + ", ".join(f"{net} ({n})" for net, n in shown[:8])
+                              + (f" and {len(shown) - 8} more subnet(s)" if len(shown) > 8 else "")
+                              + ". Add them to the targets to scan them.")
                 # v2.1.2: if the user had a specific target but got zero
                 # matches, the device may be offline, not BACnet/IP, or
                 # firewalled. Tell them instead of leaving them guessing.
@@ -873,10 +969,18 @@ class ScanEngine:
             if self.opts.read_bbmd_tables and not self._stopped():
                 self._inventory_bbmds(client, to_scan)
 
-            self._deep_scan_devices(client, to_scan)
+            began = time.monotonic()
+            try:
+                self._deep_scan_devices(client, to_scan)
+            finally:
+                self.result.seconds['bacnet_deep'] = time.monotonic() - began
 
             if self.opts.scan_mstp and not self._stopped():
-                self._scan_mstp(client)
+                began = time.monotonic()
+                try:
+                    self._scan_mstp(client)
+                finally:
+                    self.result.seconds['mstp'] = time.monotonic() - began
 
         finally:
             client.close()
@@ -949,13 +1053,14 @@ class ScanEngine:
         answered = {ip for ip, _inst in seen}
         candidates = [ip for ip in self._target_ips_in_order() if ip not in answered]
         if mode == "auto":
-            # A /24 the broadcast got answers from is evidently reachable by
-            # broadcast, whatever the routing table says; its silent
-            # addresses are just silent.
-            heard = {str(ipaddress.ip_network(f"{ip}/24", strict=False)) for ip in answered}
-            candidates = [ip for ip in candidates
-                          if str(ipaddress.ip_network(f"{ip}/24", strict=False)) not in heard
-                          and not self._is_local(ip)]
+            # Every silent target on another subnet is probed, whatever
+            # answered the broadcast from there. Answers from another subnet
+            # say nothing about whether the broadcast covered it: a BBMD's
+            # relay passed on none of one site's 112 controllers in one scan
+            # and 83 in the next, and the BBMD itself answers directly. Both
+            # once made the scanner skip the rest of the subnet. Probing the
+            # silent addresses costs one short wait (two at most).
+            candidates = [ip for ip in candidates if not self._is_local(ip)]
             if not candidates:
                 return []
             if len(candidates) > UNICAST_AUTO_LIMIT:
@@ -1116,10 +1221,32 @@ class ScanEngine:
         workers = max(1, min(self.opts.bacnet_workers or 1, len(groups)))
         total = len(devices)
         done = [0]
+        busy: dict[str, float] = {}       # address -> when its current device started
+        told = [False]
         self._progress("BACnet deep scan", 0, total)
         if self.opts.deep_scan and workers > 1:
             self._log(f"\nDeep-scanning {total} device(s) on {len(groups)} "
                       f"address(es), {workers} at a time")
+
+        def phase(n: int) -> str:
+            """Name the devices holding the scan up: a controller that
+            answers slowly otherwise looks like a frozen scan (one site sat
+            at 180 / 183 for minutes with nothing on screen saying why)."""
+            now = time.monotonic()
+            with self._result_lock:
+                flight = sorted(busy.items(), key=lambda kv: kv[1])
+            only_these = total - n - len(flight) <= 0
+            slow = [(ip, now - t0) for ip, t0 in flight
+                    if only_these or now - t0 >= SLOW_DEVICE_S]
+            if not slow:
+                return "BACnet deep scan"
+            if only_these and not told[0]:
+                told[0] = True
+                self._log("  Still reading " + ", ".join(
+                    f"{ip} ({_duration(s)})" for ip, s in slow) + "; the rest are done.")
+            shown = ", ".join(ip for ip, _s in slow[:3])
+            more = f" and {len(slow) - 3} more" if len(slow) > 3 else ""
+            return f"BACnet deep scan · still reading {shown}{more}"
 
         def finish(dev: dict[str, Any]) -> None:
             proto_key = 'mstp' if dev.get('protocol') == 'BACnet/MSTP' else 'bacnet'
@@ -1129,17 +1256,22 @@ class ScanEngine:
                 done[0] += 1
                 n = done[0]
             self._emit_device(dev)
-            self._progress("BACnet deep scan", n, total)
+            self._progress(phase(n), n, total)
 
         def run_group(group: list[dict[str, Any]]) -> None:
             for dev in group:
                 if self._stopped():
                     return
                 if self.opts.deep_scan:
+                    with self._result_lock:
+                        busy[dev['ip']] = time.monotonic()
                     try:
                         self._deep_read(client, dev, buffered=workers > 1)
                     except Exception:
                         log.exception("deep read of %s failed", dev.get('ip'))
+                    finally:
+                        with self._result_lock:
+                            busy.pop(dev['ip'], None)
                 finish(dev)
 
         if workers == 1:
@@ -1219,7 +1351,7 @@ class ScanEngine:
 
     def _scan_mstp(self, client: BACnetClient) -> None:
         self._log("\n" + "=" * 65)
-        self._log("BACNET MSTP / REMOTE NETWORK DISCOVERY")
+        self._log(self._title("BACNET MSTP / REMOTE NETWORK DISCOVERY"))
         self._log("=" * 65)
 
         existing = {(d['ip'], d.get('instance')) for d in self.result.devices
@@ -1238,10 +1370,11 @@ class ScanEngine:
         for network in self.opts.networks:
             bcast_set.add(self._bcast_for(network))
 
-        for bcast in bcast_set:
+        for bcast in sorted(bcast_set):
             if self._stopped():
                 break
 
+            self._log(f"  Asking {bcast} for routers (Who-Is-Router-To-Network)")
             routers, dnets = client.discover_routers(target_ip=bcast)
 
             # Filter routers to ones in the user's target range BEFORE we
@@ -1617,17 +1750,58 @@ class ScanEngine:
         route_suffix = (f" (MSTP net={dnet} mac={dadr})"
                         if dnet is not None else "")
         self._log(f"  Deep scan device {instance} at {ip}{route_suffix}...")
-        if not buffered:
-            self._deep_read_device(client, dev)
-            return
-        self._tls.buffer = [f"  Device {instance} at {ip}{route_suffix}:"]
+        if buffered:
+            self._tls.buffer = [f"  Device {instance} at {ip}{route_suffix}:"]
+        limit = float(self.opts.device_time_limit or 0)
+        self._tls.deadline = time.monotonic() + limit if limit > 0 else None
+        self._tls.cut = False
+        before = _request_counts(client, ip)
+        began = time.monotonic()
         try:
             self._deep_read_device(client, dev)
+            try:
+                self._device_footer(dev, time.monotonic() - began,
+                                    _request_counts(client, ip), before, limit)
+            except Exception:                     # reporting must not end a scan
+                log.exception("device footer for %s failed", ip)
         finally:
-            lines, self._tls.buffer = self._tls.buffer, None
-            with self._log_lock:
-                for line in lines:
-                    self._emit_log(line)
+            self._tls.deadline = None
+            if buffered:
+                lines, self._tls.buffer = self._tls.buffer, None
+                with self._log_lock:
+                    for line in lines:
+                        self._emit_log(line)
+
+    def _device_stopped(self) -> bool:
+        """Stop for this device: the scan was stopped, or the device has had
+        its time (ScanOptions.device_time_limit)."""
+        if self._stopped():
+            return True
+        deadline = getattr(self._tls, 'deadline', None)
+        if deadline is not None and time.monotonic() > deadline:
+            self._tls.cut = True
+            return True
+        return False
+
+    def _device_footer(self, dev: dict[str, Any], took: float,
+                       after: tuple[int, int], before: tuple[int, int],
+                       limit: float) -> None:
+        """How long a device took and how many requests it left unanswered:
+        on one site four controllers took minutes each because they dropped
+        about one request in ten, each a full timeout, and nothing said so."""
+        sent, lost = after[0] - before[0], after[1] - before[1]
+        dev['scan_seconds'] = round(took, 1)
+        dev['requests'] = {'sent': sent, 'unanswered': lost}
+        note = f"    Took {_duration(took)}"
+        if lost:
+            note += (f"; {lost} of {sent} requests went unanswered "
+                     f"({round(100 * lost / max(sent, 1))}%), {_duration(lost * self.opts.timeout)} "
+                     f"spent waiting on them")
+        if getattr(self._tls, 'cut', False):
+            dev['cut_short'] = f"stopped at the per-device time limit ({_duration(limit)})"
+            note += (f". [!] Stopped at the per-device time limit ({_duration(limit)}); "
+                     f"kept what was read")
+        self._log(note)
 
     def _deep_read_device(self, client: BACnetClient, dev: dict[str, Any]) -> None:
         ip = dev['ip']
@@ -1651,6 +1825,12 @@ class ScanEngine:
             self._log(f"    Device props: {preview}")
         else:
             self._log("    No device properties returned (ReadProperty may be failing)")
+
+        if self.opts.scan_depth == "devices":
+            # Identity only: no object list, points, trend logs or schedules.
+            dev['properties'] = props
+            dev['objects'] = []
+            return
 
         # v2.1.2: Classify the device based on vendor/model and objectList
         # length, then apply the appropriate cap. Prevents silent truncation
@@ -1732,7 +1912,7 @@ class ScanEngine:
                 obj_list = client.read_object_list_entries(
                     ip, instance, indices,
                     dnet=dnet, dadr=dadr,
-                    stop_fn=self._stopped,
+                    stop_fn=self._device_stopped,
                     max_apdu=dev.get('max_apdu'),
                     prefer_multiple=self.opts.use_rpm,
                 )
@@ -1775,7 +1955,7 @@ class ScanEngine:
                 ip, instance, wanted,
                 prefer_multiple=self.opts.use_rpm,
                 dnet=dnet, dadr=dadr,
-                stop_fn=self._stopped,
+                stop_fn=self._device_stopped,
                 max_apdu=dev.get('max_apdu'),
             )
         except Exception as e:
@@ -1783,7 +1963,7 @@ class ScanEngine:
             read_back = [(t, i, {}) for t, i, _ in wanted]
 
         for obj_type, obj_inst, raw in read_back:
-            if self._stopped():
+            if self._device_stopped():
                 break
             obj_type_str = str(obj_type)
             point = {'type': obj_type_str, 'instance': int(obj_inst),
@@ -1833,7 +2013,7 @@ class ScanEngine:
         note = ("; " + ", ".join(f"{n} {f}" for f, n in flagged.items())) if flagged else ""
         self._log(f"    Read {len(objects)} points from device {instance}{note}")
 
-        if self.opts.read_metadata and not self._stopped():
+        if self.opts.read_metadata and not self._device_stopped():
             meta_wanted = [(t, i, METADATA_PROPERTIES_BY_TYPE[str(t)])
                            for t, i in obj_list if str(t) in METADATA_PROPERTIES_BY_TYPE]
             if meta_wanted:
@@ -1841,7 +2021,7 @@ class ScanEngine:
                     meta = client.read_points_batched(
                         ip, instance, meta_wanted,
                         prefer_multiple=self.opts.use_rpm,
-                        dnet=dnet, dadr=dadr, stop_fn=self._stopped,
+                        dnet=dnet, dadr=dadr, stop_fn=self._device_stopped,
                         max_apdu=dev.get('max_apdu'))
                 except Exception as e:
                     log.debug("metadata read %s failed: %s", ip, e)
@@ -1971,7 +2151,7 @@ class ScanEngine:
 
     def _scan_modbus(self) -> None:
         self._log("\n" + "=" * 65)
-        self._log("MODBUS TCP DISCOVERY")
+        self._log(self._title("MODBUS TCP DISCOVERY"))
         self._log("=" * 65)
 
         scanner = ModbusScanner(callback=self.callback,
@@ -1991,7 +2171,7 @@ class ScanEngine:
             dev['protocol'] = 'Modbus TCP'
             dev['instance'] = dev.get('unit_id')
 
-            if self.opts.deep_scan:
+            if self.opts.deep_scan and self.opts.scan_depth != "devices":
                 self._log(f"  Reading registers from {dev['ip']} unit={dev['unit_id']}...")
                 try:
                     dev.update(scanner.read_points(dev['ip'], dev['port'], dev['unit_id']))
@@ -2009,7 +2189,7 @@ class ScanEngine:
 
     def _scan_knx(self) -> None:
         self._log("\n" + "=" * 65)
-        self._log("KNXNET/IP DISCOVERY")
+        self._log(self._title("KNXNET/IP DISCOVERY"))
         self._log("=" * 65)
         scanner = KNXScanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
         for dev in scanner.scan_network(
@@ -2025,7 +2205,7 @@ class ScanEngine:
 
     def _scan_p2(self) -> None:
         self._log("\n" + "=" * 65)
-        self._log("SIEMENS APOGEE P2 DISCOVERY")
+        self._log(self._title("SIEMENS APOGEE P2 DISCOVERY"))
         self._log("=" * 65)
         scanner = P2Scanner(callback=self.callback, timeout=min(self.opts.timeout, 2.0))
         bacnet_ips = {d.get('ip') for d in self.result.devices
@@ -2047,7 +2227,7 @@ class ScanEngine:
 
     def _scan_services(self) -> None:
         self._log("\n" + "=" * 65)
-        self._log("HVAC SERVICE DISCOVERY")
+        self._log(self._title("HVAC SERVICE DISCOVERY"))
         self._log("=" * 65)
 
         scanner = HVACServiceScanner(callback=self.callback,
@@ -2108,7 +2288,7 @@ class ScanEngine:
 
     def _scan_snmp(self) -> None:
         self._log("\n" + "=" * 65)
-        self._log("SNMP DISCOVERY")
+        self._log(self._title("SNMP DISCOVERY"))
         self._log("=" * 65)
 
         scanner = SNMPScanner(callback=self.callback,

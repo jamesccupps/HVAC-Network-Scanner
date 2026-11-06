@@ -96,6 +96,56 @@ def _lookup_default_creds(model_text: str, vendor_id) -> str:
     return DEFAULT_CREDS.get(key, '') if key else ''
 
 
+# What a reported modelName says a device is: (vendor substring, model
+# prefix, device type, description), first match wins. The vendor branches in
+# fingerprint_device guess from one site's numbering (instances 9000-9999 as
+# the Desigo CC server, a 1,476-byte APDU under instance 1000 as a Trane
+# unitary controller) and only set the model from modelName, so on a second
+# site a Tracer Ensemble server was called a unitary controller, an Insight
+# workstation a Desigo CC server, and every DXR2 a "Desigo PXC" controller.
+# Descriptions here follow the makers' catalogues.
+_KNOWN_MODELS: list[tuple[str, str, str, str]] = [
+    ('siemens', 'dxr2.e10pl', 'Field Controller',
+     'Desigo DXR2 compact room automation station with built-in VAV damper '
+     'actuator and pressure sensor'),
+    ('siemens', 'dxr2.e12p', 'Field Controller',
+     'Desigo DXR2 compact room automation station with pressure sensor '
+     '(VAV, fan coil, radiant ceiling)'),
+    ('siemens', 'dxr2.e18', 'Field Controller',
+     'Desigo DXR2 room automation station, 18 I/O, pressure sensor'),
+    ('siemens', 'dxr2', 'Field Controller', 'Desigo DXR2 room automation station'),
+    ('siemens', 'siemens bacnet field panel', 'Automation Station',
+     'Siemens PXC field panel (APOGEE PXC, BACnet firmware)'),
+    ('siemens', 'pxc4', 'Automation Station', 'Desigo PXC4 automation station'),
+    ('siemens', 'pxc5', 'Automation Station', 'Desigo PXC5 automation station'),
+    ('siemens', 'pxc7', 'Automation Station', 'Desigo PXC7 automation station'),
+    ('siemens', 'desigo cc', 'Management Station', 'Desigo CC building management server'),
+    ('siemens', 'insight', 'Management Station',
+     'Siemens Insight management workstation (APOGEE; succeeded by Desigo CC)'),
+    ('trane', 'tes workstation', 'Management Station',
+     'Trane Tracer Ensemble building management server'),
+    ('trane', 'tr200', 'Variable Frequency Drive', 'Trane TR200 HVAC variable-frequency drive'),
+    ('yaskawa', 'hv60', 'Variable Frequency Drive', 'Yaskawa HV600 HVAC variable-frequency drive'),
+    ('', 'melcobems', 'Gateway',
+     'MelcoBEMS MINI: one Mitsubishi Electric indoor unit on BACnet'),
+]
+
+
+def _known_model(vendor: str, model: str, firmware: str) -> "Optional[tuple[str, str]]":
+    """(device type, description) for a reported model we know, else None."""
+    v, m = vendor.lower(), model.lower()
+    for vendor_part, prefix, kind, description in _KNOWN_MODELS:
+        if vendor_part in v and m.startswith(prefix):
+            if prefix == 'siemens bacnet field panel':
+                # The model string is the same for both; the firmware says which.
+                fw = firmware.upper()
+                size = ('Modular ' if fw.startswith('PXME') else
+                        'Compact ' if fw.startswith('EPXC') else '')
+                description = f'Siemens PXC {size}field panel (APOGEE PXC, BACnet firmware)'
+            return kind, description
+    return None
+
+
 def fingerprint_device(dev: dict[str, Any],
                        all_services: Optional[Iterable[dict[str, Any]]] = None
                        ) -> dict[str, str]:
@@ -332,6 +382,12 @@ def fingerprint_device(dev: dict[str, Any],
     # properties.model_name — the two used to disagree on the same device.
     if reported_model:
         info['model'] = reported_model
+        vendor = ' '.join(str(x or '') for x in (
+            props.get('vendor_name'), dev.get('vendor_name'),
+            BACNET_VENDORS.get(vendor_id, '') if vendor_id is not None else ''))
+        known = _known_model(vendor, reported_model, str(props.get('firmware_revision') or ''))
+        if known:
+            info['device_type'], info['description'] = known
         if not info['device_type']:
             info['device_type'] = 'Controller'
 

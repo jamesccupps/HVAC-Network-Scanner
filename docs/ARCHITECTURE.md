@@ -18,16 +18,21 @@ hvac_scanner/
 ├── netrange.py       Target syntax: CIDR, ranges, host lists
 ├── diff.py           Baseline comparison
 ├── engine.py         ScanEngine orchestrator + ScanResult export
+├── report.py         HTML survey report built from a ScanResult or its JSON
 ├── cli.py            Headless command-line entry point
 ├── gui.py            Tk GUI, thin wrapper over ScanEngine
 ├── settings.py       Remembered GUI settings (JSON in the user's config dir)
 ├── text.py           Device text made safe for logs and spreadsheets
+├── updater.py        In-app updates: signed manifest check, download, exe swap
+├── ed25519.py        Pure-Python Ed25519 (RFC 8032) for the update manifest
+├── update_key.py     Public key the release manifest is signed with
 ├── icon.py           The application icon, drawn in code (PNG and ICO writers)
 ├── __main__.py       `python -m hvac_scanner` → GUI
 └── __init__.py       Public API, version
 
 tools/sim_site.py     Simulated BAS site on loopback — used by tests/test_e2e_site.py
 tools/gui_demo.py     Drives the GUI through a scan of the simulator, takes a screenshot
+packaging/signing.py  Makes the signing key; signs and verifies a release's latest.json
 ```
 
 ## Layering
@@ -171,6 +176,30 @@ engine callbacks put events on a `queue.Queue`; the Tk thread drains it every
 100 ms (`_pump`), writing log lines in batches, drawing devices as they
 arrive, and updating the progress bar. The final result arrives as a `done`
 event.
+
+### Updates (updater.py)
+
+Each release carries `latest.json`: a payload (app name, version, date, and
+the exe's file name, size and SHA-256) and an Ed25519 signature over it,
+made by `packaging/signing.py` with a key that never leaves the maintainer's
+machine. The app holds the public key (`update_key.py`) and checks it with
+the pure-Python `ed25519.py`, so there is no extra dependency.
+
+The GUI checks once a day (and on **Check for updates**) on a worker thread,
+reading `releases/latest/download/latest.json`. A manifest that fails the
+signature or names another app is rejected (quietly on the daily check, with
+a message when the user asked); one that is not newer means up to date. Install downloads
+the exe from the release's own tag into a staging folder, refuses it unless
+the size and hash match, then starts it with `--finish-update <target> <pid>`
+and closes. The new copy waits for the old process to exit, renames the old
+exe to `.old`, copies itself in, and starts the result with `--updated`,
+which deletes the `.old` copy and says so in the log. If the copy fails, the
+old exe is put back and started with `--update-failed`. Each step goes to
+`update.log` in the settings folder. `HVAC_UPDATE_URL` points the check at
+another URL or a local folder, for testing. `packaging/test_update.ps1` runs
+the whole thing on every executable build: the previous release (or the
+build itself) updates to the new exe from a folder signed with a throwaway
+key.
 
 ## Data flow
 

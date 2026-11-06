@@ -308,7 +308,9 @@ def test_points_csv_lists_every_point_and_register(tmp_path):
     assert [row[5] for row in rows[2:]] == ['Holding Register', 'Coil']
 
 
-def test_unicast_auto_skips_subnets_the_broadcast_reached():
+def test_unicast_auto_probes_silent_targets_on_other_subnets_only():
+    """2.10: an answer from another subnet no longer marks it as reached by
+    broadcast (see test_v210); local subnets are still left to the broadcast."""
     from hvac_scanner.engine import ScanEngine, ScanOptions
 
     class Client:
@@ -320,10 +322,10 @@ def test_unicast_auto_skips_subnets_the_broadcast_reached():
 
     eng = ScanEngine(ScanOptions(networks=["10.9.8.1-3", "10.9.9.1-2"]),
                      callback=lambda m: None)
-    eng._is_local = lambda ip: False                 # every target is routed
+    eng._is_local = lambda ip: ip.startswith("10.9.9.")
     eng._discover_unicast(Client(), set(eng._target_ips_in_order()),
                           {("10.9.8.1", 5)})
-    assert Client.probed == ["10.9.9.1", "10.9.9.2"]
+    assert Client.probed == ["10.9.8.2", "10.9.8.3"]
 
 
 def test_cli_rejects_a_bad_target_with_exit_1(capsys):

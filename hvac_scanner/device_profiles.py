@@ -58,6 +58,11 @@ class DeviceProfile:
 # --- Scan depth presets (maps to the Quick/Normal/Full dropdown) -----------
 
 SCAN_DEPTH_PRESETS = {
+    # Devices only: each device's identity (the Device object's name, model,
+    # vendor, firmware, description, location) and nothing else; no object
+    # lists, points, trend logs or schedules. The engine stops each deep read
+    # there, so the cap is never consulted.
+    "devices": {"multiplier": 0.0, "floor":    0, "label": "Devices only"},
     "quick":  {"multiplier": 0.05, "floor":   50, "label": "Quick (sample)"},
     "normal": {"multiplier": 1.00, "floor":  500, "label": "Normal (vendor-aware)"},
     "full":   {"multiplier": None, "floor":    0, "label": "Full (no cap)"},
@@ -144,24 +149,26 @@ DEVICE_PROFILES: dict[tuple[str, str], DeviceProfile] = {
         class_label="Siemens field panel (PXC)",
         verified_at="field-verified 2026-04-20 (EPXC Compact 449 obj, PXME Modular 1960 obj verified; cap 5000 handles both with room)",
     ),
-    # DXR2 room controllers (BACnet/IP). Small (100-200 objects). All
-    # field-verified at firmware v01.21 / protocol revision 15. Observed:
-    #   DXR2.E10PL-1: 164 objects   (standard room controller)
-    #   DXR2.E12P-1:  181 objects   (P-series variant)
-    #   DXR2.E18-1:   135 objects   (heat pump variant)
+    # DXR2 room automation stations (BACnet/IP). Small (100-350 objects).
+    # Field-verified at firmware v01.21. Labels follow Siemens' catalogue,
+    # not the program a site loads (one site runs heat-pump programs on
+    # its E18s and VAV programs on its E12Ps). Observed:
+    #   DXR2.E10PL-1: 164 objects   (compact, built-in VAV damper actuator)
+    #   DXR2.E12P-1:  181-344       (compact, 12 I/O, pressure sensor)
+    #   DXR2.E18-1:   135 objects   (18 I/O, pressure sensor)
     ("siemens schweiz", "dxr2.e10pl-1"): DeviceProfile(
         object_cap=500,
-        class_label="Siemens DXR2 room controller",
+        class_label="Siemens DXR2 VAV compact controller (E10PL)",
         verified_at="field-verified 2026-04-20",
     ),
     ("siemens schweiz", "dxr2.e18-1"): DeviceProfile(
         object_cap=500,
-        class_label="Siemens DXR2 heat pump controller",
+        class_label="Siemens DXR2 room controller (E18, 18 I/O)",
         verified_at="field-verified 2026-04-20",
     ),
     ("siemens schweiz", "dxr2.e12p-1"): DeviceProfile(
         object_cap=500,
-        class_label="Siemens DXR2 bath controller",
+        class_label="Siemens DXR2 compact room controller (E12P)",
         verified_at="field-verified 2026-04-20",
     ),
     # ------------------------------------------------------------------
@@ -348,6 +355,7 @@ def apply_scan_depth(
 ) -> tuple[DeviceProfile, str]:
     """Apply the Quick/Normal/Full dropdown to a classified profile.
 
+    Devices only: no objects at all (cap 0).
     Quick: sample 5% of the cap (floor 50). Useful for fast inventory.
     Normal: honor the profile's verified cap.
     Full: no cap (reads everything).

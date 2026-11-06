@@ -42,6 +42,8 @@ class IAmDevice:
     vendor_id: Optional[int] = None
     source_network: Optional[int] = None
     source_address: Optional[str] = None
+    # Arrived as a Forwarded-NPDU: a BBMD relayed it from another subnet.
+    relayed: bool = False
 
 
 @dataclass
@@ -620,6 +622,7 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
             instance=-1,
             source_network=source_network,
             source_address=source_address,
+            relayed=origin is not None,
         )
 
         # Tag 12 = Object Identifier, application-class

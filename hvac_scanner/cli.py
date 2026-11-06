@@ -76,6 +76,7 @@ def _positive_timeout(text: str) -> float:
 # the default could not tell `--unicast auto` from no flag at all.
 _DEFAULTS = {
     'timeout': 5.0, 'rate_limit': 0, 'scan_depth': 'normal', 'bacnet_workers': 4,
+    'device_time_limit': 180.0,
     'whois_chunk': 0, 'whois_max_instance': 4_194_303, 'whois_chunk_delay': 50,
     'bbmd_ttl': 60, 'unicast': 'auto', 'max_hosts': 65_536,
 }
@@ -107,9 +108,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override BACnet Who-Is broadcast target (e.g. "
                         "10.0.0.255 or 255.255.255.255). Needed when "
                         "scanning a narrower CIDR than the physical subnet.")
-    p.add_argument("--scan-depth", choices=["quick", "normal", "full"],
+    p.add_argument("--scan-depth", choices=["devices", "quick", "normal", "full"],
                    default=None,
-                   help="Scan depth. 'quick' samples ~5%% of each device's "
+                   help="Scan depth. 'devices' reads only each device's "
+                        "identity (name, model, vendor, firmware): the fastest "
+                        "inventory, no points. 'quick' samples ~5%% of each device's "
                         "points (fast overview). 'normal' uses vendor-aware "
                         "caps (default). 'full' reads every object (slow on "
                         "supervisory controllers).")
@@ -126,6 +129,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
+    p.add_argument("--device-time-limit", type=_number(float, 0, name="device time limit"),
+                   default=None, metavar="SECONDS",
+                   help="Most time one device's deep scan may take before the "
+                        "scan keeps what it has read and moves on (default: "
+                        "180; 0 = no limit). A controller that drops requests "
+                        "costs a timeout for each one.")
     p.add_argument("--bacnet-workers", type=_number(int, 1, 64, name="BACnet workers"),
                    default=None, metavar="N",
                    help="BACnet devices deep-scanned at once (default: 4). Each "
@@ -406,6 +415,7 @@ _ARG_FOR_OPTION = {
     'rate_limit_ms': 'rate_limit', 'max_objects_per_device': 'max_objects',
     'whois_chunk_size': 'whois_chunk', 'bacnet_broadcast': 'broadcast', 'bbmd': 'bbmd',
     'scan_depth': 'scan_depth', 'bacnet_workers': 'bacnet_workers',
+    'device_time_limit': 'device_time_limit',
     'unicast_discovery': 'unicast', 'snmp_communities': 'snmp_community',
     'read_bbmd_tables': 'no_bbmd_tables', 'read_metadata': 'no_metadata',
     'mstp_mac_probe': 'mstp_probe',
@@ -511,6 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         bbmd_ttl=args.bbmd_ttl,
         scan_depth=args.scan_depth,
         bacnet_workers=args.bacnet_workers,
+        device_time_limit=args.device_time_limit,
         unicast_discovery=args.unicast,
         snmp_communities=args.snmp_community or ["public"],
         read_bbmd_tables=not args.no_bbmd_tables,

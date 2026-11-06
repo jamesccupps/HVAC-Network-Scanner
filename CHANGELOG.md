@@ -5,6 +5,91 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Updates from inside the app.** The Windows executable checks for a new
+  release once a day (Advanced → *Check for updates daily*; the header's
+  **Check for updates** asks now) and, on a click, downloads and installs it:
+  the download must match `latest.json`, a manifest each release now carries,
+  signed with the project's Ed25519 key and checked against the public key
+  built into the app. The new exe swaps itself in and reopens; if anything
+  fails the previous one is put back. A copy run from Python is told about
+  the new version instead. Copies older than this one update by hand once.
+  The same design as PingerPlot and UniFi Stock Watcher.
+- **Where the rest of the site answered from.** Devices that answer the
+  Who-Is from outside the targets (often other subnets behind a BBMD) were
+  dropped with only a count. The log and the report now name their subnets,
+  and the export's `coverage` records them (`outside_targets`).
+- The export records the UDP port BACnet ran on and the address it scanned
+  from (`coverage.bacnet_port`, `coverage.local_address`); the report says
+  when other BACnet software had 47808, which hides broadcasts (some I-Ams,
+  routers' network announcements) from the scan.
+
+- **Devices only** depth: each device's identity (name, model, vendor,
+  firmware, description, location) and nothing else, for a fast inventory;
+  tick Services as well for devices and their open ports. The report shows
+  a dash, not 0, for the point counts it did not read. A quick scan still
+  read up to 50 objects per controller and took minutes on a large site.
+- **A per-device time limit** (Advanced, `--device-time-limit`, 180 s by
+  default, 0 for none): a device that reaches it keeps what was read, is
+  marked partial in the log, the export (`cut_short`) and the report, and
+  the scan moves on.
+- **Times in the log.** Each section heading carries the clock time and the
+  time since the start, each device says how long it took and how many of
+  its requests went unanswered, and the summary ends with where the time
+  went (`Time: BACnet 9 min 41 s (deep scan 9 min 12 s, MS/TP 12 s), ...`).
+  The export records the same (`coverage.seconds`, and `scan_seconds` and
+  `requests` per device), and the report lists *Controllers that drop
+  requests*: on one site four controllers dropped about one request in
+  ten and took minutes each, a timeout per loss, with nothing saying why.
+
+### Changed
+
+- The report shows the same flagged point on three or more controllers of
+  one model as one row (with the addresses and a count), and identical KNX
+  gateways likewise: a site of 51 identical room controllers gave 1,224
+  near-identical fault rows and 51 identical KNX rows.
+- While a deep scan waits on slow controllers, the progress text names them
+  (`still reading 10.0.1.83, …`) and the log says once how long each has
+  run; a controller read one object at a time logs its progress every 100
+  entries. A site's scan sat at 180 / 183 for minutes with nothing saying why.
+
+### Fixed
+
+- **A quick scan missed 29 controllers a normal scan found.** Unicast
+  discovery (`auto`) skipped every subnet the broadcast had heard from, but
+  answers from another subnet that arrive through a BBMD's relay prove
+  little: on one site the relay passed on none of 112 controllers' replies
+  in one scan and 83 in the next. Those 83 made the scanner treat the subnet
+  as reached and never ask the other 29; in a later scan the BBMD's own
+  direct answer did the same to all 112. Every silent target on another
+  subnet is now probed, whatever answered the broadcast from there.
+- **Lost packets no longer slow a controller to a crawl.** Once batched
+  reads (objectList, point properties) have worked on a controller, an
+  unanswered one is asked again at the same size before the batch is
+  halved, the size grows back afterwards, and the controller is never
+  switched to one read at a time for good. Before, a short burst of loss
+  dropped three controllers to single reads, each lost reply costing a
+  5 s timeout, and their deep scans ran for minutes.
+- **Devices named for what they are.** The type and description leaned on
+  the first site's numbering, and a device's own model name only replaced
+  the model column. On a second site that made a Trane Tracer Ensemble
+  server a "unitary controller", an Insight workstation a Desigo CC
+  server, every DXR2 a "Desigo PXC series controller", and the DXR2.E12P a
+  "bath controller" (E18: "heat pump controller", the program one site
+  runs). Known models now set type and description from the makers'
+  catalogues: DXR2 E10PL / E12P / E18, PXC Modular / Compact (told apart by
+  firmware), Desigo PXC4 / PXC5 / PXC7, Insight, Desigo CC, Tracer Ensemble, Trane TR200 and Yaskawa
+  HV600 drives, and the MelcoBEMS MINI gateway.
+- The dark theme's scrollbars were dark grey on dark grey; the thumb is now
+  a lighter grey that brightens under the pointer.
+- Unicast discovery asks the addresses that stayed silent once more (where
+  anything answered at all): each of two scans of one site missed a
+  different controller on a lossy link.
+- A router heard both directly and through a BBMD was listed twice, and
+  each router query now names the broadcast it went to (a bare "Found 0
+  router(s)" for the remote subnet's broadcast read like a failure).
+
 ### Tests
 
 - About fifteen tests against the simulated site skipped on every Linux CI
@@ -14,6 +99,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that address could not start. The simulator now shuts each socket down and
   waits for its thread, and the Modbus Report Server ID test takes a free
   port instead of 502 (root only on Linux).
+- Every executable build now updates a copy of the previous release (until
+  one has an updater, a copy of itself) to the new exe for real
+  (`packaging/test_update.ps1`): the old copy's own updater checks a release
+  signed with a throwaway key, downloads, verifies and applies, and the test
+  confirms the swap, the restart and the clean-up.
 
 ## [2.9.1] — 2026-11-06
 
