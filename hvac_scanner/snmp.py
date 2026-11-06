@@ -15,6 +15,8 @@ import time
 from contextlib import closing
 from typing import Any, Callable, Iterable, Optional
 
+from .text import clean_text
+
 log = logging.getLogger(__name__)
 
 # Spacing between GETs. A sweep of a /24 goes out in about a quarter second;
@@ -111,9 +113,14 @@ class SNMPScanner:
 
     def _drain(self, sock: socket.socket, wanted: set[str],
                found: dict[str, dict[str, Any]], community: bytes, wait: float) -> None:
-        """Read every reply already queued, waiting up to `wait` for the first."""
+        """Read every reply already queued, waiting up to `wait` for the first.
+
+        Bounded in time as well: a host flooding the socket would otherwise
+        keep data queued, and this loop reading it, for as long as it liked.
+        """
         sock.settimeout(wait if wait > 0 else 0.0)
-        while True:
+        until = time.monotonic() + max(wait, 0.0) + 0.25
+        while time.monotonic() < until:
             try:
                 resp, addr = sock.recvfrom(4096)
             except (socket.timeout, BlockingIOError):
@@ -133,7 +140,7 @@ class SNMPScanner:
             if descr is None:
                 continue
             found[ip] = {'ip': ip, 'port': 161, 'sys_descr': descr,
-                         'community': community.decode('latin-1')}
+                         'community': clean_text(community.decode('latin-1'))}
             self._log(f"  SNMP at {ip}: {descr[:80]}")
 
     # -- wire format ------------------------------------------------------
@@ -186,7 +193,7 @@ class SNMPScanner:
         if first < 0x80:
             return first, idx + 1
         n = first & 0x7F
-        if n == 0 or idx + 1 + n > len(data):
+        if n == 0 or n > 4 or idx + 1 + n > len(data):
             raise IndexError("malformed BER long-form length")
         return int.from_bytes(data[idx + 1:idx + 1 + n], 'big'), idx + 1 + n
 
@@ -208,8 +215,10 @@ class SNMPScanner:
             if idx + val_len > len(data):
                 return None
             if val_tag == 0x04:
-                return data[idx:idx + val_len].decode('utf-8', errors='replace')
-            if val_tag == 0x02:
+                return clean_text(data[idx:idx + val_len].decode('utf-8', errors='replace'))
+            # An INTEGER wider than 8 octets is malformed, and a huge one
+            # cannot be printed at all (Python's 4,300-digit limit).
+            if val_tag == 0x02 and val_len <= 8:
                 return str(int.from_bytes(data[idx:idx + val_len], 'big'))
         except (IndexError, UnicodeDecodeError) as e:
             log.debug("snmp parse: %s", e)

@@ -42,7 +42,14 @@ scan_*.json
 scan_*.csv
 hvac_scan_*.json
 hvac_scan_*.csv
+hvac_survey_*.html
+hvac_points_*.csv
+*_classification.txt
+*.sha256
 /output/
+
+# A private site deny-list belongs in ~/.hvac-scanner, never here
+site-denylist*.txt
 
 # Logs
 *.log

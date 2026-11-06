@@ -25,6 +25,8 @@ import struct
 import time
 from typing import Any, Callable, Optional
 
+from .text import clean_text
+
 log = logging.getLogger(__name__)
 
 KNX_PORT = 3671
@@ -72,7 +74,8 @@ def parse_description_response(data: bytes) -> Optional[dict[str, Any]]:
                 'serial': body[6:12].hex(),
                 'multicast': socket.inet_ntoa(body[12:16]),
                 'mac': ':'.join(f"{b:02X}" for b in body[16:22]),
-                'name': body[22:52].split(b'\x00', 1)[0].decode('latin-1').strip(),
+                'name': clean_text(body[22:52].split(b'\x00', 1)[0]
+                                   .decode('latin-1')).strip(),
             })
         elif kind == 0x02:                               # SUPP_SVC_FAMILIES
             out['services'] = [

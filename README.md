@@ -2,6 +2,8 @@
 
 A multi-protocol discovery and audit tool for HVAC and building automation networks. Zero third-party dependencies — everything runs on the Python 3.10+ standard library.
 
+**Website: [jamesccupps.github.io/HVAC-Network-Scanner](https://jamesccupps.github.io/HVAC-Network-Scanner/)**
+
 Looking for a Siemens APOGEE P2 scanner or P2 Wireshark Decoder? See this project [P2Scanner](https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner)
 
 [![CI](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml)
@@ -126,13 +128,14 @@ One ~13 MB file, no installer, no runtime.
 To build it yourself:
 
 ```bash
-pip install -e ".[build]"
+pip install --require-hashes -r packaging/requirements-build.txt
 pyinstaller packaging/hvac_scanner.spec --noconfirm
 # -> dist/HVACNetworkScanner.exe
 ```
 
 PyInstaller is a build dependency only; the package itself stays
-dependency-free at runtime. The executable ships the GUI — the CLI remains
+dependency-free at runtime. `packaging/requirements-build.txt` pins it and
+everything it needs by version and hash, the same file CI builds from. The executable ships the GUI — the CLI remains
 available from a normal Python install.
 
 **The executable is not code-signed.** On first run Windows SmartScreen will
@@ -142,7 +145,8 @@ not that anything is wrong with it — but a network scanner is exactly the sort
 of program where you should not simply take that on trust.
 
 Verify it before you run it. Each release publishes the SHA-256 of the
-executable next to the download; compare it against the file you got:
+executable in its notes and as `HVACNetworkScanner.exe.sha256`; compare it
+against the file you got:
 
 ```powershell
 Get-FileHash .\HVACNetworkScanner.exe -Algorithm SHA256
@@ -151,9 +155,16 @@ Get-FileHash .\HVACNetworkScanner.exe -Algorithm SHA256
 The binary is built by GitHub Actions from the tagged commit, not on a
 developer machine — the workflow is in
 [.github/workflows/ci.yml](.github/workflows/ci.yml) and its build log is
-public, so you can see exactly what went into it. If you would rather not
-trust a binary at all, build it yourself with the two commands above; it is
-the same spec file CI uses.
+public, so you can see exactly what went into it, including the hash. From
+2.9.1 the build also signs an attestation that ties the file to that
+workflow run and commit; with the [GitHub CLI](https://cli.github.com/):
+
+```powershell
+gh attestation verify .\HVACNetworkScanner.exe --repo jamesccupps/HVAC-Network-Scanner
+```
+
+If you would rather not trust a binary at all, build it yourself with the two
+commands above; it is the same spec file and the same pinned tooling CI uses.
 
 ## Using the GUI
 
@@ -184,7 +195,10 @@ Ctrl+Enter). Results appear as each device finishes, not at the end:
 The filter box (Ctrl+F) narrows every tab at once — type `vav` or a device
 name or an IP. Column headers sort; IP addresses sort numerically. Ctrl+C
 copies the selected rows as tab-separated text that pastes straight into a
-spreadsheet.
+spreadsheet. A device name that starts like a formula (`=`, `+`, `-`, `@`)
+is pasted, and exported to CSV, as text: device names are chosen by whoever
+controls the device, and BACnet names can be changed by anyone on the
+network.
 
 **Export** writes a **survey report** (HTML — findings, inventory and open
 services in one file you can hand to the building owner), the device list
@@ -197,7 +211,11 @@ scan against an earlier JSON export.
 sites with small field controllers), parallel deep scans, unicast discovery,
 BBMD registration, broadcast override, Who-Is chunking, an object cap,
 SNMP communities, and the MS/TP address probe for trunks behind routers on
-other subnets. Everything you set is remembered for next time.
+other subnets. Everything you set is remembered for next time; while the
+panel is folded away the button says how many settings differ from the
+defaults, and the scan log lists them when a scan starts. A number that is
+not a number stops the scan with the reason rather than falling back to a
+default. A scan of more than 1,024 addresses in all asks first.
 
 **Site** saves the targets and every option under a name — for the
 buildings you audit again and again — and brings them back from the list.
@@ -251,7 +269,7 @@ python -m hvac_scanner.cli 10.0.0.19,10.0.0.21,10.0.0.192
 python -m hvac_scanner.cli 10.50.20.0/24 --unicast always
 
 # ...and find the MS/TP devices behind its routers too, no BBMD needed
-# (about a minute per MS/TP network)
+# (a few minutes per MS/TP network: two addresses at a time)
 python -m hvac_scanner.cli 10.50.20.0/24 --unicast always --mstp-probe
 
 # A site saved in the GUI, with its own targets and options
@@ -282,11 +300,36 @@ See [docs/CLI_USAGE.md](docs/CLI_USAGE.md) for the full flag reference and a Win
 Exit codes:
 
 - `0` — scan completed
-- `1` — bad arguments
-- `2` — interrupted (SIGINT)
+- `1` — bad arguments (including a value out of range, more addresses than
+  `--max-hosts`, or a `--baseline` file that is missing or damaged)
+- `2` — interrupted (Ctrl+C), so the results are partial
 - `3` — internal error
+- `4` — scan completed and differed from the baseline (`--fail-on-change`)
 
 ## What's new
+
+### v2.9.1 (unreleased)
+
+Fixes from an external review: robustness against broken or hostile
+devices, gentler traffic, and exports that say what they are. Full list in
+[CHANGELOG.md](CHANGELOG.md).
+
+- **A broken or hostile device can no longer end a scan**: oversized
+  integers, object counts in the billions, I-Am floods, Modbus servers that
+  never finish a reply, and service banners that trickle in for hours are
+  all bounded.
+- **Gentler**: the scanner never shares UDP 47808 with BACnet software
+  already running on the PC, sizes ReadPropertyMultiple to what each device
+  can send back, opens at most two connections to a host at a time, and
+  stops probing a Modbus unit a gateway says is absent.
+- **Exports say what was scanned**: passes that were off, failed or stopped
+  are recorded, and the report shows "Not scanned" instead of "None".
+  Spreadsheet formulas in device names are neutralised; the classification
+  report no longer holds addresses or names; a site's own SNMP community is
+  not exported.
+- Chunked Who-Is covers the whole instance range; the diff tells apart
+  devices that share an instance number (and reports them); the release
+  executable comes with a build attestation.
 
 ### v2.9.0 (2026-11-04)
 
@@ -402,7 +445,30 @@ and lower Parallel devices to 1.
 
 This tool is intended for scanning networks you own or are authorized to audit. Running BACnet or Modbus sweeps against unfamiliar networks is at best rude and at worst unlawful in many jurisdictions. Building automation systems can also behave unpredictably when they see unexpected traffic — small field controllers have been known to lock up under probe load, and some equipment will fail-safe into unsafe mechanical states. Don't point it at anything you haven't been explicitly asked to assess.
 
-The default-credentials database reflects the factory defaults published in each vendor's own documentation. It's here so the legitimate owner or operator of a system can quickly confirm whether defaults were ever changed, not as a remote-access toolkit.
+The default-credentials database reflects the factory defaults published in each vendor's own documentation. It's here so the legitimate owner or operator of a system can quickly confirm whether defaults were ever changed, not as a remote-access toolkit. Those defaults are shown, never tried.
+
+**What the scanner sends.** It reads; it does not write or reconfigure:
+
+- **BACnet**: Who-Is (broadcast, ranged, routed or unicast),
+  Who-Is-Router-To-Network, Read-BDT and Read-FDT, ReadProperty and
+  ReadPropertyMultiple. No writes, no ReinitializeDevice, no
+  DeviceCommunicationControl, no subscriptions; it never answers requests.
+- **Modbus TCP**: function codes 43/14, 17, 3, 4 and 1 to a few unit IDs;
+  never unit 0, never a write.
+- **KNXnet/IP**: one description request; no connection, so no tunnel slot.
+- **APOGEE P2**: one identify frame with a deliberately wrong BLN name.
+- **Other services**: connect-and-close, an HTTP `GET /`, and banner reads;
+  nothing logs in.
+
+Two exceptions, both worth knowing about:
+
+- **SNMP asks with a community string** (`public` unless you set others),
+  which is a password of sorts: an agent may log a wrong one or send an
+  authentication-failure trap. Turn SNMP off if that matters on the site.
+- **BBMD registration (`--bbmd`, off by default) is a write**: it adds the
+  scanner to the BBMD's foreign-device table so its broadcasts reach other
+  subnets. The entry lasts at most 300 seconds (plus BACnet's 30-second
+  grace) after the scan stops renewing it.
 
 ## Project layout
 
@@ -426,6 +492,7 @@ hvac_scanner/
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
+├── text.py            # Device text made safe for logs and spreadsheets
 ├── icon.py            # The app icon, drawn in code
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
@@ -434,9 +501,11 @@ tools/
 ├── sim_site.py        # Simulated BAS site on loopback (tests, demos, screenshots)
 └── gui_demo.py        # Drive the GUI through a simulated scan and screenshot it
 
-packaging/             # PyInstaller spec, icon, entry point for the Windows exe
+packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entry point
 
-tests/                 # 590 tests
+site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
+
+tests/                 # 727 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions
@@ -445,6 +514,7 @@ tests/                 # 590 tests
 ├── test_modbus.py, test_snmp.py, test_certs.py, test_services_probes.py
 ├── test_engine.py, test_streaming.py, test_diff.py, test_fingerprint.py, ...
 ├── test_gui_options.py              # GUI controls reach ScanOptions (skips headless)
+├── test_v291.py                     # 2.9.1: the external review's findings, one by one
 ├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
 ```

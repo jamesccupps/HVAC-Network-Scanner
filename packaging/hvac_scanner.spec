@@ -80,6 +80,7 @@ a = Analysis(
         'hvac_scanner.services',
         'hvac_scanner.settings',
         'hvac_scanner.snmp',
+        'hvac_scanner.text',
     ],
     hookspath=[],
     hooksconfig={},

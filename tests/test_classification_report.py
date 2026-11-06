@@ -73,15 +73,19 @@ class TestClassificationReportBasics:
             r.write_classification_report(path)
             with open(path) as f:
                 content = f.read()
-            # Key details should all be present
-            assert '10.0.0.19' in content
-            assert '33333' in content
-            assert 'SC-1 + SN00000000' in content
+            # What a profile entry needs is present ...
+            assert 'Device 1' in content
             assert 'Tracer SC+' in content
             assert 'The Trane Company' in content
             assert '5517' in content  # object count
             assert '5000' in content  # cap
             assert 'known device' in content
+            # ... and nothing that identifies the site: it is attached to a
+            # public GitHub issue.
+            assert '10.0.0.19' not in content
+            assert '33333' not in content
+            assert 'SC-1' not in content
+            assert 'SN00000000' not in content
         finally:
             os.unlink(path)
 
@@ -149,10 +153,11 @@ class TestClassificationReportBasics:
             path = f.name
         try:
             r.write_classification_report(path)
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 content = f.read()
-            assert '10.0.0.1' in content
-            assert '10.0.0.50' not in content  # modbus excluded
+            assert 'Device 1' in content
+            assert 'Device 2' not in content  # modbus excluded
+            assert 'Modbus' not in content
         finally:
             os.unlink(path)
 

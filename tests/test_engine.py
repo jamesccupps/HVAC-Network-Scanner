@@ -404,7 +404,7 @@ def test_stride_sample_degenerate_inputs():
     eng = _engine()
     assert eng._stride_sample_indices(0, 10) == []
     assert eng._stride_sample_indices(10, 0) == []
-    assert eng._stride_sample_indices(10, 99) == list(range(1, 11))
+    assert list(eng._stride_sample_indices(10, 99)) == list(range(1, 11))
 
 
 def test_stride_sample_covers_every_object_type():

@@ -10,15 +10,26 @@ Technical substance is fine and wanted: object counts, firmware revisions,
 verification dates and behavioral notes all stay. What must not appear is a
 string that names a site or a specific installed asset.
 
-This test is deliberately source-scanning rather than reviewer-dependent —
-the point is that the next contributor pasting field notes gets caught by CI.
+Two layers:
 
-The site's name and address are checked by SHA-256 digest rather than spelled
-out here. An earlier version listed them in plain text, which put them back
-in the public tree in the very file meant to keep them out of it.
+- Generic shapes, below, that no public file should contain whatever the
+  site: a panel name with its serial-style suffix, a controller serial.
+  These run everywhere, CI included.
+- A private deny-list naming particular sites, kept OUTSIDE the repository
+  (a public list of what to keep out is a list of what to look for). Its
+  path is $HVAC_SITE_DENYLIST, else ~/.hvac-scanner/site-denylist.txt; the
+  tests using it skip when it is absent. A local pre-commit hook runs this
+  file, so a commit carrying a listed name is refused before it exists.
+
+Deny-list format, one entry per line ('#' starts a comment):
+    re:<regex>          a pattern, searched case-sensitively
+    sha256:<hex>        SHA-256 of a lower-cased phrase of up to three words
+    <text>              a phrase, matched case-insensitively on word boundaries
 """
 
+import codecs
 import hashlib
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -28,33 +39,46 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 SCANNED_SUFFIXES = {'.py', '.md', '.toml', '.yml', '.yaml', '.cfg', '.txt', '.bat',
-                    '.spec', '.json', '.ini'}
+                    '.spec', '.json', '.ini', '.html', '.htm', '.csv', '.log', '.xml',
+                    '.ps1', '.sh', '.js', '.css'}
 # Used only when git is unavailable (an sdist, say). With git, the scan covers
 # exactly the files that would be published, so a virtualenv or build output
 # inside the checkout can never trip it.
 SKIP_DIRS = {'.git', '__pycache__', '.pytest_cache', 'build', 'dist', '.eggs',
              '.venv', 'venv', 'env', '.tox', 'node_modules', 'site-packages'}
 
-# Shapes of asset names. Each is (regex, why it is banned); keep them specific
-# enough that ordinary English does not trip them.
+# Shapes of asset names that identify an installed device on any site. Each
+# is (regex, why it is banned); specific enough that prose does not trip them.
 BANNED_SHAPES = [
-    (r'\bSITE[_A-Z0-9]{3,}\b',       'site-prefixed device or room name'),
     (r'\bPXC[CM]\d{5,}\b',          'specific panel name'),
     (r'\bE\d{2}[A-Z]\d{5,}\b',      'controller serial number'),
 ]
-
-# SHA-256 of lower-cased phrases (words joined by single spaces) that name the
-# site or its address. Phrases of up to MAX_PHRASE_WORDS words are checked.
-BANNED_PHRASE_DIGESTS = {
-    'b63e5d1f36e56b36057305be5c5109a75da20ae77756bfb73ad17fcbf9667d13': 'site name',
-    '3e81ebaebcab4f428ac36a1c0961dac5b4c68d0d3068848d16a6addf8241e6c0': 'site name',
-    '744f54f219bced0f99a86003f610f56bdff033fdcf6a5b1635e7f457f75c29ff': 'site address',
-    '22a6644cfa37f4a8be9ae508451e8da6082d5b93eccc4244f926b1a3a4468a03': 'site address',
-}
 MAX_PHRASE_WORDS = 3
 
 # This file necessarily contains the patterns it bans.
 SELF = Path(__file__).name
+
+
+def denylist_path() -> Path:
+    env = os.environ.get('HVAC_SITE_DENYLIST')
+    return Path(env) if env else Path.home() / '.hvac-scanner' / 'site-denylist.txt'
+
+
+def load_denylist(path: Path):
+    """(regexes, digests) from a private deny-list; phrases become digests."""
+    regexes, digests = [], set()
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        entry = raw.split('#', 1)[0].strip()
+        if not entry:
+            continue
+        if entry.startswith('re:'):
+            regexes.append(re.compile(entry[3:].strip()))
+        elif entry.startswith('sha256:'):
+            digests.add(entry[7:].strip().lower())
+        else:
+            words = re.findall(r'[a-z0-9]+', entry.lower())
+            digests.add(hashlib.sha256(' '.join(words).encode()).hexdigest())
+    return regexes, digests
 
 
 def _candidate_paths():
@@ -78,11 +102,24 @@ def _scanned_files():
         yield path
 
 
+def _decode(data: bytes) -> str:
+    """Text in whatever encoding it was saved in. Windows PowerShell 5's `>`
+    writes UTF-16, which a UTF-8 read used to skip as undecodable."""
+    for bom, enc in ((codecs.BOM_UTF8, 'utf-8-sig'), (codecs.BOM_UTF16_LE, 'utf-16'),
+                     (codecs.BOM_UTF16_BE, 'utf-16')):
+        if data.startswith(bom):
+            return data.decode(enc, errors='replace')
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return data.decode('latin-1')
+
+
 def _lines():
     for path in _scanned_files():
         try:
-            text = path.read_text(encoding='utf-8')
-        except (UnicodeDecodeError, OSError):
+            text = _decode(path.read_bytes())
+        except OSError:
             continue
         rel = path.relative_to(ROOT).as_posix()
         for lineno, line in enumerate(text.splitlines(), 1):
@@ -97,7 +134,7 @@ def _phrase_digests(line: str):
 
 
 @pytest.mark.parametrize("pattern,reason", BANNED_SHAPES)
-def test_no_site_identifying_strings(pattern, reason):
+def test_no_asset_shaped_strings(pattern, reason):
     rx = re.compile(pattern)
     hits = [f"{rel}:{n}: {line.strip()[:100]}"
             for rel, n, line in _lines() if rx.search(line)]
@@ -106,13 +143,16 @@ def test_no_site_identifying_strings(pattern, reason):
     )
 
 
-def test_no_site_name_or_address():
+def test_nothing_on_the_private_denylist():
+    path = denylist_path()
+    if not path.is_file():
+        pytest.skip(f"no private deny-list at {path}")
+    regexes, digests = load_denylist(path)
     hits = []
     for rel, n, line in _lines():
-        for digest in _phrase_digests(line):
-            if digest in BANNED_PHRASE_DIGESTS:
-                hits.append(f"{rel}:{n}: ({BANNED_PHRASE_DIGESTS[digest]})")
-                break
+        if any(rx.search(line) for rx in regexes) or any(
+                d in digests for d in _phrase_digests(line)):
+            hits.append(f"{rel}:{n}")
     # The offending text is deliberately not echoed back.
     assert not hits, "site-identifying text found in the public tree:\n  " + "\n  ".join(hits)
 
@@ -120,8 +160,6 @@ def test_no_site_name_or_address():
 def test_the_guard_actually_matches_what_it_claims_to():
     """Make sure the patterns are not silently inert. Samples are synthetic."""
     samples = [
-        ('SITE_TEST_ROOM', r'\bSITE[_A-Z0-9]{3,}\b'),
-        ('SITEPXCM999999', r'\bSITE[_A-Z0-9]{3,}\b'),
         ('PXCM990000', r'\bPXC[CM]\d{5,}\b'),
         ('E99Z00000', r'\bE\d{2}[A-Z]\d{5,}\b'),
     ]
@@ -129,10 +167,21 @@ def test_the_guard_actually_matches_what_it_claims_to():
         assert re.search(pattern, sample), f"{pattern!r} no longer matches {sample!r}"
 
 
-def test_phrase_matching_is_word_based():
-    digest = hashlib.sha256(b'example plaza').hexdigest()
-    found = {d for d in _phrase_digests("Panels at  Example   PLAZA, level 2")}
-    assert digest in found
+def test_denylist_format(tmp_path):
+    deny = tmp_path / "deny.txt"
+    deny.write_text("# comment\nre:\\bZZTOP_\\w+\nExample Plaza  # a phrase\n"
+                    f"sha256:{hashlib.sha256(b'north annex').hexdigest()}\n",
+                    encoding='utf-8')
+    regexes, digests = load_denylist(deny)
+    assert regexes[0].search("panel ZZTOP_AHU1")
+    found = set(_phrase_digests("Panels at  Example   PLAZA, level 2"))
+    assert hashlib.sha256(b'example plaza').hexdigest() in found & digests
+    assert hashlib.sha256(b'north annex').hexdigest() in digests
+
+
+def test_utf16_files_are_read():
+    text = "PXCM990000 in a log"
+    assert _decode(codecs.BOM_UTF16_LE + text.encode('utf-16-le')) == text
 
 
 def test_guard_does_not_trip_on_ordinary_prose():
@@ -146,5 +195,3 @@ def test_guard_does_not_trip_on_ordinary_prose():
         rx = re.compile(pattern)
         for line in innocuous:
             assert not rx.search(line), f"{pattern!r} false-positives on {line!r}"
-    for line in innocuous:
-        assert not any(d in BANNED_PHRASE_DIGESTS for d in _phrase_digests(line))

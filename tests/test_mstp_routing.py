@@ -349,78 +349,80 @@ class TestChunkedWhois:
         assert 'low' not in kwargs
         assert 'high' not in kwargs
 
-    def test_chunked_splits_instance_range(self):
-        """chunk=1000 with max=5000 covers 0-999, 1000-1999, ... 5000-5000.
-        That's 6 chunks, and the upper bound is hit before the 10-empty
-        early-stop triggers."""
+    @staticmethod
+    def _ranged(devices):
+        """A discover_who_is that answers like a site holding `devices`
+        (ip, instance) and records the ranges it was asked about."""
+        asked = []
+
+        def who_is(target_ip=None, low=None, high=None, **_kw):
+            asked.append((low, high))
+            return [{'ip': ip, 'instance': inst} for ip, inst in devices
+                    if low <= inst <= high]
+        return who_is, asked
+
+    @staticmethod
+    def _covers(asked, top):
+        """The ranges asked about run 0..top with no gap or overlap."""
+        expect = 0
+        for low, high in asked:
+            assert low == expect, f"gap or overlap at {low} (expected {expect})"
+            expect = high + 1
+        assert expect == top + 1
+
+    def test_chunked_covers_the_whole_range(self):
         from hvac_scanner.engine import ScanEngine, ScanOptions
 
-        opts = ScanOptions(
-            networks=["10.0.0.0/24"],
-            whois_chunk_size=1000,
-            whois_max_instance=5000,
-            whois_chunk_delay_ms=0,  # no sleep in tests
-        )
-        engine = ScanEngine(opts)
+        opts = ScanOptions(networks=["10.0.0.0/24"], whois_chunk_size=1000,
+                           whois_max_instance=5000, whois_chunk_delay_ms=0)
         mock_client = MagicMock()
-        mock_client.discover_who_is.return_value = []
+        mock_client.discover_who_is.side_effect, asked = self._ranged([])
+        ScanEngine(opts)._discover_whois_on(mock_client, "10.0.0.255")
+        self._covers(asked, 5000)
 
-        engine._discover_whois_on(mock_client, "10.0.0.255")
-
-        # 0-999, 1000-1999, 2000-2999, 3000-3999, 4000-4999, 5000-5000 = 6
-        assert mock_client.discover_who_is.call_count == 6
-
-    def test_chunked_early_stop_after_empty_streak(self):
-        """If 10 chunks return zero new devices, bail out to avoid scanning
-        the whole 4M instance space on a small site."""
+    def test_chunked_empty_space_is_covered_in_a_few_requests(self):
+        """An empty stretch doubles the range each time, so the full 4M
+        instance space takes about a dozen requests, not 4,195 (or a stop
+        after ten that never looks at the rest)."""
         from hvac_scanner.engine import ScanEngine, ScanOptions
 
-        opts = ScanOptions(
-            networks=["10.0.0.0/24"],
-            whois_chunk_size=1000,
-            whois_max_instance=4_194_303,  # full BACnet range
-            whois_chunk_delay_ms=0,
-        )
-        engine = ScanEngine(opts)
+        opts = ScanOptions(networks=["10.0.0.0/24"], whois_chunk_size=1000,
+                           whois_max_instance=4_194_303, whois_chunk_delay_ms=0)
         mock_client = MagicMock()
-        mock_client.discover_who_is.return_value = []
+        mock_client.discover_who_is.side_effect, asked = self._ranged([])
+        ScanEngine(opts)._discover_whois_on(mock_client, "10.0.0.255")
+        self._covers(asked, 4_194_303)
+        assert len(asked) <= 13
 
-        engine._discover_whois_on(mock_client, "10.0.0.255")
-
-        # Should stop at 10 consecutive empties, not scan all 4195 chunks
-        assert mock_client.discover_who_is.call_count == 10
-
-    def test_chunked_resets_streak_on_new_device(self):
-        """A hit in chunk N resets the empty streak counter so we don't
-        stop in a sparse instance range."""
+    def test_chunked_finds_devices_far_past_an_empty_stretch(self):
+        """The review's case: devices 1-500 and 100,001 upward. Stopping
+        after ten empty chunks of 1,000 never asked about the second group."""
         from hvac_scanner.engine import ScanEngine, ScanOptions
 
-        opts = ScanOptions(
-            networks=["10.0.0.0/24"],
-            whois_chunk_size=1000,
-            whois_max_instance=20_000,
-            whois_chunk_delay_ms=0,
-        )
-        engine = ScanEngine(opts)
+        site = ([(f'10.0.0.{i % 200 + 1}', i) for i in range(1, 501, 50)]
+                + [('10.0.0.250', 100_001), ('10.0.0.251', 100_900)])
+        opts = ScanOptions(networks=["10.0.0.0/24"], whois_chunk_size=1000,
+                           whois_max_instance=4_194_303, whois_chunk_delay_ms=0)
         mock_client = MagicMock()
+        mock_client.discover_who_is.side_effect, asked = self._ranged(site)
+        result = ScanEngine(opts)._discover_whois_on(mock_client, "10.0.0.255")
+        assert {d['instance'] for d in result} == {inst for _ip, inst in site}
+        self._covers(asked, 4_194_303)
 
-        # Respond with one device on every 5th chunk. That's 4 empty, 1 hit,
-        # 4 empty, 1 hit — streak never reaches 10.
-        responses = []
-        for chunk_num in range(21):  # 20000 / 1000 = 20 chunks
-            if chunk_num % 5 == 0:
-                responses.append([{'ip': f'10.0.0.{chunk_num+1}',
-                                  'instance': chunk_num * 1000}])
-            else:
-                responses.append([])
-        mock_client.discover_who_is.side_effect = responses
+    def test_chunked_range_shrinks_back_after_a_hit(self):
+        """A hit drops the range back to the chunk size, so a dense stretch
+        is still asked about a chunk at a time."""
+        from hvac_scanner.engine import ScanEngine, ScanOptions
 
-        result = engine._discover_whois_on(mock_client, "10.0.0.255")
-
-        # Should have scanned the full range — no 10-empty run
-        assert mock_client.discover_who_is.call_count >= 20
-        # And accumulated the devices from every 5th chunk
-        assert len(result) >= 4
+        site = [('10.0.0.5', 9_000), ('10.0.0.6', 9_500)]
+        opts = ScanOptions(networks=["10.0.0.0/24"], whois_chunk_size=1000,
+                           whois_max_instance=20_000, whois_chunk_delay_ms=0)
+        mock_client = MagicMock()
+        mock_client.discover_who_is.side_effect, asked = self._ranged(site)
+        ScanEngine(opts)._discover_whois_on(mock_client, "10.0.0.255")
+        hit = next(i for i, (lo, hi) in enumerate(asked) if lo <= 9_000 <= hi)
+        lo, hi = asked[hit + 1]
+        assert hi - lo + 1 == 1000
 
     def test_chunked_deduplicates_across_chunks(self):
         """A device responding to multiple chunks (shouldn't happen with the

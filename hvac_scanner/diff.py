@@ -14,6 +14,13 @@ devices are therefore keyed on their instance number, and everything else
 (Modbus units, bare service ports, SNMP hosts) on address and port, which is
 the only stable identity those protocols offer.
 
+An instance number is meant to be unique on a BACnet network, but duplicates
+happen (two MS/TP trunks configured alike, or several buildings scanned
+together). Keyed on the number alone they collapsed into one entry whose
+address and name flipped between runs, so an instance seen more than once in
+either scan is keyed on instance@address (with the MS/TP network and MAC), and
+the duplicates are listed.
+
 What counts as a change
 -----------------------
 Only fields that mean something to whoever reads the report: model, vendor,
@@ -66,6 +73,8 @@ class ScanDiff:
     removed: list[dict[str, Any]] = field(default_factory=list)
     changed: list[DeviceDiff] = field(default_factory=list)
     unchanged: int = 0
+    # BACnet instances that more than one device answers to, in this scan.
+    duplicates: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def has_changes(self) -> bool:
@@ -89,6 +98,7 @@ class ScanDiff:
                              for c in d.changes]}
                 for d in self.changed
             ],
+            'duplicate_instances': self.duplicates,
         }
 
 
@@ -96,20 +106,49 @@ class ScanDiff:
 # identity and field access
 # ---------------------------------------------------------------------------
 
-def device_key(dev: dict[str, Any]) -> str:
+def _instance(dev: dict[str, Any]) -> Any:
+    if str(dev.get('protocol', '') or '').startswith('BACnet'):
+        inst = dev.get('instance')
+        if inst not in (None, ''):
+            return inst
+    return None
+
+
+def _where(dev: dict[str, Any]) -> str:
+    where = str(dev.get('ip', '?'))
+    if dev.get('source_network') not in (None, ''):
+        where += f"/{dev['source_network']}/{dev.get('source_address', '')}"
+    return where
+
+
+def duplicate_instances(devices: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """{instance: [where each device answering to it is]} for every BACnet
+    instance more than one device claims."""
+    seen: dict[str, list[str]] = {}
+    for d in devices:
+        inst = _instance(d)
+        if inst is not None:
+            seen.setdefault(str(inst), []).append(_where(d))
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+def device_key(dev: dict[str, Any], duplicated: "set[str] | frozenset[str]" = frozenset()
+               ) -> str:
     """Stable identity for a device across scans.
 
     BACnet devices key on their instance number: it is configured in the
     controller, so a panel that moves to a new IP is still the same panel and
     should be reported as an address change rather than as a disappearance and
-    an unrelated arrival. Everything else has no such identifier and keys on
-    address, port and unit.
+    an unrelated arrival; an instance in `duplicated` adds where the device
+    is, since the number alone does not say which one is meant. Everything
+    else has no such identifier and keys on address, port and unit.
     """
     proto = str(dev.get('protocol', '') or '')
-    if proto.startswith('BACnet'):
-        instance = dev.get('instance')
-        if instance not in (None, ''):
-            return f"bacnet:{instance}"
+    instance = _instance(dev)
+    if instance is not None:
+        if str(instance) in duplicated:
+            return f"bacnet:{instance}@{_where(dev)}"
+        return f"bacnet:{instance}"
     parts = [proto or '?', str(dev.get('ip', '?'))]
     if dev.get('port') not in (None, ''):
         parts.append(str(dev['port']))
@@ -167,12 +206,15 @@ def _summarize(dev: dict[str, Any]) -> dict[str, Any]:
 
 def diff_scans(baseline: dict[str, Any], current: dict[str, Any]) -> ScanDiff:
     """Compare two scan exports (the dicts written by ScanResult.write_json)."""
-    base_devs = {device_key(d): d for d in baseline.get('devices', [])}
-    cur_devs = {device_key(d): d for d in current.get('devices', [])}
+    dup_now = duplicate_instances(current.get('devices', []))
+    duplicated = set(dup_now) | set(duplicate_instances(baseline.get('devices', [])))
+    base_devs = {device_key(d, duplicated): d for d in baseline.get('devices', [])}
+    cur_devs = {device_key(d, duplicated): d for d in current.get('devices', [])}
 
     out = ScanDiff(
         baseline_time=str(baseline.get('scan_time', '')),
         current_time=str(current.get('scan_time', '')),
+        duplicates=dup_now,
     )
 
     for key in cur_devs.keys() - base_devs.keys():
@@ -224,9 +266,16 @@ def format_text(diff: ScanDiff, show_unchanged: bool = False) -> str:
     add(f"Current:  {diff.current_time or 'unknown'}")
     add("=" * 70)
 
+    dup_lines = []
+    if diff.duplicates:
+        dup_lines += ["", f"DUPLICATE DEVICE INSTANCES ({len(diff.duplicates)})", "-" * 70]
+        dup_lines += [f"  ! device {inst} answers at {', '.join(where)}"
+                      for inst, where in sorted(diff.duplicates.items())]
+
     if not diff.has_changes:
         add("")
         add(f"No changes. {diff.unchanged} device(s) match the baseline.")
+        lines += dup_lines
         return "\n".join(lines) + "\n"
 
     if diff.added:
@@ -262,6 +311,7 @@ def format_text(diff: ScanDiff, show_unchanged: bool = False) -> str:
             for c in d.changes:
                 add(f"      {c}")
 
+    lines += dup_lines
     add("")
     add("=" * 70)
     add(f"{len(diff.added)} new, {len(diff.removed)} not responding, "

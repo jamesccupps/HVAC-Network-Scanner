@@ -30,21 +30,22 @@ is also on your PATH and is equivalent.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout SECONDS` | `5` | Per-operation timeout. BACnet-heavy devices may benefit from 8–10. |
+| `--timeout SECONDS` | `5` | Per-operation timeout, more than 0. BACnet-heavy devices may benefit from 8–10. |
 | `--rate-limit MS` | `0` | Minimum ms between BACnet packets to the same IP. Set to `50` for small field controllers (UC400, FEC, BASRT). |
-| `--max-objects N` | unset | Hard ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Only ever lowers it. Omit to use the profile cap. |
+| `--max-objects N` | unset | Ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Whatever the profile says, no device is enumerated past 20,000 objects unless this is set higher. |
+| `--max-hosts N` | `65536` | Refuse to scan more than N addresses in total, across all targets. A guard against a mistyped prefix. |
 | `--scan-depth LEVEL` | `normal` | `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
 | `--broadcast IP` | auto | Override the computed Who-Is broadcast target. Rarely needed: the broadcast is derived from the target syntax automatically. |
 | `--no-rpm` | off | Disable `ReadPropertyMultiple`. Use if a specific device misbehaves with RPM requests. Costs roughly two orders of magnitude more round trips on a large controller. |
 | `--bacnet-workers N` | `4` | BACnet devices deep-scanned at once. Each worker owns one IP address — a router and the MS/TP devices behind it share one — so no device sees more than one request at a time either way. `1` scans strictly one device after another. |
-| `--snmp-community NAME` | `public` | SNMP community to try. Repeat the flag for several; each is tried only against hosts that stayed silent for the previous one. |
+| `--snmp-community NAME` | `public` | SNMP community to try. Repeat the flag for several; each is tried only against hosts that stayed silent for the previous one. A community is a password of sorts: an agent may log or trap a wrong one. Exports record a community other than `public` or `private` only as `(custom)`. |
 | `--version` | | Print the version and exit. |
 
 ### Large-network probing
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--whois-chunk SIZE` | `0` | Split Who-Is into instance ranges of this size instead of one global broadcast. On a busy multi-building segment a single global Who-Is makes every device answer at once; chunking spreads the replies out. `0` disables. |
+| `--whois-chunk SIZE` | `0` | Split Who-Is into instance ranges of this size instead of one global broadcast. On a busy multi-building segment a single global Who-Is makes every device answer at once; chunking spreads the replies out. After each range with no answer the next range is twice as wide, back to SIZE at the first answer, so the whole instance space is covered in a dozen or so requests past the last device. `0` disables. |
 | `--whois-max-instance N` | `4194303` | Upper bound when chunking. Only used with `--whois-chunk`. |
 | `--whois-chunk-delay MS` | `50` | Pause between chunked broadcasts. |
 
@@ -70,11 +71,11 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 
 | Flag | Description |
 |------|-------------|
-| `--json PATH` | Write structured results to a JSON file. |
-| `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). |
+| `--json PATH` | Write structured results to a JSON file. Its `coverage` block records the options, whether the scan was stopped, and which passes ran (`scanned`, `off`, `failed`, `skipped: why`, `stopped partway`, `stopped before it ran`). |
+| `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). A device-supplied value that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is written as text. |
 | `--points-csv PATH` | Write the point list: one row per BACnet point and Modbus register, with value, units and status. |
 | `--html PATH` | Write a self-contained HTML survey report: findings ranked by severity, device inventory, open services. `python -m hvac_scanner.report scan.json -o out.html` builds the same report from a saved JSON export. |
-| `--export-classification PATH` | Write a plain-text report of how each BACnet device was classified: which profile matched, the cap applied, and the observed object count. Contains no point values. Intended for submitting a device profile when you scan hardware the project has not seen. |
+| `--export-classification PATH` | Write a plain-text report of how each BACnet device was classified: which profile matched, the cap applied, and the observed object count. Devices are numbered: no addresses, instance numbers, names or point values. Intended for attaching to a public issue when submitting a device profile for hardware the project has not seen. |
 | `--print FORMAT` | Stdout: `summary` (default), `table`, `json`, `none`. |
 | `--quiet` / `-q` | Suppress progress log on stderr. |
 | `--verbose` / `-v` | Enable DEBUG logging. |
@@ -83,24 +84,27 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 
 | Flag | Description |
 |------|-------------|
-| `--baseline PATH` | Compare this scan against a previous JSON export. |
-| `--save-baseline PATH` | Write this scan for the next comparison. Written even when changes were found, so a schedule rolls forward. |
+| `--baseline PATH` | Compare this scan against a previous JSON export. Read before scanning: a missing file exits 1 (unless `--save-baseline` will create it), and so does a damaged one. |
+| `--save-baseline PATH` | Write this scan for the next comparison. Written even when changes were found, so a schedule rolls forward, but not after a partial scan (stopped, or a pass skipped or failed): the last complete one stays. Written to a temporary file first and moved into place. |
 | `--diff-output PATH` | Write the comparison to a file; `.json` for JSON, anything else for text. Defaults to stdout. |
 | `--fail-on-change` | Exit 4 when the scan differs from the baseline. |
 
 BACnet devices are matched on their device instance rather than their address,
 so a controller that moves IP is reported as an address change rather than as
-one device disappearing and an unrelated one appearing. Present values are not
-compared — they differ on every scan and would bury the signal.
+one device disappearing and an unrelated one appearing. An instance number that
+more than one device answers to is matched on instance and address (with the
+MS/TP network and MAC) instead, and listed under DUPLICATE DEVICE INSTANCES.
+Present values are not compared — they differ on every scan and would bury the
+signal.
 
 ### Cross-subnet discovery
 
 | Flag | Description |
 |------|-------------|
-| `--bbmd IP` | Register as a Foreign Device with this BBMD and send Who-Is through it. Discovers subnets the scanner cannot broadcast to. |
-| `--bbmd-ttl SECONDS` | Registration lease, default 60. Renewed automatically during long scans. |
+| `--bbmd IP` | Register as a Foreign Device with this BBMD and send Who-Is through it. Discovers subnets the scanner cannot broadcast to. Registering is a write — the one this tool makes: it adds an entry to the BBMD's foreign-device table. |
+| `--bbmd-ttl SECONDS` | Registration lease, 10–300, default 60. Renewed automatically during long scans; the entry expires on its own (TTL plus 30 s) once renewals stop. |
 | `--unicast {auto,always,off}` | Unicast discovery for targets a broadcast cannot reach. Default `auto`. |
-| `--mstp-probe` | For MS/TP networks behind a router on another subnet, ask each MS/TP address in turn. About a minute per network. |
+| `--mstp-probe` | For MS/TP networks behind a router on another subnet, ask each MS/TP address in turn, two at a time. A few minutes per network. |
 
 A Who-Is is a broadcast, and broadcasts do not cross a router. There are two
 ways round that:
@@ -118,8 +122,9 @@ ways round that:
   with a Who-Is routed through it; devices that answer the requester
   directly turn up. Devices that only broadcast their I-Am cannot answer
   across the subnet boundary — `--mstp-probe` finds those by asking each
-  MS/TP address (0 to the port's max master) with a confirmed read, four
-  at a time, about a minute per network.
+  MS/TP address (0 to the port's max master) with a confirmed read, two
+  at a time with at least three seconds for each answer and the rate limit
+  between them: a few minutes per network.
 - **A BBMD** (`--bbmd`) relays broadcasts for you and also reaches MS/TP
   devices behind remote routers. If registration fails the BACnet pass is
   skipped rather than quietly falling back to a local broadcast, which would
@@ -131,8 +136,8 @@ ways round that:
 | Code | Meaning |
 |------|---------|
 | 0 | Scan completed (may be zero devices) |
-| 1 | Invalid arguments |
-| 2 | Interrupted via Ctrl-C / SIGINT |
+| 1 | Invalid arguments: a bad flag or value, a target that will not parse, more addresses than `--max-hosts`, a missing or damaged `--baseline` |
+| 2 | Interrupted via Ctrl-C / SIGINT (results are partial) |
 | 3 | Internal error (see log) |
 | 4 | Scan completed but differed from the baseline (`--fail-on-change` only) |
 
@@ -321,7 +326,7 @@ JSON output is designed to be consumable by other tools. Example with `jq`:
 
 ```bash
 # List all Trane controllers on the network
-python -m hvac_scanner.cli 192.168.5.0/24 --json - --print none \
+python -m hvac_scanner.cli 192.168.5.0/24 --print json --quiet \
     | jq '.devices[] | select(.vendor_id == 2)'
 
 # Get just the IPs of devices with default credentials exposed
@@ -329,5 +334,5 @@ python -m hvac_scanner.cli 192.168.5.0/24 --json scan.json --print none \
     && jq -r '.devices[] | select(.default_creds != "") | .ip' scan.json
 ```
 
-(Writing JSON to `-` is a future enhancement — for now use an actual file path
-and read back.)
+`--print json` writes the same JSON as `--json` to stdout; `--json -` would
+write a file named `-`.

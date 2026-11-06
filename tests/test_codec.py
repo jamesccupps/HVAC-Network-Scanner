@@ -504,7 +504,9 @@ class TestExtractInvokeId:
         npdu = b"\x01\x04"
         apdu = bytes([0x00, 0x05, 0x55, 0x0C, 0x0C, 0x00, 0x00, 0x00, 0x08])
         pkt = codec.build_bvlc(0x0A, npdu + apdu)
-        assert codec._extract_invoke_id(pkt) == 0x55
+        assert codec._extract_invoke_id(pkt, requests=True) == 0x55
+        # Someone asking us something is never the answer to our request.
+        assert codec._extract_invoke_id(pkt) is None
 
     def test_iam_broadcast_has_no_invoke_id(self):
         """I-Am is an Unconfirmed-Request (type 1) — no invoke id."""

@@ -279,10 +279,13 @@ class TestIntegration:
         assert a.bbmd_ttl == 300
 
     def test_bbmd_defaults_to_off(self):
-        from hvac_scanner.cli import _build_parser
+        from hvac_scanner.cli import _DEFAULTS, _build_parser
         a = _build_parser().parse_args(['10.0.0.0/24'])
         assert a.bbmd is None
-        assert a.bbmd_ttl == 60
+        # None until main() fills it in, so a profile's TTL is not overridden
+        # by a flag nobody gave.
+        assert a.bbmd_ttl is None
+        assert _DEFAULTS['bbmd_ttl'] == 60
 
     def test_scan_options_default_has_no_bbmd(self):
         from hvac_scanner.engine import ScanOptions

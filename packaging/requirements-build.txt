@@ -1,0 +1,33 @@
+# Build tooling for the Windows executable (.github/workflows/ci.yml,
+# windows-exe job), pinned by version AND hash.
+#
+# The job used to run `pip install -e ".[build]"`, which installed whatever
+# PyInstaller (and dependencies) PyPI served that minute, in the job that
+# builds the binary people run on building networks. Installed with
+# --require-hashes --only-binary=:all:, so a changed or substituted file fails
+# the build instead of shipping in it.
+#
+# Resolved for the build runner (Windows x64, CPython 3.12); every transitive
+# dependency must be listed or --require-hashes refuses. Dependabot (pip
+# ecosystem, /packaging) proposes updates. To regenerate by hand:
+# pip-compile --generate-hashes, or resolve the same closure and copy the
+# sha256 digests PyPI publishes for each wheel.
+#
+# The scanner itself has no runtime dependencies; this is build-time only.
+
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+pyinstaller==6.22.3 \
+    --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+pyinstaller-hooks-contrib==2026.9 \
+    --hash=sha256:2748767901acb5cecd1304652b6c7add5bffcff1d71d01207fe24a5d42942a56 \
+    --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+setuptools==84.2.1 \
+    --hash=sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2

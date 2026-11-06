@@ -39,20 +39,42 @@ def test_gui_can_set_every_scan_option_it_claims_to(app):
 
 @pytest.mark.parametrize("raw,expected", [
     ("50", 50), ("0", 0), ("", 0),
-    ("abc", 0),        # junk falls back instead of raising
-    ("-5", 0),         # below minimum falls back
 ])
-def test_read_number_tolerates_junk(app, raw, expected):
+def test_read_number_reads_numbers_and_blank(app, raw, expected):
     app.rate_limit_entry.delete(0, tk.END)
     app.rate_limit_entry.insert(0, raw)
     assert app._read_number(app.rate_limit_entry, "Rate", 0, int, minimum=0) == expected
 
 
-def test_bad_timeout_no_longer_aborts_the_scan(app):
-    """A typo'd timeout used to raise out of _run_scan and dump a traceback."""
+@pytest.mark.parametrize("raw", ["abc", "-5", "5O"])
+def test_read_number_refuses_junk(app, raw):
+    """A typo used to fall back to the default, the least gentle setting
+    (no rate limit); now the scan does not start until it is fixed."""
+    app.rate_limit_entry.delete(0, tk.END)
+    app.rate_limit_entry.insert(0, raw)
+    with pytest.raises(ValueError):
+        app._read_number(app.rate_limit_entry, "Rate", 0, int, minimum=0)
+
+
+def test_bad_timeout_stops_the_scan_with_a_reason(app):
+    """A typo'd timeout used to raise out of _run_scan and dump a traceback,
+    then to fall back silently; now it is refused before anything is sent."""
+    app.network_entry.delete(0, tk.END)
+    app.network_entry.insert(0, "10.0.0.0/24")
     app.timeout_entry.delete(0, tk.END)
     app.timeout_entry.insert(0, "five")
-    assert app._read_number(app.timeout_entry, "Timeout", 5.0, float, minimum=0.1) == 5.0
+    assert app._build_options() is None
+    assert "Timeout" in app.status_var.get() or "settings" in app.status_var.get()
+
+
+def test_advanced_button_counts_changed_settings(app):
+    """Advanced settings persist while the panel is folded away; the button
+    says how many differ from the defaults."""
+    assert app.adv_btn.cget('text').startswith("Advanced ")
+    assert "changed" not in app.adv_btn.cget('text')
+    app.adv_vars['bbmd'].set("10.0.0.5")
+    app.mstp_mac_probe.set(True)
+    assert "(2 changed)" in app.adv_btn.cget('text')
 
 
 def test_rate_limit_reaches_the_client():

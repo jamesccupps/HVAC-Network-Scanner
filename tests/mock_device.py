@@ -40,6 +40,8 @@ class MockBACnetDevice:
         self.rpm_batches = 0          # array-index RPM requests served
         self.single_reads = 0         # plain ReadProperty requests served
         self.multi_object_batches = 0  # RPM requests carrying >1 object
+        self.largest_request_apdu = 0  # biggest confirmed-request APDU received
+        self.aborts = 0               # replies too big for max_apdu, aborted
 
         # Contiguous type blocks, the way real controllers enumerate
         self.objects = []
@@ -182,9 +184,10 @@ class MockBACnetDevice:
             self._sock.sendto(_bvlc(b'\x01\x00' + iam, 0x0B), addr)
             return
 
-        inv = codec._extract_invoke_id(data)
+        inv = codec._extract_invoke_id(data, requests=True)
         if inv is None or len(data) < 11:
             return
+        self.largest_request_apdu = max(self.largest_request_apdu, len(data) - 6)
         svc = data[9]
 
         if svc == 0x0C:
@@ -202,6 +205,9 @@ class MockBACnetDevice:
             ai = struct.unpack('!H', data[18:20])[0]
         val = self._prop_value(otype, oinst, prop, ai)
         if val is None:
+            # A real device answers an Error (unknown property, invalid
+            # array index) rather than staying silent.
+            self._error(inv, 0x0C, addr)
             return
         ack = (bytes([0x30, inv, 0x0C, 0x0C])
                + codec.encode_object_id(otype, oinst)
@@ -284,4 +290,11 @@ class MockBACnetDevice:
                     body += bytes([0x4E]) + val + bytes([0x4F])
             body += bytes([0x1F])
         ack = bytes([0x30, inv, 0x0E]) + bytes(body)
+        if len(ack) > self.max_apdu:
+            # Too big for one APDU, and the request did not accept a
+            # segmented reply: a real device aborts (segmentation not
+            # supported, or buffer overflow).
+            self.aborts += 1
+            self._sock.sendto(_bvlc(b'\x01\x00' + bytes([0x71, inv, 0x04])), addr)
+            return
         self._sock.sendto(_bvlc(b'\x01\x00' + ack), addr)

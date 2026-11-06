@@ -1,0 +1,22 @@
+# Actions are pinned by commit SHA (tags can be moved, and the executable's
+# build job can sign an attestation). A pinned SHA goes stale silently, so
+# Dependabot keeps them current: it understands the `# v7.0.1` comment
+# convention and updates the SHA and the comment together.
+#
+# The scanner itself has no dependencies. The pip entry covers only the
+# executable's build tooling, pinned by version and hash in
+# packaging/requirements-build.txt, which would otherwise go stale too.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "CI"
+  - package-ecosystem: "pip"
+    directory: "/packaging"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "Build"

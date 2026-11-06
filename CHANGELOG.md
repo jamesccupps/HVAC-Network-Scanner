@@ -3,6 +3,165 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.9.1] — Unreleased
+
+Fixes from an external review of 2.9.0 (2026-11-06): what a broken or hostile
+device could do to a scan, where the scanner was less gentle than it should
+be, and what the exports left unsaid.
+
+### Security
+
+- **One oversized integer ended the BACnet pass.** An I-Am whose vendor-ID,
+  max-APDU or segmentation field ran to ~1,800 octets (from any host, inside
+  the target range or not) made Python refuse to print it, and the exception
+  emptied the whole pass; a wide max-APDU instead broke every export. I-Am
+  fields wider than four octets are rejected, Unsigned/Signed/Enumerated
+  values wider than eight stay hex, SNMP INTEGERs wider than eight are
+  dropped, and the JSON export cannot fail on one.
+- **Spreadsheet formulas in device names.** Object names, descriptions,
+  banners and page titles went into both CSVs and the Ctrl+C copy as they
+  were. BACnet names are writable by anyone on the network, so a point
+  renamed `=HYPERLINK(...)` ran as a formula in the integrator's point list.
+  A value starting `=`, `+`, `-`, `@` (or a tab, line break or full-width
+  form) is now written as text; plain numbers such as `-12.5` are left alone.
+- **Terminal escapes in the log.** Device text reached the log, and the CLI
+  prints log lines to a terminal as they are. Control characters and escape
+  sequences are stripped from every log line, and from banners, titles, KNX
+  names and SNMP descriptions as they arrive.
+- **The classification report**, meant for attaching to a public GitHub
+  issue, held each device's address, instance and name (names often carry
+  serial numbers). Devices are now numbered, with vendor, model, firmware and
+  counts only.
+- **A site's own SNMP community** that worked was kept in the JSON export and
+  the Raw JSON tab. Communities other than `public` and `private` are now
+  recorded as `(custom)`.
+
+### Fixed
+
+- **UDP 47808 was shared with other BACnet software on the PC.** With
+  `SO_REUSEADDR` the scanner bound alongside a front-end, YABE or a vendor
+  tool, and the two split each other's traffic: the front-end lost replies
+  and alarm notifications for as long as the scan ran. The port is now taken
+  exclusively (`SO_EXCLUSIVEADDRUSE` on Windows); if it is in use the scanner
+  takes another and says what that means.
+- **A device's object count was never capped.** A count of 4,294,967,295
+  meant building a list that size; 65,535 from a buggy device meant days of
+  reads. No device is enumerated past 20,000 objects unless max objects is
+  set higher, indices are ranges rather than lists, and enumeration stops
+  after 20 unreadable entries in a row.
+- **The Modbus read loop had no deadline.** A server sending frames with the
+  wrong transaction ID every so often kept a request, and the scan, going
+  for ever. Every request now has one deadline for everything it reads,
+  however slowly the bytes arrive.
+- **ReadPropertyMultiple batches were sized against the scanner's buffer**,
+  not the device's: a 480-byte MS/TP controller was asked for ~700 bytes of
+  objectList, aborted, and was then read one index per request (about 30
+  times the traffic on the trunk). Replies are sized to what the device can
+  send, an aborted batch is halved and asked again, and point-read requests
+  are trimmed to fit the device's maximum. A device that refuses even
+  one-object batches is no longer sent one per object first.
+- **A short target list got ~25 connections per host at once.** The TCP
+  sweep now keeps at most two attempts open to any one address.
+- **Every absent unit ID behind a Modbus gateway cost three serial
+  transactions.** Probing a unit stops at the first timeout or gateway
+  "no device" answer.
+- **Chunked Who-Is gave up after ten empty chunks**, so a site numbered
+  1–500 and 100,001 upward never had its second group asked about. The range
+  now doubles across empty stretches and drops back at the first answer,
+  covering all 4,194,303 instances; each chunk also listens for less time.
+- **Broadcasts on subnets that are not a /24.** Scanning a /16 the PC sits on
+  broadcast to x.x.255.255, which a /24 sends to the gateway as unicast; the
+  limited broadcast is used instead. A local subnet whose broadcast got no
+  answer at all (a /24 target on a /23, or a PC with several interfaces) is
+  asked once more the other way.
+- **Waits a hostile peer could stretch out:** service probes have a
+  15-second limit once connected, the SNMP receive loop ends while a flood
+  continues, and one address can contribute at most 1,000 devices to a
+  Who-Is (20,000 in all).
+- **Exports did not say what was not scanned.** Services off (the GUI
+  default), a stopped scan and a failed BBMD registration all read as clean
+  results. The JSON now carries a `coverage` block (options, stopped, and
+  per pass `scanned`, `off`, `failed`, `skipped: why`, `stopped partway` or
+  `stopped before it ran`); the report shows a coverage note, a dash on the
+  cards for passes that did not run, and "Not scanned" instead of "None".
+- **A failed pass was logged only to the module logger**, so the GUI showed
+  an empty result with no reason. It is now in the scan log too.
+- **The baseline rolled forward on partial scans**, so the next night
+  reported everything missed as new, and a missing or damaged baseline made
+  every run scan and exit 3 without ever writing a replacement. The baseline
+  is read before scanning (missing or damaged: exit 1 at once; missing with
+  `--save-baseline` on the same path: the first run), a partial scan does not
+  replace it, and JSON is written to a temporary file and moved into place.
+- **A damaged settings file was replaced by the next save**, erasing every
+  site profile. It is now renamed `settings.json.bad-<time>` and the GUI
+  says so; a file that cannot be read is left alone; and profiles are written
+  only by profile actions, so two windows no longer drop each other's.
+- **The diff keyed BACnet devices on instance alone**, so duplicate
+  instances collapsed and the survivor's address and name flipped between
+  runs. A duplicated instance is keyed with its address (and MS/TP network
+  and MAC), and listed.
+- **Vendor fingerprints matched inside words**: "webs" in GoAhead-Webs read
+  as Tridium, "fec" in "perfect" and "nae" in "effect" as Johnson Controls.
+  They now match whole words and model-number forms.
+- **CLI flags equal to their default were taken as "not given"**, so
+  `--profile X --unicast auto` ran the profile's `always`, and
+  `--rate-limit 0` was ignored. Explicit flags now always win.
+- **CLI argument errors exited 2**, which is "interrupted". They exit 1.
+- **The GUI fell back to defaults on a mistyped number** — the least gentle
+  settings (no rate limit, four devices at once). It now stops with the
+  reason.
+- `python -m hvac_scanner.report` wrote `C:\Users\j.html` for a scan in
+  `C:\Users\j.smith\scans\site`.
+- MS/TP gap-filling gave up per router address, so one device lacking a
+  property stopped fills for every device on the trunk; it is per device.
+- A Modbus reply of the maximum legal length (254) was rejected.
+- A Confirmed-Request arriving on the scanner's port could be matched as a
+  reply.
+- A value of thousands of nested opening tags raised RecursionError.
+- One unexpected error in the GUI's event pump stopped it for good, leaving
+  the window on "Scanning…".
+- Ping from the GUI ran whichever `ping` came first on the search path (on
+  Windows, the exe's own folder first) and misread its output's code page.
+- A scan that found nothing could not be exported or compared.
+- Dark-mode severity badges in the HTML report had too little contrast.
+
+### Changed
+
+- **BBMD registration is described as the write it is**, and its lease is
+  capped at 300 seconds (`--bbmd-ttl` 10–300).
+- The report footer no longer says no credentials were tried: it names the
+  SNMP community strings used and any BBMD registration.
+- The device CSV's credentials column is "Factory Default Login (published,
+  not tried)".
+- The MS/TP address probe asks two addresses at a time, waits at least three
+  seconds for each and keeps to the rate limit: a few minutes per network
+  instead of about one.
+- The GUI starts with no target rather than a guessed office LAN, asks before
+  a scan of more than 1,024 addresses, shows on the Advanced button how many
+  settings differ from the defaults, and the scan log lists them.
+- New `--max-hosts` (default 65,536 in total); `--bbmd` and `--broadcast`
+  must be IPv4 addresses and `--timeout` more than 0.
+- Gateways listing KNX IP Secure get an info finding that offering it does
+  not mean plain tunnelling is off.
+- New finding: **Duplicate BACnet device instances**.
+- `hvac-scanner-gui` is a GUI script (no console window on Windows).
+
+### Build
+
+- CI: least-privilege permissions, checkout without persisted credentials,
+  actions pinned to commit SHAs, and Dependabot to keep them current.
+- The Windows executable is built from `packaging/requirements-build.txt`,
+  PyInstaller and its dependencies pinned by version and hash, with no pip
+  cache. Its SHA-256 is in the build log and in
+  `HVACNetworkScanner.exe.sha256`, and the build signs a provenance
+  attestation (`gh attestation verify`).
+- GUI tests run on Linux CI under a virtual display instead of skipping.
+- The site-data guard's site-specific deny-list moved out of the public
+  repository to a private file the test reads when present (and a local
+  pre-commit hook runs); the guard also reads HTML, CSV, log and XML files
+  and UTF-16 text.
+- Tests can no longer send a real limited-broadcast Who-Is.
+
 ## [2.9.0] — 2026-11-04
 
 ### Added

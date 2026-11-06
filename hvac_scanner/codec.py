@@ -418,9 +418,10 @@ def build_whois_router_to_network(dnet: Optional[int] = None,
 # the BBMD onto its own subnet and forwarded to its peer BBMDs, and the I-Am
 # replies come back to the scanner as ordinary unicast.
 #
-# Registration is read-only in the sense that matters here: it adds a
-# time-limited entry to the BBMD's FDT and changes no device configuration.
-# It does expire, so long scans need to re-register before the TTL lapses.
+# Registration is a write: it adds an entry to the BBMD's Foreign Device
+# Table, the one change the scanner makes anywhere, which is why it is opt-in.
+# The entry changes no configuration and expires on its own (TTL plus 30 s);
+# the client keeps the TTL to 300 s and re-registers during long scans.
 # ---------------------------------------------------------------------------
 
 def build_register_foreign_device(ttl_seconds: int = 60) -> bytes:
@@ -629,9 +630,15 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
         device.instance = oid & 0x3FFFFF
         idx = vend
 
+        # The three remaining fields are at most four octets each. A wider
+        # one is not an I-Am: an integer of ~1,800 octets cannot even be
+        # turned into text (Python's 4,300-digit limit), and one such packet
+        # from any host used to end the whole BACnet pass.
         # Tag 2 = Unsigned (max-APDU)
         tag_num, tag_class, length, vstart, vend = _read_tag(data, idx)
         if tag_class == 0 and tag_num == 2:
+            if length > 4:
+                return None
             device.max_apdu = int.from_bytes(data[vstart:vend], 'big')
             idx = vend
         else:
@@ -640,6 +647,8 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
         # Tag 9 = Enumerated (segmentation)
         tag_num, tag_class, length, vstart, vend = _read_tag(data, idx)
         if tag_class == 0 and tag_num == 9:
+            if length > 4:
+                return None
             seg_val = int.from_bytes(data[vstart:vend], 'big')
             seg_map = {0: "Both", 1: "Transmit", 2: "Receive", 3: "None"}
             device.segmentation = seg_map.get(seg_val, str(seg_val))
@@ -650,6 +659,8 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
         # Tag 2 = Unsigned (vendor-id)
         tag_num, tag_class, length, vstart, vend = _read_tag(data, idx)
         if tag_class == 0 and tag_num == 2:
+            if length > 4:
+                return None
             device.vendor_id = int.from_bytes(data[vstart:vend], 'big')
 
         return device if device.instance >= 0 else None
@@ -660,12 +671,42 @@ def parse_iam(data: bytes, src_addr: tuple[str, int]) -> Optional[IAmDevice]:
         return None
 
 
-def _extract_invoke_id(data: bytes) -> Optional[int]:
+APDU_ERROR = 5
+APDU_REJECT = 6
+APDU_ABORT = 7
+
+
+def apdu_type(data: bytes) -> Optional[int]:
+    """The PDU type of a BACnet/IP packet's APDU (0 Confirmed-Request ...
+    7 Abort), or None for a network-layer message or anything malformed."""
+    try:
+        if len(data) < 6 or data[0] != BACNET_BVLC_TYPE or data[4] != 0x01:
+            return None
+        ctrl = data[5]
+        if ctrl & 0x80:
+            return None
+        idx = 6
+        if ctrl & 0x20:
+            idx += 3 + data[idx + 2]
+        if ctrl & 0x08:
+            idx += 3 + data[idx + 2]
+        if ctrl & 0x20:
+            idx += 1
+        return (data[idx] >> 4) & 0x0F if idx < len(data) else None
+    except IndexError:
+        return None
+
+
+def _extract_invoke_id(data: bytes, requests: bool = False) -> Optional[int]:
     """Extract the invoke-id byte from a Confirmed-ACK / Error / Reject packet.
 
     Returns None for packets that don't carry an invoke-id (I-Am broadcasts,
     COV notifications, Who-Is requests, etc.). Those are the packets we want
     to discard when waiting for a specific request's response on a shared socket.
+
+    A Confirmed-Request carries one too, but it is someone asking *us*
+    something, never the answer to our request, so it returns None unless
+    `requests` is set (a simulated device reading requests sets it).
 
     This is a lightweight prefix-walk — it doesn't fully parse the APDU, just
     skips past BVLC + NPDU to find the APDU header byte and extracts the
@@ -719,7 +760,7 @@ def _extract_invoke_id(data: bytes) -> Optional[int]:
         # - Simple-ACK / Complex-ACK / Error / Reject / Abort: byte[1] (pdu-type, then invoke)
         # - Segment-ACK: byte[1]
         if pdu_type == 0:  # Confirmed-Request
-            if idx + 2 >= len(data):
+            if not requests or idx + 2 >= len(data):
                 return None
             return data[idx + 2]
         # All ACK/Error/Reject/Abort types have invoke-id at idx+1
@@ -998,14 +1039,23 @@ def decode_tagged(data: bytes) -> list:
     return out
 
 
-def _decode_tagged(data: bytes, idx: int, end: int) -> tuple[list, int]:
+# No real BACnet structure nests deeper than a handful of levels. A value of
+# nothing but opening tags would otherwise recurse until RecursionError,
+# which the decode wrappers do not catch.
+_MAX_NESTING = 32
+
+
+def _decode_tagged(data: bytes, idx: int, end: int,
+                   depth: int = 0) -> tuple[list, int]:
+    if depth > _MAX_NESTING:
+        raise BACnetParseError("nested too deeply")
     out: list = []
     while idx < end:
         tag_num, tag_class, length, vstart, nxt = _read_tag(data, idx)
         if tag_class == 1:
             if _is_opening(tag_class, length, vstart, nxt):
                 close = _value_end(data, nxt)
-                children, _ = _decode_tagged(data, nxt, close)
+                children, _ = _decode_tagged(data, nxt, close, depth + 1)
                 out.append(Ctx(tag_num, children))
                 idx = _read_tag(data, close)[4]
                 continue
@@ -1017,6 +1067,13 @@ def _decode_tagged(data: bytes, idx: int, end: int) -> tuple[list, int]:
         val, idx = _parse_app_value(data, idx)
         out.append(val)
     return out, idx
+
+
+def _uint(raw: bytes, octets: int = 4) -> Optional[int]:
+    """An unsigned of at most `octets` octets, else None. Property numbers,
+    array indices, network numbers and the like are 32 bits at most; a wider
+    field is malformed, and a huge one cannot be printed."""
+    return int.from_bytes(raw, 'big') if len(raw) <= octets else None
 
 
 def decode_object_id(raw: bytes) -> Optional[tuple[str, int]]:
@@ -1050,10 +1107,8 @@ def decode_property_references(raw: bytes) -> list[dict[str, Any]]:
                 refs.append({'object': obj})
         elif not refs:
             continue
-        elif item.tag == 1:
-            refs[-1]['property'] = int.from_bytes(item.value, 'big')
-        elif item.tag == 2:
-            refs[-1]['index'] = int.from_bytes(item.value, 'big')
+        elif item.tag in (1, 2) and _uint(item.value) is not None:
+            refs[-1]['property' if item.tag == 1 else 'index'] = _uint(item.value)
         elif item.tag == 3:
             dev = decode_object_id(item.value)
             if dev is not None:
@@ -1147,13 +1202,16 @@ def decode_routing_table(raw: bytes) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, Ctx) or not isinstance(item.value, bytes):
             continue
-        num = int.from_bytes(item.value, 'big')
+        if item.tag == 1 and out:
+            out[-1]['via'] = format_bacnet_mac(item.value)
+            continue
+        num = _uint(item.value)
+        if num is None:
+            continue
         if item.tag == 0:
             out.append({'network': num})
         elif not out:
             continue
-        elif item.tag == 1:
-            out[-1]['via'] = format_bacnet_mac(item.value)
         elif item.tag == 2:
             out[-1]['status'] = _ROUTE_STATUS.get(num, str(num))
         elif item.tag == 3:
@@ -1188,6 +1246,13 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
         return data[vstart:vend].hex(), vend
 
     value_bytes = data[vstart:vend]
+
+    # Unsigned, Signed and Enumerated values are at most 8 octets here (the
+    # standard allows wider, nothing real sends them). A wider one stays hex:
+    # as an int it could pass 4,300 digits, which Python refuses to print,
+    # and one such value used to end every export of the scan.
+    if tag_num in (2, 3, 9) and length > 8:
+        return value_bytes.hex(), vend
 
     if tag_num == 0:  # Null
         return None, vend
@@ -1437,7 +1502,9 @@ def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
                 if (data[idx] & 0xF8) != 0x28:
                     break
                 _, _, plen, pvstart, pvend = _read_tag(data, idx)
-                prop_id = int.from_bytes(data[pvstart:pvend], 'big')
+                prop_id = _uint(data[pvstart:pvend])
+                if prop_id is None:
+                    break
                 idx = pvend
 
                 # Optional context tag 3 = property array index. Captured
@@ -1446,7 +1513,9 @@ def parse_read_property_multiple_ack_full(data: bytes) -> "list[RpmEntry]":
                 array_index = None
                 if idx < len(data) and (data[idx] & 0xF8) == 0x38:
                     _, _, _alen, avstart, avend = _read_tag(data, idx)
-                    array_index = int.from_bytes(data[avstart:avend], 'big')
+                    array_index = _uint(data[avstart:avend])
+                    if array_index is None:
+                        break
                     idx = avend
 
                 # Either opening tag 4 (propertyValue) or 5 (propertyAccessError)

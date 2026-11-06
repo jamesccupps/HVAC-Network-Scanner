@@ -789,32 +789,42 @@ BACNET_VENDORS = {
 # Applied against banner + title + server + product text.
 # ---------------------------------------------------------------------------
 HTTP_FINGERPRINTS = [
-    (r"trane|tracer",                                   "Trane"),
-    (r"siemens|desigo",                                 "Siemens"),
-    (r"honeywell|webs|spyder|tridium|niagara",          "Honeywell / Tridium"),
-    (r"johnson.?controls|metasys|fec|nae",              "Johnson Controls"),
-    (r"schneider|ecostruxure|smartx|andover",           "Schneider Electric"),
-    (r"carrier|i-?vu|alerton",                          "Carrier / ALC"),
-    (r"automated.?logic|webctrl",                       "Automated Logic"),
-    (r"daikin",                                         "Daikin"),
-    (r"distech",                                        "Distech Controls"),
-    (r"delta.?controls",                                "Delta Controls"),
-    (r"reliable.?controls",                             "Reliable Controls"),
+    # Whole words only (the text is lowercased first). Bare substrings
+    # mislabelled devices in the owner's report: "webs" in GoAhead-Webs and
+    # WebServer read as Tridium, "fec" in "perfect" and "nae" in "effect"
+    # as Johnson Controls.
+    (r"\btrane\b|\btracer\b",                                     "Trane"),
+    (r"\bsiemens\b|\bdesigo\b",                                   "Siemens"),
+    # Honeywell WEBs-AX / WEBs-N4, not any "webs".
+    (r"\bhoneywell\b|\bwebs-?(?:ax|n4)\b|\bspyder\b|\btridium\b|\bniagara\b",
+     "Honeywell / Tridium"),
+    # JCI model numbers: FEC2611, NAE5510, NAE-55.
+    (r"\bjohnson.?controls\b|\bmetasys\b|\bfec-?\d{2,}|\bnae-?\d{2,}",
+     "Johnson Controls"),
+    (r"\bschneider\b|\becostruxure\b|\bsmartx\b|\bandover\b",     "Schneider Electric"),
+    (r"\bcarrier\b|\bi-?vu\b|\balerton\b",                        "Carrier / ALC"),
+    (r"\bautomated.?logic\b|\bwebctrl\b",                         "Automated Logic"),
+    (r"\bdaikin\b",                                               "Daikin"),
+    (r"\bdistech\b",                                              "Distech Controls"),
+    (r"\bdelta.?controls\b",                                      "Delta Controls"),
+    (r"\breliable.?controls\b",                                   "Reliable Controls"),
     # KMC model numbers are BAC-5051, BAC-9001 and so on. A bare "bacnet" is
     # every BAS vendor's word, not KMC's.
-    (r"kmc|flexstat|\bbac-\d{3,}",                     "KMC Controls"),
-    (r"carel|pco",                                      "Carel"),
-    (r"belimo",                                         "Belimo"),
-    (r"easyio",                                         "EasyIO"),
-    (r"loytec",                                         "Loytec"),
-    (r"beckhoff",                                       "Beckhoff"),
-    (r"wago",                                           "WAGO"),
-    (r"emerson|copeland|vertiv",                        "Emerson"),
-    (r"danfoss",                                        "Danfoss"),
-    (r"mitsubishi.?electric|melco|city.?multi",         "Mitsubishi Electric"),
-    (r"lg.?electronics|lgap|multi.?v",                  "LG Electronics"),
-    (r"samsung|dvm",                                    "Samsung HVAC"),
-    (r"ubiquiti|unifi",                                 "Ubiquiti"),
+    (r"\bkmc\b|\bflexstat\b|\bbac-\d{3,}",                        "KMC Controls"),
+    # Carel's controllers are pCO3, pCO5, pCOWeb.
+    (r"\bcarel\b|\bpco\s?(?:web|\d)",                             "Carel"),
+    (r"\bbelimo\b",                                               "Belimo"),
+    (r"\beasyio\b",                                               "EasyIO"),
+    (r"\bloytec\b",                                               "Loytec"),
+    (r"\bbeckhoff\b",                                             "Beckhoff"),
+    (r"\bwago\b",                                                 "WAGO"),
+    (r"\bemerson\b|\bcopeland\b|\bvertiv\b",                      "Emerson"),
+    (r"\bdanfoss\b",                                              "Danfoss"),
+    (r"\bmitsubishi.?electric\b|\bmelco\b|\bcity.?multi\b",       "Mitsubishi Electric"),
+    # LG's MULTI V, not "multiview" or "multivendor".
+    (r"\blg.?electronics\b|\blgap\b|\bmulti[ -]?v\b",             "LG Electronics"),
+    (r"\bsamsung\b|\bdvm\b",                                      "Samsung HVAC"),
+    (r"\bubiquiti\b|\bunifi\b",                                   "Ubiquiti"),
 ]
 
 # ---------------------------------------------------------------------------

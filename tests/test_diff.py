@@ -280,16 +280,20 @@ class TestCliIntegration:
         base = tmp_path / 'b.json'
         base.write_text(json.dumps(scan([bacnet_dev('10.0.0.9', 42)])), encoding='utf-8')
         new = tmp_path / 'new.json'
+        # Every pass off: the P2 and KNX passes used to run here too, fail on
+        # the loopback guard, and nobody noticed. A failed pass now makes the
+        # scan partial, and a partial scan does not replace a baseline.
         main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-              '--no-snmp', '--no-mstp', '--quiet', '--print', 'none',
+              '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--quiet', '--print', 'none',
               '--baseline', str(base), '--save-baseline', str(new),
               '--diff-output', str(tmp_path / 'd.txt')])
         assert new.exists()
         assert 'devices' in json.loads(new.read_text(encoding='utf-8'))
 
     def test_missing_baseline_file_is_an_error_not_a_crash(self, tmp_path):
+        """Reported before anything is scanned, as a bad argument (exit 1)."""
         from hvac_scanner.cli import main
         rc = main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-                   '--no-snmp', '--no-mstp', '--quiet', '--print', 'none',
-                   '--baseline', str(tmp_path / 'nope.json')])
-        assert rc == 3
+                   '--no-snmp', '--no-mstp', '--no-p2', '--no-knx', '--quiet',
+                   '--print', 'none', '--baseline', str(tmp_path / 'nope.json')])
+        assert rc == 1
