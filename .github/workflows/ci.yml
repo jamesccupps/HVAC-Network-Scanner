@@ -46,7 +46,9 @@ jobs:
         # --require-hashes. Resolving it here means a bad bump or a missing
         # transitive pin turns a push red, not the next tagged release.
         if: runner.os == 'Windows' && matrix.python-version == '3.12'
-        run: python -m pip install --dry-run --require-hashes --only-binary=:all: -r packaging/requirements-build.txt
+        # A block: in a plain value ":all: -r" would read as a YAML key.
+        run: |
+          python -m pip install --dry-run --require-hashes --only-binary=:all: -r packaging/requirements-build.txt
 
       - name: Syntax check
         run: python -m compileall -q hvac_scanner tools packaging
