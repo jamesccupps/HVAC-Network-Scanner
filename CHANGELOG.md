@@ -5,6 +5,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **LonWorks/IP (IP-852).** A new pass (`--no-lon` to skip) asks every target for
+  its IP-852 device configuration on UDP 1628, the request the IzoT LonTalk
+  stack answers from any address. Routers and nodes (i.LON, SmartServer,
+  LOYTEC L-IP, controllers with an IP-852 channel) report their node type,
+  the name they were given, Neuron IDs, configuration and time servers, and
+  whether authentication is on; the report lists those without it. The
+  reply names no product, so none is guessed.
+- **Serial gateways.** A new pass (`--no-gateways`) sends Moxa's identify
+  request on UDP 4800 and reports NPort, MGate and OnCell devices by MAC and
+  model code (by product name only when their own web page gives it). The
+  report says to check them against ICSA-16-336-02: older firmware gives the
+  admin password to the same protocol (CVE-2016-9361), which the scanner
+  never asks for.
+- **OPC UA identity.** OPC UA ports (4840, and KEPServerEX's 49320) get the
+  standard discovery exchange: the server's own application name and product
+  URI, and each endpoint's security and accepted logins. The report flags
+  servers offering an unsecured endpoint or anonymous sessions. Checked
+  against a real server (FreeOpcUa asyncua) as well as the simulator.
+- The Niagara platform ports (3011, 5011) are probed.
+
+### Changed
+
+- **Adaptive timeout.** The timeout is now the longest wait: a BACnet device
+  that has answered a few requests gets four times its slowest recent reply
+  (at least 1 s). On one site four controllers dropped about half of all
+  requests and each used up the 3-minute limit at 5 s a loss. The per-device
+  log line reports the time actually spent waiting.
+
+### Fixed
+
+- Vendor names from web pages and SNMP: Alerton was reported as Carrier / ALC
+  (it is Honeywell's), Vertiv and Copeland as Emerson (independent since 2016
+  and 2023). Moxa, Lantronix and Echelon / EnOcean (i.LON, SmartServer) are
+  recognised.
+
 ## [2.10.0] — 2026-11-06
 
 ### Added

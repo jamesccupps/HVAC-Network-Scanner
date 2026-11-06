@@ -22,21 +22,23 @@ Works against:
 - **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs, including routers on other subnets with no BBMD.
 - **BACnet/SC** — detects BACnet Secure Connect hubs (including ones devices name on nonstandard ports), and reports any that let a connection in without a client certificate.
 - **KNXnet/IP** — finds KNX IP interfaces and routers on UDP 3671 and flags the ones offering tunnelling or routing without KNX Secure.
+- **LonWorks/IP (IP-852)** — finds IP-852 routers and nodes on UDP 1628 (i.LON and SmartServer, LOYTEC L-IP, and controllers with an IP-852 channel of their own) and reads what each says about itself: node type, the name it was given, Neuron IDs, configuration server, and whether IP-852 authentication is on.
+- **Serial gateways** — finds Moxa NPort, MGate and OnCell devices with Moxa's identify request on UDP 4800 (never its credential functions). These are often where P1, N2, MS/TP and Modbus RTU buses reach the network.
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
-- **HVAC services** — Niagara Fox (station name, Niagara version, OS, host ID, brand; AX stations flagged as end of life), OPC UA, Siemens S7, EtherNet/IP CIP, LonWorks/IP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
+- **HVAC services** — Niagara Fox (station name, Niagara version, OS, host ID, brand; AX stations flagged as end of life) and the Niagara platform ports, OPC UA (the server's own name and product, and whether it allows unsecured endpoints or anonymous sessions, on 4840 and KEPServerEX's 49320), Siemens S7, EtherNet/IP CIP, MQTT, WebCTRL, Metasys, plus HTTP/HTTPS banner grabs.
 - **SNMP v1/v2c** — raw UDP `sysDescr` probe, no pysnmp dependency.
 - **Siemens APOGEE P2** — detects firmware 2.x APOGEE field panels and P2
   supervisors on TCP/5033 without registering on them (see below).
 
 Model identification combines signals from multiple protocols:
 
-- Trane Tracer SC / SC+ / UC600 / UC400
-- Siemens Desigo PXC automation stations, Desigo CC, TX-I/O modules
+- Trane Tracer SC / SC+ / UC600 / UC400, Symbio, Tracer Ensemble, TR200 drives
+- Siemens PXC Modular / Compact field panels, Desigo PXC4 / PXC5 / PXC7, DXR2 room controllers, Desigo CC, Insight
 - Johnson Controls FEC / Metasys NAE
 - Honeywell / Tridium Niagara
 - Schneider EcoStruxure / SmartX
 - Contemporary Controls BASRT-B routers
-- Carrier i-Vu, Automated Logic WebCTRL, Distech, Delta, KMC, Reliable, Carel, Belimo, Daikin, Mitsubishi, LG, and more
+- Carrier i-Vu, Automated Logic WebCTRL, Alerton, Distech, Delta, KMC, Reliable, Carel, Belimo, Daikin, Mitsubishi (MelcoBEMS MINI), LG, Yaskawa HV600 drives, Moxa, and more
 
 ## Tested against (verified hardware)
 
@@ -65,6 +67,11 @@ so future users can benefit from verified classification.
 
 **Known out-of-scope:**
 
+- Devices on serial buses: Siemens P1/FLN, Johnson Controls N2, LonTalk on
+  twisted pair, MS/TP without a router, DALI, M-Bus. They are not on IP, so
+  no network scanner sees them directly. The scanner finds the gateways
+  that carry them: BACnet routers (and the MS/TP devices behind them),
+  IP-852 routers, Moxa serial gateways, KNX IP interfaces.
 - Reading points from panels running proprietary firmware without
   BACnet/IP. Siemens APOGEE PXC panels on firmware revision 2.x speak P2
   rather than BACnet/IP: the scanner **detects** them (and P2 supervisors)
@@ -227,7 +234,8 @@ take away from a site survey), the full results (JSON, also Ctrl+S) or a
 classification report. **Compare** diffs this
 scan against an earlier JSON export.
 
-**Advanced** holds the timeout, the per-device rate limit (use 20-50 ms on
+**Advanced** holds the timeout (the longest wait; a device that has
+answered quickly gets a shorter one, never under a second), the per-device rate limit (use 20-50 ms on
 sites with small field controllers), parallel deep scans, a per-device time
 limit (180 s; a device that reaches it keeps what was read and is marked
 partial), unicast discovery,
@@ -488,7 +496,8 @@ out-of-scope* above).
 and lower Parallel devices to 1.
 
 **A few controllers take minutes each.** They are dropping requests, and
-each lost one costs a full timeout. The log says how many went unanswered,
+each lost one costs a wait (about a second once the scanner has seen the
+device answer, the full timeout before that). The log says how many went unanswered,
 the report lists them under *Controllers that drop requests*, and the
 per-device time limit (Advanced) caps what any one of them can cost. The
 cause is usually near the controller: a cable, a duplex mismatch, errors on
@@ -535,6 +544,10 @@ hvac_scanner/
 ├── snmp.py            # Raw UDP SNMP sysDescr fan-out
 ├── netsweep.py        # asyncio TCP connect sweep shared by Modbus, P2 and services
 ├── p2.py              # Siemens APOGEE P2 detection (registration-free probe)
+├── knx.py             # KNXnet/IP gateway detection
+├── lonworks.py        # LonWorks/IP (IP-852) router and node detection
+├── moxa.py            # Moxa serial gateway identify (UDP 4800)
+├── opcua.py           # OPC UA server identity (GetEndpoints)
 ├── fingerprint.py     # Cross-protocol model identification
 ├── device_profiles.py # Per-vendor enumeration caps + scan-depth presets
 ├── netrange.py        # Target syntax: CIDR, ranges, host lists
@@ -563,7 +576,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 783 tests
+tests/                 # 824 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions
@@ -574,6 +587,7 @@ tests/                 # 783 tests
 ├── test_gui_options.py              # GUI controls reach ScanOptions (skips headless)
 ├── test_v291.py                     # 2.9.1: the external review's findings, one by one
 ├── test_v210.py                     # 2.10: updater, signing, report grouping, coverage
+├── test_v211.py                     # 2.11: LonWorks/IP, Moxa, OPC UA, naming, adaptive timeout
 ├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
 ```

@@ -161,10 +161,12 @@ HVAC_SERVICES = [
     (1883,  "MQTT",               "tcp"),
     (1911,  "Niagara Fox",        "tcp"),
     (2222,  "EtherNet/IP Config", "tcp"),
+    (3011,  "Niagara platform",   "tcp"),
     (3671,  "KNXnet/IP",          "udp"),
     (4840,  "OPC UA",             "tcp"),
     (4843,  "OPC UA TLS",         "tcp"),
     (4911,  "Niagara Fox TLS",    "tcp"),
+    (5011,  "Niagara platform TLS", "tcp"),
     (8000,  "HTTP-8000",          "tcp"),
     (8080,  "HTTP-Alt",           "tcp"),
     (8443,  "HTTPS-Alt",          "tcp"),
@@ -178,6 +180,7 @@ HVAC_SERVICES = [
     (47808, "BACnet/IP",          "udp"),
     (47808, "BACnet/SC (TCP)",    "tcp"),
     (47820, "BACnet/SC",          "tcp"),
+    (49320, "OPC UA (KEPServerEX)", "tcp"),
 ]
 
 HVAC_TCP_PORTS = sorted({p for p, _, t in HVAC_SERVICES if t == "tcp"})
@@ -795,6 +798,8 @@ HTTP_FINGERPRINTS = [
     # as Johnson Controls.
     (r"\btrane\b|\btracer\b",                                     "Trane"),
     (r"\bsiemens\b|\bdesigo\b",                                   "Siemens"),
+    # Alerton is a Honeywell brand (Ascent, Compass), not Carrier's.
+    (r"\balerton\b",                                              "Alerton (Honeywell)"),
     # Honeywell WEBs-AX / WEBs-N4, not any "webs".
     (r"\bhoneywell\b|\bwebs-?(?:ax|n4)\b|\bspyder\b|\btridium\b|\bniagara\b",
      "Honeywell / Tridium"),
@@ -802,7 +807,7 @@ HTTP_FINGERPRINTS = [
     (r"\bjohnson.?controls\b|\bmetasys\b|\bfec-?\d{2,}|\bnae-?\d{2,}",
      "Johnson Controls"),
     (r"\bschneider\b|\becostruxure\b|\bsmartx\b|\bandover\b",     "Schneider Electric"),
-    (r"\bcarrier\b|\bi-?vu\b|\balerton\b",                        "Carrier / ALC"),
+    (r"\bcarrier\b|\bi-?vu\b",                                     "Carrier / ALC"),
     (r"\bautomated.?logic\b|\bwebctrl\b",                         "Automated Logic"),
     (r"\bdaikin\b",                                               "Daikin"),
     (r"\bdistech\b",                                              "Distech Controls"),
@@ -818,13 +823,21 @@ HTTP_FINGERPRINTS = [
     (r"\bloytec\b",                                               "Loytec"),
     (r"\bbeckhoff\b",                                             "Beckhoff"),
     (r"\bwago\b",                                                 "WAGO"),
-    (r"\bemerson\b|\bcopeland\b|\bvertiv\b",                      "Emerson"),
+    # Vertiv (Liebert) left Emerson in 2016 and Copeland in 2023.
+    (r"\bemerson\b",                                              "Emerson"),
+    (r"\bvertiv\b|\bliebert\b",                                   "Vertiv"),
+    (r"\bcopeland\b",                                             "Copeland"),
     (r"\bdanfoss\b",                                              "Danfoss"),
     (r"\bmitsubishi.?electric\b|\bmelco\b|\bcity.?multi\b",       "Mitsubishi Electric"),
     # LG's MULTI V, not "multiview" or "multivendor".
     (r"\blg.?electronics\b|\blgap\b|\bmulti[ -]?v\b",             "LG Electronics"),
     (r"\bsamsung\b|\bdvm\b",                                      "Samsung HVAC"),
     (r"\bubiquiti\b|\bunifi\b",                                   "Ubiquiti"),
+    # Where serial and LonWorks buses reach the network.
+    (r"\bmoxa\b|\bnport\b|\bmgate\b",                             "Moxa"),
+    (r"\blantronix\b",                                            "Lantronix"),
+    # i.LON and SmartServer: Echelon's, now EnOcean's.
+    (r"\bi\.lon\b|\bechelon\b|\bsmartserver\b",                    "Echelon / EnOcean"),
 ]
 
 # ---------------------------------------------------------------------------

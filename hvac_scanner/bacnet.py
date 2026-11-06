@@ -13,6 +13,7 @@ Wraps the pure codec in socket I/O. Key improvements over v1:
 from __future__ import annotations
 
 import logging
+from collections import deque
 import socket
 import threading
 import time
@@ -62,6 +63,16 @@ _RPM_FRAMING_OVERHEAD = 60        # BVLC + NPDU + APDU header + objId + tags
 _RPM_MAX_BATCH = 100              # keeps the blast radius of one bad batch small
 _RPM_OUR_MAX_APDU = 1476          # what build_read_property_multiple advertises
 _RPM_MIN_BATCH = 4                # below this a failed batch means "no RPM here"
+
+# Adaptive timeout. The configured timeout is the longest wait, and what a
+# device nothing is known about gets. Once it has answered a few requests,
+# it gets four times its slowest recent reply, but never under a second:
+# a controller that answers in 20 ms and drops one request in two (one site
+# had four) then costs a second per drop, not five.
+_ADAPT_AFTER = 3            # replies seen before the wait adapts
+_ADAPT_FACTOR = 4           # times the slowest recent reply
+_ADAPT_FLOOR = 1.0          # seconds, never less
+_ADAPT_WINDOW = 16          # recent replies remembered per address
 
 # objectList entries that fail to read one after another before enumeration
 # stops. A device reporting a bogus count (a firmware bug, or 4,294,967,295
@@ -125,6 +136,10 @@ class BACnetClient:
         # ip -> [confirmed requests sent, of those never answered]. A device
         # that drops requests costs a timeout for each; the engine reports it.
         self._request_counts: dict[str, list[int]] = {}
+        # ip -> recent reply times (seconds), for the adaptive timeout.
+        self._reply_times: dict[str, deque] = {}
+        # ip -> seconds spent waiting on requests that were never answered.
+        self._lost_wait: dict[str, float] = {}
         # (bbmd_ip, ttl) once registered as a Foreign Device, else None.
         self._bbmd: Optional[tuple[str, int]] = None
         self._bbmd_registered_at: float = 0.0
@@ -209,6 +224,22 @@ class BACnetClient:
         with self._lock:
             sent, lost = self._request_counts.get(ip, (0, 0))
         return sent, lost
+
+    def lost_wait(self, ip: str) -> float:
+        """Seconds spent waiting on requests to `ip` that went unanswered."""
+        with self._lock:
+            return self._lost_wait.get(ip, 0.0)
+
+    def timeout_for(self, ip: str) -> float:
+        """How long to wait for `ip`: the configured timeout until it has
+        answered a few requests, then _ADAPT_FACTOR times its slowest recent
+        reply (at least _ADAPT_FLOOR, never more than the configured one)."""
+        with self._lock:
+            times = self._reply_times.get(ip)
+            slowest = max(times) if times and len(times) >= _ADAPT_AFTER else None
+        if slowest is None:
+            return self.timeout
+        return min(self.timeout, max(_ADAPT_FLOOR, _ADAPT_FACTOR * slowest))
 
     def _count_unanswered(self, ip: str) -> None:
         with self._lock:
@@ -666,7 +697,8 @@ class BACnetClient:
                 self._count_unanswered(ip)
                 return None
 
-            deadline = time.monotonic() + self.timeout
+            sent_at = time.monotonic()
+            deadline = sent_at + self.timeout_for(ip)
             while True:
                 with self._cond:
                     data = self._pending.get(key)
@@ -674,6 +706,8 @@ class BACnetClient:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             self._request_counts[ip][1] += 1
+                            self._lost_wait[ip] = (self._lost_wait.get(ip, 0.0)
+                                                   + time.monotonic() - sent_at)
                             return None
                         if self._reader_active:
                             self._cond.wait(remaining)
@@ -690,10 +724,16 @@ class BACnetClient:
                 with self._lock:
                     if self._pending.get(key) is None and timed_out:
                         self._request_counts[ip][1] += 1
+                        self._lost_wait[ip] = (self._lost_wait.get(ip, 0.0)
+                                               + time.monotonic() - sent_at)
                         return None
         finally:
             with self._lock:
                 self._pending.pop(key, None)
+
+        with self._lock:
+            self._reply_times.setdefault(ip, deque(maxlen=_ADAPT_WINDOW)).append(
+                time.monotonic() - sent_at)
 
         # It's our reply — parse and return
         try:

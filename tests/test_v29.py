@@ -95,7 +95,7 @@ def site_scan():
         logs = []
         result = ScanEngine(ScanOptions(
             networks=[f"{NET}.2-7"], timeout=1.5, scan_modbus=False, scan_services=False,
-            scan_snmp=False, scan_p2=False, scan_knx=False), callback=logs.append).run()
+            scan_snmp=False, scan_p2=False, scan_knx=False, scan_lon=False, scan_gateways=False), callback=logs.append).run()
     finally:
         site.close()
     return result, logs
@@ -154,7 +154,7 @@ def test_routing_table_networks_are_asked_through_the_router(remote_building):
     logs = []
     ScanEngine(ScanOptions(networks=[f"{REMOTE}.5"], timeout=1.5, unicast_discovery="always",
                            mstp_mac_probe=True, scan_modbus=False, scan_services=False,
-                           scan_snmp=False, scan_p2=False, scan_knx=False),
+                           scan_snmp=False, scan_p2=False, scan_knx=False, scan_lon=False, scan_gateways=False),
                callback=logs.append).run()
     assert any(f"Router {REMOTE}.5: routed Who-Is to network(s) 5, 9" in line for line in logs)
     assert any("Network 5 via" in line and "not known to be MS/TP" in line for line in logs)

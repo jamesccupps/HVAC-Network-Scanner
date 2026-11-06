@@ -78,7 +78,7 @@ def test_a_failed_pass_is_said_in_the_scan_log(monkeypatch):
     lines = []
     eng = ScanEngine(ScanOptions(networks=['127.0.0.1'], scan_bacnet=False, scan_mstp=False,
                                  scan_modbus=False, scan_services=False, scan_p2=False,
-                                 scan_knx=False, scan_snmp=True),
+                                 scan_knx=False, scan_lon=False, scan_gateways=False, scan_snmp=True),
                      callback=lines.append)
     monkeypatch.setattr(eng, '_scan_snmp', lambda: (_ for _ in ()).throw(ValueError("boom")))
     result = eng.run()
@@ -436,7 +436,7 @@ def test_trickling_service_probe_is_cut_off(monkeypatch):
 
 def _quiet_options(**kw):
     base = dict(networks=['127.0.0.1'], scan_bacnet=False, scan_mstp=False,
-                scan_modbus=False, scan_services=False, scan_p2=False, scan_knx=False,
+                scan_modbus=False, scan_services=False, scan_p2=False, scan_knx=False, scan_lon=False, scan_gateways=False,
                 scan_snmp=False)
     base.update(kw)
     return ScanOptions(**base)

@@ -76,7 +76,7 @@ class Colors:
 PROTOCOL_COLORS = {
     'BACnet': Colors.GREEN, 'MS/TP': Colors.CYAN, 'Modbus': Colors.YELLOW,
     'Services': Colors.ORANGE, 'SNMP': Colors.PURPLE, 'Points': Colors.ACCENT,
-    'APOGEE': Colors.TEAL,
+    'APOGEE': Colors.TEAL, 'LonWorks': "#a5d6ff", 'Gateways': "#d2a8ff",
 }
 
 # Settings the GUI remembers between runs (see settings.py).
@@ -142,7 +142,7 @@ class HVACNetworkScannerGUI:
         self._filter_after: Optional[str] = None
         self._pump_id: Optional[str] = None
         self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp',
-                                            'p2', 'knx')}
+                                            'p2', 'knx', 'lon', 'gateways')}
 
         self.ui_font = _pick_font(["Segoe UI", "SF Pro Text", "Cantarell", "DejaVu Sans"],
                                   "TkDefaultFont")
@@ -317,7 +317,7 @@ class HVACNetworkScannerGUI:
             tk.Label(hdr, image=self._icons[1], bg=C.BG_DARK).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Label(hdr, text="HVAC Network Scanner", style="Title.TLabel").pack(side=tk.LEFT)
         ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · BACnet/SC · Modbus TCP · "
-                            f"services · SNMP · APOGEE P2 · KNX",
+                            f"services · SNMP · APOGEE P2 · KNX · LonWorks · gateways",
                   style="Version.TLabel").pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
         ttk.Button(hdr, text="About", style="Ghost.TButton",
                    command=self._show_about).pack(side=tk.RIGHT)
@@ -381,6 +381,8 @@ class HVACNetworkScannerGUI:
         self.scan_snmp      = tk.BooleanVar(value=True)
         self.scan_p2        = tk.BooleanVar(value=True)
         self.scan_knx       = tk.BooleanVar(value=True)
+        self.scan_lon       = tk.BooleanVar(value=True)
+        self.scan_gateways  = tk.BooleanVar(value=True)
         self.deep_scan      = tk.BooleanVar(value=True)
         self.use_rpm        = tk.BooleanVar(value=True)
         self.read_bbmd_tables = tk.BooleanVar(value=True)
@@ -392,7 +394,8 @@ class HVACNetworkScannerGUI:
         for text, var in [("BACnet/IP", self.scan_bacnet), ("MS/TP", self.scan_mstp),
                           ("Modbus TCP", self.scan_modbus), ("Services", self.scan_services),
                           ("SNMP", self.scan_snmp), ("APOGEE P2", self.scan_p2),
-                          ("KNX", self.scan_knx)]:
+                          ("KNX", self.scan_knx), ("LonWorks", self.scan_lon),
+                          ("Gateways", self.scan_gateways)]:
             cb = ttk.Checkbutton(row2, text=text, variable=var)
             cb.pack(side=tk.LEFT, padx=(4, 10))
             if text == "MS/TP":
@@ -438,7 +441,7 @@ class HVACNetworkScannerGUI:
         self.chips: dict[str, tk.Label] = {}
         for key, label in (('bacnet', 'BACnet'), ('mstp', 'MS/TP'), ('modbus', 'Modbus'),
                            ('services', 'Services'), ('snmp', 'SNMP'), ('p2', 'APOGEE'),
-                           ('knx', 'KNX'),
+                           ('knx', 'KNX'), ('lon', 'LonWorks'), ('gateways', 'Gateways'),
                            ('points', 'Points'), ('flagged', 'Flagged')):
             chip = tk.Label(summary, text=f"{label}  –", bg=C.BG_PANEL,
                             fg=PROTOCOL_COLORS.get(label, C.YELLOW), padx=12, pady=4,
@@ -1256,6 +1259,8 @@ class HVACNetworkScannerGUI:
             scan_snmp=self.scan_snmp.get(),
             scan_p2=self.scan_p2.get(),
             scan_knx=self.scan_knx.get(),
+            scan_lon=self.scan_lon.get(),
+            scan_gateways=self.scan_gateways.get(),
             deep_scan=self.deep_scan.get(),
             use_rpm=self.use_rpm.get(),
             whois_chunk_size=numbers['whois_chunk'],
@@ -1463,7 +1468,8 @@ class HVACNetworkScannerGUI:
                 self._add_registers_for(dev)
                 bucket = {'BACnet/IP': 'bacnet', 'BACnet/MSTP': 'mstp',
                           'Modbus TCP': 'modbus', 'SNMP': 'snmp',
-                          'APOGEE P2': 'p2', 'KNXnet/IP': 'knx'}.get(proto)
+                          'APOGEE P2': 'p2', 'KNXnet/IP': 'knx',
+                          'LonWorks/IP': 'lon', 'Moxa': 'gateways'}.get(proto)
                 if bucket:
                     self._live_counts[bucket] += 1
         except tk.TclError:
@@ -1479,6 +1485,7 @@ class HVACNetworkScannerGUI:
         counts = counts or self._live_counts
         labels = {'bacnet': 'BACnet', 'mstp': 'MS/TP', 'modbus': 'Modbus',
                   'services': 'Services', 'snmp': 'SNMP', 'p2': 'APOGEE', 'knx': 'KNX',
+                  'lon': 'LonWorks', 'gateways': 'Gateways',
                   'points': 'Points', 'flagged': 'Flagged'}
         for key, chip in self.chips.items():
             n = points if key == 'points' else counts.get(key)
@@ -1545,7 +1552,8 @@ class HVACNetworkScannerGUI:
         # the Services tab; this just keeps the primary device view clean.
         primary_ips = {d.get('ip') for d in self.result.devices
                        if d.get('protocol') in ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP',
-                                                'SNMP', 'APOGEE P2', 'KNXnet/IP')}
+                                                'SNMP', 'APOGEE P2', 'KNXnet/IP',
+                                                'LonWorks/IP', 'Moxa')}
         # One row per service-only host, so a gateway with four open ports
         # shows once, not four times.
         seen_service_ips: set[str] = set()
@@ -1595,6 +1603,7 @@ class HVACNetworkScannerGUI:
             f"Hosts {unique_ips}   ·   BACnet {c['bacnet']}   MS/TP {c['mstp']}   "
             f"Modbus {c['modbus']}   Service ports {c['services']}   SNMP {c['snmp']}   "
             f"APOGEE {c.get('p2', 0)}   KNX {c.get('knx', 0)}   "
+            f"LonWorks {c.get('lon', 0)}   Gateways {c.get('gateways', 0)}   "
             f"·   Points {c['points']:,}   ·   {self.result.elapsed:.1f}s"
         )
         self._show_selected_details()
@@ -1628,6 +1637,9 @@ class HVACNetworkScannerGUI:
             vendor = dev.get('vendor', 'Siemens')
         elif protocol == 'KNXnet/IP':
             address = f"KNX {dev.get('knx_address', '?')}"
+            vendor = dev.get('vendor', '')
+        elif protocol in ('LonWorks/IP', 'Moxa'):
+            address = f"UDP {dev.get('port', '?')}"
             vendor = dev.get('vendor', '')
         else:
             address = f":{dev.get('port', '?')}"
@@ -1791,6 +1803,22 @@ class HVACNetworkScannerGUI:
             kv("KNX Secure", "offered" if dev.get('secure') else "not offered")
             if dev.get('programming_mode'):
                 kv("Note", "in programming mode")
+        if dev.get('protocol') == 'LonWorks/IP':
+            out.append(('h', "LonWorks/IP (IP-852)", ''))
+            kv("Name", dev.get('name'))
+            kv("Node type", dev.get('node_type'))
+            kv("Router mode", dev.get('router_mode'))
+            kv("Neuron ID", ", ".join(dev.get('neuron_ids') or []))
+            kv("Unicast", dev.get('unicast'))
+            kv("Config server", dev.get('config_server'))
+            kv("Time servers", ", ".join(dev.get('time_servers') or []))
+            kv("Authentication", "on" if dev.get('authenticated') else
+               ("off (supported)" if dev.get('auth_supported') else "off"))
+        if dev.get('protocol') == 'Moxa':
+            out.append(('h', "Moxa", ''))
+            kv("Model code", dev.get('model_code'))
+            kv("MAC", dev.get('mac'))
+            kv("Reports IP", dev.get('reported_ip'))
         fox = dev.get('fox') or {}
         if fox:
             out.append(('h', "Niagara", ''))
@@ -1802,6 +1830,15 @@ class HVACNetworkScannerGUI:
             kv("Host ID", fox.get('hostId'))
             kv("Brand", fox.get('brandId'))
             kv("Time zone", fox.get('timeZone'))
+        ua = dev.get('opcua') or {}
+        if ua:
+            out.append(('h', "OPC UA", ''))
+            kv("Application", ua.get('application_name'))
+            kv("Product URI", ua.get('product_uri'))
+            kv("Application URI", ua.get('application_uri'))
+            for e in ua.get('endpoints') or []:
+                kv("Endpoint", f"{e.get('security_mode')} / {e.get('security_policy')}; "
+                   f"logins: {', '.join(e.get('user_tokens') or []) or 'none listed'}")
         if dev.get('p2_role'):
             out.append(('h', "APOGEE P2", ''))
             kv("Role", dev.get('p2_role'))

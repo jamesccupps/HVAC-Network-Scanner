@@ -128,6 +128,17 @@ def _client_cert_demanded(err: ssl.SSLError) -> bool:
                                      'BAD_CERTIFICATE'))
 
 
+def _clean_nested(v):
+    """clean_text over every string in a nested dict/list (OPC UA identity)."""
+    if isinstance(v, str):
+        return clean_text(v)
+    if isinstance(v, dict):
+        return {clean_text(str(k)): _clean_nested(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_clean_nested(x) for x in v]
+    return v
+
+
 class HVACServiceScanner:
     """Scan for HVAC-related TCP services: Niagara Fox, OPC UA, CIP, HTTP, etc."""
 
@@ -233,8 +244,10 @@ class HVACServiceScanner:
             info.update(self._probe_bacnet_sc(ip, port))
         elif port in (1911, 4911):
             info.update(self._probe_niagara_fox(ip, port))
-        elif port == 4840:
+        elif port in (4840, 49320):
             info['product'] = 'OPC UA Server'
+            from .opcua import probe as opcua_probe
+            info.update(opcua_probe(ip, port, self.timeout))
         elif port == 102:
             info.update(self._probe_s7(ip, port))
         elif port == 44818:
@@ -251,6 +264,8 @@ class HVACServiceScanner:
                 info[k] = clean_text(v)
             elif k == 'fox' and isinstance(v, dict):
                 info[k] = {clean_text(fk): clean_text(fv) for fk, fv in v.items()}
+            elif k == 'opcua' and isinstance(v, dict):
+                info[k] = _clean_nested(v)
 
         # Regex-match fingerprints over combined text
         all_text = ' '.join(str(info.get(k, '')) for k in

@@ -77,7 +77,7 @@ def _udp_probes_stay_on_loopback(monkeypatch):
     the example 10.0.0.x targets of tests written before it existed.
     """
     import ipaddress
-    from hvac_scanner import knx, snmp
+    from hvac_scanner import knx, lonworks, moxa, snmp
     from hvac_scanner.netrange import parse_targets
 
     def guard(cls):
@@ -91,6 +91,8 @@ def _udp_probes_stay_on_loopback(monkeypatch):
             return real(self, targets, *a, **kw)
         monkeypatch.setattr(cls, "scan_network", guarded)
     guard(knx.KNXScanner)
+    guard(lonworks.LonWorksScanner)
+    guard(moxa.MoxaScanner)
     guard(snmp.SNMPScanner)
 
 
