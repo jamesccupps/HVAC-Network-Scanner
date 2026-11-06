@@ -470,7 +470,37 @@ def _who_is_range(data: bytes, idx: int) -> tuple[int, int]:
         return 0, 4194303
 
 
-class BACnetEndpoint:
+class _Listener:
+    """One socket and the thread that waits on it in accept() or recvfrom().
+
+    close() frees the address before it returns, so the next test can bind it
+    straight away. On Windows closing the socket aborts the waiting call. On
+    Linux it does not: the blocked call keeps the socket, and its port, until
+    it returns, which for a listener nobody talks to again is never, and every
+    later test on that address skipped with "Address already in use".
+    shutdown() wakes the call there (accept fails, recvfrom returns no data);
+    joining the thread then waits until the socket is really gone.
+    """
+
+    closing = False
+
+    def _serve_with(self, sock: socket.socket, serve) -> None:
+        self.sock = sock
+        self._thread = threading.Thread(target=serve, daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self.closing = True
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass        # not connected: Windows refuses; Linux refuses UDP but still wakes it
+        self.sock.close()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+
+
+class BACnetEndpoint(_Listener):
     """One BACnet/IP address: a controller, optionally routing to MS/TP."""
 
     def __init__(self, ip: str, device: SimDevice,
@@ -485,21 +515,18 @@ class BACnetEndpoint:
         # own segment never arrives, so it is not sent at all.
         self.remote = remote
         self.requests = 0
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((ip, BACNET_PORT))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((ip, BACNET_PORT))
         self._lock = threading.Lock()             # one request at a time, like the real thing
-        self._stop = False
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def close(self) -> None:
-        self._stop = True
-        self.sock.close()
+        self._serve_with(sock, self._serve)
 
     def _serve(self) -> None:
-        while not self._stop:
+        while True:
             try:
                 data, addr = self.sock.recvfrom(4096)
             except OSError:
+                return
+            if self.closing:
                 return
             try:
                 self.handle(data, addr)
@@ -677,20 +704,22 @@ def _error(invoke: int, service: int, err_class: int, err_code: int) -> bytes:
     return bytes([0x50, invoke, service]) + app_enum(err_class) + app_enum(err_code)
 
 
-class BroadcastRelay:
+class BroadcastRelay(_Listener):
     """Stands in for the switch: hands each broadcast to every device."""
 
     def __init__(self, endpoints: list[BACnetEndpoint], address: str):
         self.endpoints = endpoints
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((address, BACNET_PORT))
-        threading.Thread(target=self._serve, daemon=True).start()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((address, BACNET_PORT))
+        self._serve_with(sock, self._serve)
 
     def _serve(self) -> None:
         while True:
             try:
                 data, addr = self.sock.recvfrom(4096)
             except OSError:
+                return
+            if self.closing:
                 return
 
             def forward(origin_ip: str, npdu_apdu: bytes, addr=addr) -> None:
@@ -703,9 +732,6 @@ class BroadcastRelay:
             for ep in self.endpoints:
                 threading.Thread(target=ep.handle, args=(data, addr, forward),
                                  daemon=True).start()
-
-    def close(self) -> None:
-        self.sock.close()
 
 
 # ---------------------------------------------------------------------------
@@ -727,9 +753,12 @@ class ModbusUnit:
 class ModbusServer:
     """`units` maps unit id -> unit. `any_unit` answers every unit id (most
     direct-attached devices do); otherwise unknown ids get gateway exception
-    0x0B, the way a TCP-to-RTU gateway reports a slave that did not answer."""
+    0x0B, the way a TCP-to-RTU gateway reports a slave that did not answer.
+    `port` 0 takes any free port (502 needs root on Linux); `self.port` says
+    which."""
 
-    def __init__(self, ip: str, units: dict[int, ModbusUnit], any_unit: bool = False):
+    def __init__(self, ip: str, units: dict[int, ModbusUnit], any_unit: bool = False,
+                 port: int = 502):
         self.units, self.any_unit = units, any_unit
         outer = self
 
@@ -753,7 +782,8 @@ class ModbusServer:
                                  + bytes([hdr[6]]) + reply)
 
         socketserver.ThreadingTCPServer.allow_reuse_address = True
-        self.server = socketserver.ThreadingTCPServer((ip, 502), Handler)
+        self.server = socketserver.ThreadingTCPServer((ip, port), Handler)
+        self.port = self.server.server_address[1]
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -828,22 +858,24 @@ def _ber(tag: int, body: bytes) -> bytes:
     return bytes([tag]) + _ber_len(len(body)) + body
 
 
-class SNMPAgent:
+class SNMPAgent(_Listener):
     """Answers a v1/v2c GET for sysDescr.0 with community 'public'."""
 
     SYS_DESCR_OID = bytes([0x2B, 6, 1, 2, 1, 1, 1, 0])
 
     def __init__(self, ip: str, sys_descr: str):
         self.sys_descr = sys_descr
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((ip, 161))
-        threading.Thread(target=self._serve, daemon=True).start()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((ip, 161))
+        self._serve_with(sock, self._serve)
 
     def _serve(self) -> None:
         while True:
             try:
                 data, addr = self.sock.recvfrom(4096)
             except OSError:
+                return
+            if self.closing:
                 return
             try:
                 reply = self._reply(data)
@@ -870,9 +902,6 @@ class SNMPAgent:
         pdu = _ber(0xA2, rid + _ber(0x02, b'\x00') + _ber(0x02, b'\x00')
                    + _ber(0x30, varbind))
         return _ber(0x30, _ber(0x02, bytes([version])) + _ber(0x04, community) + pdu)
-
-    def close(self) -> None:
-        self.sock.close()
 
 
 class WebUI:
@@ -908,24 +937,29 @@ class WebUI:
         self.httpd.server_close()
 
 
-class BannerService:
+def _accept_loop(listener: _Listener, client) -> None:
+    """Hand each accepted connection to `client` on a thread of its own."""
+    while True:
+        try:
+            conn, _ = listener.sock.accept()
+        except OSError:
+            return
+        if listener.closing:
+            conn.close()
+            return
+        threading.Thread(target=client, args=(conn,), daemon=True).start()
+
+
+class BannerService(_Listener):
     """A TCP port that sends a fixed greeting, e.g. an embedded FTP server."""
 
     def __init__(self, ip: str, port: int, banner: bytes, reply_to_input: bool = False):
         self.banner, self.reply_to_input = banner, reply_to_input
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((ip, port))
-        self.sock.listen(16)
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def _serve(self) -> None:
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((ip, port))
+        sock.listen(16)
+        self._serve_with(sock, lambda: _accept_loop(self, self._client))
 
     def _client(self, conn) -> None:
         with conn:
@@ -938,11 +972,8 @@ class BannerService:
             except OSError:
                 pass
 
-    def close(self) -> None:
-        self.sock.close()
 
-
-class P2Node:
+class P2Node(_Listener):
     """A Siemens APOGEE P2 listener on TCP/5033 that knows its BLN name.
 
     It answers the way the P2 reference documents a real node answering a
@@ -955,19 +986,11 @@ class P2Node:
     def __init__(self, ip: str, bln: str, node_name: str, supervisor: bool = False):
         self.bln, self.node_name, self.supervisor = bln, node_name, supervisor
         self.attempts: list[str] = []          # BLN names presented, for tests
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((ip, 5033))
-        self.sock.listen(16)
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def _serve(self) -> None:
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((ip, 5033))
+        sock.listen(16)
+        self._serve_with(sock, lambda: _accept_loop(self, self._client))
 
     def _client(self, conn: socket.socket) -> None:
         try:
@@ -999,11 +1022,8 @@ class P2Node:
             except OSError:
                 pass
 
-    def close(self) -> None:
-        self.sock.close()
 
-
-class SCHub:
+class SCHub(_Listener):
     """A BACnet/SC hub: TLS 1.3 and a WebSocket with the hub subprotocol.
 
     `require_client_cert` is how a real hub is set up: only a certificate
@@ -1023,19 +1043,11 @@ class SCHub:
         if require_client_cert:
             self.ctx.verify_mode = ssl.CERT_REQUIRED
             self.ctx.load_verify_locations(cafile=cert[0])   # trusts only itself
-        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.srv.bind((ip, port))
-        self.srv.listen(8)
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def _serve(self) -> None:
-        while True:
-            try:
-                conn, _ = self.srv.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((ip, port))
+        sock.listen(8)
+        self._serve_with(sock, lambda: _accept_loop(self, self._client))
 
     def _client(self, conn: socket.socket) -> None:
         try:
@@ -1066,9 +1078,6 @@ class SCHub:
         finally:
             conn.close()
 
-    def close(self) -> None:
-        self.srv.close()
-
 
 def _fox_hello(station: str, version: str, os_name: str, os_version: str,
                host_id: str) -> bytes:
@@ -1086,13 +1095,13 @@ def _fox_hello(station: str, version: str, os_name: str, os_version: str,
             + "};;\n").encode()
 
 
-class KNXGateway:
+class KNXGateway(_Listener):
     """A KNXnet/IP interface on UDP 3671: answers a DESCRIPTION_REQUEST, to
     the control endpoint the request names, and nothing else."""
 
     def __init__(self, ip: str, name: str, knx_address: int, secure: bool = False):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((ip, 3671))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((ip, 3671))
         dev = (bytes([0x36, 0x01, 0x02, 0x00]) + struct.pack('!H', knx_address)
                + b'\x00\x00' + bytes.fromhex("00fa0012ab34") + socket.inet_aton("224.0.23.12")
                + bytes.fromhex("00246d01a2b3") + name.encode('latin-1')[:30].ljust(30, b'\x00'))
@@ -1100,13 +1109,15 @@ class KNXGateway:
         svc = bytes([2 + 2 * len(families), 0x02]) + b''.join(bytes(f) for f in families)
         body = dev + svc
         self.reply = struct.pack('!BBHH', 0x06, 0x10, 0x0204, 6 + len(body)) + body
-        threading.Thread(target=self._serve, daemon=True).start()
+        self._serve_with(sock, self._serve)
 
     def _serve(self) -> None:
         while True:
             try:
                 data, addr = self.sock.recvfrom(1024)
             except OSError:
+                return
+            if self.closing:
                 return
             if len(data) >= 14 and data[2:4] == b'\x02\x03':
                 ip = socket.inet_ntoa(data[8:12])
@@ -1116,9 +1127,6 @@ class KNXGateway:
                     self.sock.sendto(self.reply, target)
                 except OSError:
                     pass
-
-    def close(self) -> None:
-        self.sock.close()
 
 
 def _self_signed_cert(cn: str, org: str, workdir: str) -> Optional[tuple[str, str]]:
