@@ -338,6 +338,14 @@ Exit codes:
 
 ## What's new
 
+### v2.12.0 (2026-11-06)
+
+- **Firmware covered by published advisories**: the report compares the
+  firmware each controller reports with CISA ICS advisories (Trane Tracer SC+,
+  Siemens APOGEE PXC, Desigo PXC and DXR2, Desigo CC) and lists the devices
+  to update, with the version to update to, and those to check by hand.
+  Versions are compared only; nothing is sent to test for the flaws.
+
 ### v2.11.0 (2026-11-06)
 
 More of what a building network holds, and faster on unreliable controllers.

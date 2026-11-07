@@ -5,7 +5,7 @@ APOGEE P2, HVAC services, SNMP.
 Zero third-party dependencies (uses only the Python standard library).
 """
 
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 __author__ = "James Cupps"
 __license__ = "MIT"
 

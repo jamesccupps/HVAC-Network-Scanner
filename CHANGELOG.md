@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.12.0] — 2026-11-06
+
 ### Added
 
 - **Firmware covered by published advisories.** The report compares the firmware
