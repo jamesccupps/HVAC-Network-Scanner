@@ -345,6 +345,17 @@ Exit codes:
 
 ## What's new
 
+### v2.13.0 (2026-11-08)
+
+- **The advisory list keeps itself current**: a daily job rebuilds it from
+  CISA's data and publishes it signed, and the scanner downloads it with its
+  daily check, so new advisories reach the report without a new release. The
+  list now holds every CISA advisory for the products it covers (53 entries),
+  and Desigo CC is checked per release.
+- **Updates install themselves**: a new release downloads in the background
+  and installs when you close the scanner, or at once with **Restart to update
+  to …**. Turn **Install updates automatically** off in Advanced to be asked.
+
 ### v2.12.0 (2026-11-06)
 
 - **Firmware covered by published advisories**: the report compares the
