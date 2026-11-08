@@ -55,7 +55,9 @@ a = Analysis(
     [os.path.join(project_root, 'packaging', 'gui_entry.py')],
     pathex=[project_root],
     binaries=[],
-    datas=[],
+    # The advisory list built into the app (advisories.py reads it beside
+    # the module).
+    datas=[(os.path.join(project_root, 'hvac_scanner', 'advisories.json'), 'hvac_scanner')],
     # tkinter is pulled in automatically, but the scanner imports its own
     # submodules lazily inside functions (device_profiles, netrange, diff,
     # certs), which static analysis does not always follow.

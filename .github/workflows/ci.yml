@@ -145,6 +145,14 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force
           Write-Host "executable started and stayed running"
+          # The parts a bundle can miss and a window doesn't show: data files
+          # (the advisory list) and modules imported later.
+          $t = Start-Process -FilePath dist\HVACNetworkScanner.exe -ArgumentList '--self-test' -PassThru -Wait
+          if ($t.ExitCode -ne 0) {
+            Write-Error "self-test failed (code $($t.ExitCode))"
+            exit 1
+          }
+          Write-Host "self-test passed"
 
       - name: Update test
         # The previous release with an updater (until there is one, this

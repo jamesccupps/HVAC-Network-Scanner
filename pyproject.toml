@@ -52,6 +52,10 @@ hvac-scanner-gui = "hvac_scanner.gui:main"
 include = ["hvac_scanner*"]
 exclude = ["tests*"]
 
+# The advisory list built into the package (advisories.py).
+[tool.setuptools.package-data]
+hvac_scanner = ["advisories.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

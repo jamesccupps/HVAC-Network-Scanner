@@ -1,0 +1,1049 @@
+{
+ "app": "hvac-network-scanner",
+ "kind": "advisories",
+ "serial": 1,
+ "as_of": "2026-11-07",
+ "advisories": [
+  {
+   "id": "ICSA-16-259-03",
+   "published": "2016-06-19",
+   "title": "Trane Tracer SC Sensitive Information Exposure Vulnerability",
+   "vendor": "trane",
+   "model": "^tracer sc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2016-0870"
+   ],
+   "cvss": 5.3,
+   "firmware": "",
+   "note": "affected: <=4.2.1134: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-17-285-05",
+   "published": "2017-10-12",
+   "title": "Siemens BACnet Field Panels (Update A)",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5",
+   "cves": [
+    "CVE-2017-9946",
+    "CVE-2017-9947"
+   ],
+   "cvss": 7.5,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-17-285-05",
+   "published": "2017-10-12",
+   "title": "Siemens BACnet Field Panels (Update A)",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5",
+   "cves": [
+    "CVE-2017-9946",
+    "CVE-2017-9947"
+   ],
+   "cvss": 7.5,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-18-093-01",
+   "published": "2018-03-28",
+   "title": "ICSA-18-093-01 Siemens Building Technologies Products (Update A)",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2017-11496",
+    "CVE-2017-11497",
+    "CVE-2017-11498",
+    "CVE-2017-12818",
+    "CVE-2017-12819",
+    "CVE-2017-12820",
+    "CVE-2017-12821",
+    "CVE-2017-12822"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*1\\.",
+   "note": "Desigo CC: MP1.1 | MP2.0 | MP2.1 | MP3.0; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-18-093-01",
+   "published": "2018-03-28",
+   "title": "ICSA-18-093-01 Siemens Building Technologies Products (Update A)",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2017-11496",
+    "CVE-2017-11497",
+    "CVE-2017-11498",
+    "CVE-2017-12818",
+    "CVE-2017-12819",
+    "CVE-2017-12820",
+    "CVE-2017-12821",
+    "CVE-2017-12822"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*2\\.",
+   "note": "Desigo CC: MP1.1 | MP2.0 | MP2.1 | MP3.0; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-18-093-01",
+   "published": "2018-03-28",
+   "title": "ICSA-18-093-01 Siemens Building Technologies Products (Update A)",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2017-11496",
+    "CVE-2017-11497",
+    "CVE-2017-11498",
+    "CVE-2017-12818",
+    "CVE-2017-12819",
+    "CVE-2017-12820",
+    "CVE-2017-12821",
+    "CVE-2017-12822"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*3\\.",
+   "note": "Desigo CC: MP1.1 | MP2.0 | MP2.1 | MP3.0; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-105-06",
+   "published": "2020-04-14",
+   "title": "Siemens SIMOTICS, Desigo, APOGEE, and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2019-13939"
+   ],
+   "cvss": 7.1,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-105-06",
+   "published": "2020-04-14",
+   "title": "Siemens SIMOTICS, Desigo, APOGEE, and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2019-13939"
+   ],
+   "cvss": 7.1,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-224-06",
+   "published": "2020-08-11",
+   "title": "Siemens Desigo CC",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2020-10055"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*3\\.",
+   "note": "Desigo CC: V3.x; Desigo CC Compact: V3.x; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-224-06",
+   "published": "2020-08-11",
+   "title": "Siemens Desigo CC",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2020-10055"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*4\\.",
+   "note": "Desigo CC: V4.x; Desigo CC Compact: V4.x; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-257-07",
+   "published": "2021-09-14",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2021-27391"
+   ],
+   "cvss": 9.8,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-257-07",
+   "published": "2021-09-14",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2021-27391"
+   ],
+   "cvss": 9.8,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-257-17",
+   "published": "2021-09-14",
+   "title": "Siemens Desigo CC Family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-37181"
+   ],
+   "cvss": 10.0,
+   "firmware": "^\\s*v?0*4\\.",
+   "note": "Desigo CC Compact V4.0: all versions; Desigo CC Compact V4.1: all versions; Desigo CC Compact V4.2: all versions; Desigo CC V4.0: all versions; Desigo CC V4.1: all versions; Desigo CC V4.2: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-257-17",
+   "published": "2021-09-14",
+   "title": "Siemens Desigo CC Family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-37181"
+   ],
+   "cvss": 10.0,
+   "firmware": "^\\s*v?0*5\\.",
+   "note": "Desigo CC Compact V5.0: before V5.0_QU1; Desigo CC V5.0: before V5.0_QU1; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-266-02",
+   "published": "2021-09-23",
+   "title": "Trane Tracer",
+   "vendor": "trane",
+   "model": "^tracer sc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-38450"
+   ],
+   "cvss": 9.9,
+   "firmware": "",
+   "note": "affected before 4.4 SP7: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-266-02",
+   "published": "2021-09-23",
+   "title": "Trane Tracer",
+   "vendor": "trane",
+   "model": "^tracer sc\\+$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-38450"
+   ],
+   "cvss": 9.9,
+   "firmware": "",
+   "note": "affected before 5.5 SP3: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-292-02",
+   "published": "2021-10-19",
+   "title": "Trane HVAC Systems Controls",
+   "vendor": "trane",
+   "model": "^tracer sc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-42534"
+   ],
+   "cvss": 6.3,
+   "firmware": "",
+   "note": "affected: <= 3.8: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-315-07",
+   "published": "2021-11-09",
+   "title": "Siemens Nucleus RTOS-based APOGEE and TALON Products (Update C)",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.4",
+   "cves": [
+    "CVE-2021-31344",
+    "CVE-2021-31345",
+    "CVE-2021-31346",
+    "CVE-2021-31881",
+    "CVE-2021-31882",
+    "CVE-2021-31883",
+    "CVE-2021-31884",
+    "CVE-2021-31885",
+    "CVE-2021-31886",
+    "CVE-2021-31887",
+    "CVE-2021-31888",
+    "CVE-2021-31889",
+    "CVE-2021-31890"
+   ],
+   "cvss": 9.8,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-315-07",
+   "published": "2021-11-09",
+   "title": "Siemens Nucleus RTOS-based APOGEE and TALON Products (Update C)",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.4",
+   "cves": [
+    "CVE-2021-31344",
+    "CVE-2021-31345",
+    "CVE-2021-31346",
+    "CVE-2021-31881",
+    "CVE-2021-31882",
+    "CVE-2021-31883",
+    "CVE-2021-31884",
+    "CVE-2021-31885",
+    "CVE-2021-31886",
+    "CVE-2021-31887",
+    "CVE-2021-31888",
+    "CVE-2021-31889",
+    "CVE-2021-31890"
+   ],
+   "cvss": 9.8,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-132-10",
+   "published": "2022-05-12",
+   "title": "Siemens Desigo PXC and DXR Devices",
+   "vendor": "siemens",
+   "model": "^dxr2",
+   "field": "firmware_revision",
+   "fixed": "01.21.142.5",
+   "cves": [
+    "CVE-2021-41545",
+    "CVE-2022-24039",
+    "CVE-2022-24040",
+    "CVE-2022-24041",
+    "CVE-2022-24042",
+    "CVE-2022-24043",
+    "CVE-2022-24044",
+    "CVE-2022-24045"
+   ],
+   "cvss": 9.0,
+   "firmware": "",
+   "note": "fixed in 01.21.142.5-22",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-286-12",
+   "published": "2022-10-11",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2022-38371"
+   ],
+   "cvss": 7.5,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "4",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-286-12",
+   "published": "2022-10-11",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2022-38371"
+   ],
+   "cvss": 7.5,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "4",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-286-16",
+   "published": "2022-10-11",
+   "title": "Siemens Desigo CC and Cerberus DMS",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2022-33139"
+   ],
+   "cvss": 9.8,
+   "firmware": "",
+   "note": "Desigo CC: all versions; Desigo CC Compact: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-349-16",
+   "published": "2022-12-13",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.5",
+   "cves": [
+    "CVE-2020-15795",
+    "CVE-2020-27009",
+    "CVE-2020-27736",
+    "CVE-2020-27737",
+    "CVE-2020-27738",
+    "CVE-2020-28388",
+    "CVE-2021-25677",
+    "CVE-2022-45937"
+   ],
+   "cvss": 8.8,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "3",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-349-16",
+   "published": "2022-12-13",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.5",
+   "cves": [
+    "CVE-2020-15795",
+    "CVE-2020-27009",
+    "CVE-2020-27736",
+    "CVE-2020-27737",
+    "CVE-2020-27738",
+    "CVE-2020-28388",
+    "CVE-2021-25677",
+    "CVE-2022-45937"
+   ],
+   "cvss": 8.8,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "3",
+   "auto": true
+  },
+  {
+   "id": "ICSA-23-320-03",
+   "published": "2023-11-14",
+   "title": "Siemens Desigo CC product family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-20093",
+    "CVE-2021-20094",
+    "CVE-2023-3935"
+   ],
+   "cvss": 9.1,
+   "firmware": "^\\s*v?0*5\\.",
+   "note": "Desigo CC family V5.0: all versions; Desigo CC family V5.1: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-23-320-03",
+   "published": "2023-11-14",
+   "title": "Siemens Desigo CC product family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2021-20093",
+    "CVE-2021-20094",
+    "CVE-2023-3935"
+   ],
+   "cvss": 9.1,
+   "firmware": "^\\s*v?0*6\\.",
+   "note": "Desigo CC family V6: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-23-320-03",
+   "published": "2023-11-14",
+   "title": "Siemens Desigo CC product family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2023-3935"
+   ],
+   "cvss": 9.0,
+   "firmware": "^\\s*v?0*7\\.",
+   "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-044-11",
+   "published": "2025-02-11",
+   "title": "Siemens Apogee PXC100 Devices",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2024-54089",
+    "CVE-2024-54090"
+   ],
+   "cvss": 7.5,
+   "firmware": "^(PXME|EPXC)\\b",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-135-04",
+   "published": "2025-05-13",
+   "title": "Siemens Desigo",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2024-23815"
+   ],
+   "cvss": 7.5,
+   "firmware": "",
+   "note": "Desigo CC: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-135-14",
+   "published": "2025-05-13",
+   "title": "Siemens APOGEE PXC and TALON TC Series",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-40555"
+   ],
+   "cvss": 4.7,
+   "firmware": "^(PXME|EPXC)\\b",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-231-01",
+   "published": "2025-08-14",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-47809"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*5\\.",
+   "note": "Desigo CC family V5.0: all versions; Desigo CC family V5.1: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-231-01",
+   "published": "2025-08-14",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-47809"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*6\\.",
+   "note": "Desigo CC family V6: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-231-01",
+   "published": "2025-08-14",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-47809"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*7\\.",
+   "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-231-01",
+   "published": "2025-08-14",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-47809"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*8\\.",
+   "note": "Desigo CC family V8: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-254-05",
+   "published": "2025-09-09",
+   "title": "Siemens Apogee PXC and Talon TC Devices",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-40757"
+   ],
+   "cvss": 5.3,
+   "firmware": "^(PXME|EPXC)\\b",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-043-04",
+   "published": "2026-02-10",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2023-38545"
+   ],
+   "cvss": 8.8,
+   "firmware": "^\\s*v?0*6\\.",
+   "note": "Desigo CC family V6: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-043-04",
+   "published": "2026-02-10",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2023-38545"
+   ],
+   "cvss": 8.8,
+   "firmware": "^\\s*v?0*7\\.",
+   "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-043-04",
+   "published": "2026-02-10",
+   "title": "Siemens Desigo CC Product Family and SENTRON Powermanager",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2023-38545"
+   ],
+   "cvss": 8.8,
+   "firmware": "^\\s*v?0*8\\.",
+   "note": "Desigo CC family V8: before V8.0_QU2; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-071-01",
+   "published": "2026-03-12",
+   "title": "Trane Tracer SC, Tracer SC+, and Tracer Concierge",
+   "vendor": "trane",
+   "model": "^tracer sc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-28252",
+    "CVE-2026-28253",
+    "CVE-2026-28254",
+    "CVE-2026-28255",
+    "CVE-2026-28256"
+   ],
+   "cvss": 8.1,
+   "firmware": "",
+   "note": "affected before v4.4_SP7: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-071-01",
+   "published": "2026-03-12",
+   "title": "Trane Tracer SC, Tracer SC+, and Tracer Concierge",
+   "vendor": "trane",
+   "model": "^tracer sc\\+$",
+   "field": "application_software_version",
+   "fixed": "6.30.2313",
+   "cves": [
+    "CVE-2026-28252",
+    "CVE-2026-28253",
+    "CVE-2026-28254",
+    "CVE-2026-28255",
+    "CVE-2026-28256"
+   ],
+   "cvss": 8.1,
+   "firmware": "",
+   "note": "CISA's product list says before v6.3.2310; the fix it names is 6.30.2313",
+   "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-209-01",
+   "published": "2026-07-14",
+   "title": "Siemens Desigo CC",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-15467"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*7\\.",
+   "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-209-01",
+   "published": "2026-07-14",
+   "title": "Siemens Desigo CC",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-15467"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*8\\.",
+   "note": "Desigo CC family V8: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-209-01",
+   "published": "2026-07-14",
+   "title": "Siemens Desigo CC",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-15467"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*9\\.",
+   "note": "Desigo CC family V9: before 9.0.1; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-225-08",
+   "published": "2026-08-11",
+   "title": "Siemens Desigo DXR and PXC Controllers",
+   "vendor": "siemens",
+   "model": "^dxr2",
+   "field": "firmware_revision",
+   "fixed": "01.21.233.16",
+   "cves": [
+    "CVE-2026-59693"
+   ],
+   "cvss": 4.3,
+   "firmware": "",
+   "note": "fixed in 01.21.233.16-7862",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-225-08",
+   "published": "2026-08-11",
+   "title": "Siemens Desigo DXR and PXC Controllers",
+   "vendor": "siemens",
+   "model": "^pxc4",
+   "field": "firmware_revision",
+   "fixed": "02.21.194.36",
+   "cves": [
+    "CVE-2026-59693"
+   ],
+   "cvss": 4.3,
+   "firmware": "",
+   "note": "fixed in 02.21.194.36-2715",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-225-08",
+   "published": "2026-08-11",
+   "title": "Siemens Desigo DXR and PXC Controllers",
+   "vendor": "siemens",
+   "model": "^pxc5\\.e003",
+   "field": "firmware_revision",
+   "fixed": "02.21.194.36",
+   "cves": [
+    "CVE-2026-59693"
+   ],
+   "cvss": 4.3,
+   "firmware": "",
+   "note": "fixed in 02.21.194.36-2715",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-225-08",
+   "published": "2026-08-11",
+   "title": "Siemens Desigo DXR and PXC Controllers",
+   "vendor": "siemens",
+   "model": "^pxc5\\.e24",
+   "field": "firmware_revision",
+   "fixed": "02.21.194.36",
+   "cves": [
+    "CVE-2026-59693"
+   ],
+   "cvss": 4.3,
+   "firmware": "",
+   "note": "fixed in 02.21.194.36-2715",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-225-08",
+   "published": "2026-08-11",
+   "title": "Siemens Desigo DXR and PXC Controllers",
+   "vendor": "siemens",
+   "model": "^pxc7",
+   "field": "firmware_revision",
+   "fixed": "02.21.194.36",
+   "cves": [
+    "CVE-2026-59693"
+   ],
+   "cvss": 4.3,
+   "firmware": "",
+   "note": "fixed in 02.21.194.36-2715",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-265-05",
+   "published": "2026-09-08",
+   "title": "Siemens Desigo CC family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-34223"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*6\\.",
+   "note": "Desigo CC family V6: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-265-05",
+   "published": "2026-09-08",
+   "title": "Siemens Desigo CC family",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-34223"
+   ],
+   "cvss": 8.2,
+   "firmware": "^\\s*v?0*7\\.",
+   "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-295-08",
+   "published": "2026-10-13",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2026-102073",
+    "CVE-2026-102074",
+    "CVE-2026-102075",
+    "CVE-2026-102076"
+   ],
+   "cvss": 8.2,
+   "firmware": "^EPXC\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-295-08",
+   "published": "2026-10-13",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^siemens bacnet field panel$",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2026-102073",
+    "CVE-2026-102074",
+    "CVE-2026-102075",
+    "CVE-2026-102076"
+   ],
+   "cvss": 8.2,
+   "firmware": "^PXME\\b",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  }
+ ]
+}

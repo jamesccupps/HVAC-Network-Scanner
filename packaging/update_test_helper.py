@@ -14,13 +14,15 @@ scanner to this build for real.
         throwaway key, and print the key's public half. Never the release
         key, so the folder is harmless if it's left behind.
 
-    python packaging/update_test_helper.py drive OLD_SOURCE RELEASE_DIR APP_EXE OLD_PID PUBLIC_KEY
+    python packaging/update_test_helper.py drive OLD_SOURCE RELEASE_DIR APP_EXE OLD_PID PUBLIC_KEY [close]
         Run the old copy's own updater (its source, OLD_SOURCE: the previous
         release's, or this tree's when the build updates itself) the way its
         window does when "Update to ..." is clicked: check RELEASE_DIR,
         download, verify, apply. Then end OLD_PID, the old copy that is
         running from APP_EXE, as the window closes itself after apply.
-        PUBLIC_KEY stands in for the one built into the old copy.
+        PUBLIC_KEY stands in for the one built into the old copy. With
+        "close" (2.13 and later), install the way the window does when it is
+        closed with an update downloaded: nothing is started after the swap.
 
 Adapted from PingerPlot's packaging/update_test_helper.py.
 """
@@ -107,7 +109,7 @@ def _end_tree(pid: int) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def drive(old_source, release_dir, app_exe, old_pid, public_key):
+def drive(old_source, release_dir, app_exe, old_pid, public_key, mode="click"):
     # Only the old code is importable, never this build's (unless they are
     # the same tree). Its settings folder (APPDATA) is the test's.
     sys.path[0] = str(Path(old_source).resolve())
@@ -121,8 +123,11 @@ def drive(old_source, release_dir, app_exe, old_pid, public_key):
     print(f"found {u.version}: {u.asset['file']}, {u.asset['size']:,} bytes")
     path = updater.download(u)
     print(f"downloaded and verified: {path}")
-    updater.apply(u, path)
-    print("applied; ending the old copy")
+    if mode == "close":
+        updater.apply(u, path, restart=False)
+    else:
+        updater.apply(u, path)
+    print(f"applied ({mode}); ending the old copy")
     _end_tree(int(old_pid))
     if not updater._wait_for_exit(int(old_pid), timeout=30):
         raise SystemExit(f"the old copy ({old_pid}) didn't exit")

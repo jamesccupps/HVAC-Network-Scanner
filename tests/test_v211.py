@@ -358,6 +358,18 @@ def mock_client_v211(monkeypatch):
 
 from hvac_scanner import advisories  # noqa: E402
 
+# The list changes every day (tools/advisory_watch.py), so these tests use a
+# frozen copy: 2026-11-07's entries for ten advisories.
+_FIXTURE = Path(__file__).parent / "data" / "advisories-fixture.json"
+
+
+@pytest.fixture
+def table(monkeypatch):
+    import json
+    t = advisories.parse_table(json.loads(_FIXTURE.read_text(encoding="utf-8")))
+    monkeypatch.setattr(advisories, "current", lambda cache=None: t)
+    return t
+
 
 def _bacnet(model, vendor="Siemens Schweiz", ip="10.0.0.9", **props):
     return {'ip': ip, 'protocol': 'BACnet/IP', 'vendor_name': vendor,
@@ -378,7 +390,7 @@ def test_versions_are_compared_component_by_component(reported, fixed, expected)
     assert advisories.compare(reported, fixed) == expected
 
 
-def test_a_tracer_sc_plus_before_the_fix_is_affected_and_after_it_is_not():
+def test_a_tracer_sc_plus_before_the_fix_is_affected_and_after_it_is_not(table):
     old = advisories.for_device(_bacnet("Tracer SC+", "Trane",
                                         application_software_version="v5.70.1731 (release)"))
     assert [(m['advisory'].id, m['status']) for m in old] == [("ICSA-26-071-01", "affected")]
@@ -386,7 +398,7 @@ def test_a_tracer_sc_plus_before_the_fix_is_affected_and_after_it_is_not():
                                          application_software_version="v6.30.2313")) == []
 
 
-def test_apogee_pxc_bacnet_firmware_by_version():
+def test_apogee_pxc_bacnet_firmware_by_version(table):
     def ids(fw):
         return {m['advisory'].id: m['status'] for m in advisories.for_device(
             _bacnet("Siemens BACnet Field Panel", firmware_revision=fw))}
@@ -398,7 +410,7 @@ def test_apogee_pxc_bacnet_firmware_by_version():
     assert ids("") == {}                                # not a PXC line we can place
 
 
-def test_other_vendors_and_unrelated_models_match_nothing():
+def test_other_vendors_and_unrelated_models_match_nothing(table):
     assert advisories.for_device(_bacnet("Tracer SC+", "Siemens Schweiz",
                                          application_software_version="v1.0")) == []
     assert advisories.for_device(_bacnet("DXR2.E12P-1", "The Trane Company",
@@ -409,7 +421,8 @@ def test_other_vendors_and_unrelated_models_match_nothing():
 
 def test_every_advisory_entry_is_well_formed():
     import re
-    for a in advisories.ADVISORIES:
+    assert advisories.bundled().advisories
+    for a in advisories.bundled().advisories:
         assert re.fullmatch(r"ICSA-\d{2}-\d{3}-\d{2}", a.id), a.id
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.published)
         assert a.cves and all(re.fullmatch(r"CVE-\d{4}-\d{4,}", c) for c in a.cves)
@@ -419,7 +432,7 @@ def test_every_advisory_entry_is_well_formed():
         assert a.url.startswith("https://www.cisa.gov/")
 
 
-def test_the_report_lists_affected_firmware_and_what_to_check():
+def test_the_report_lists_affected_firmware_and_what_to_check(table):
     from hvac_scanner.report import build_findings
     devs = [_bacnet("Tracer SC+", "Trane", ip="10.0.0.19", application_software_version="v5.70.1731 (release)"),
             _bacnet("Tracer SC+", "Trane", ip="10.0.0.21", application_software_version="v5.70.1731 (release)"),

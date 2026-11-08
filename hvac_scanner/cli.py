@@ -238,6 +238,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Write a self-contained HTML survey report: findings "
                         "(default credentials, cleartext logins, certificates, "
                         "points in alarm or overridden), inventory, open services.")
+    o.add_argument("--update-advisories", action="store_true",
+                   help="Download the latest signed advisory list first (the GUI "
+                        "does this daily). On its own, just that.")
     o.add_argument("--points-csv", metavar="PATH",
                    help="Write the point list: one row per BACnet point and "
                         "Modbus register.")
@@ -460,6 +463,17 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 1
         profile_kw = profile_options(saved[args.profile])
+
+    if args.update_advisories:
+        from . import advisories
+        try:
+            table, changed = advisories.refresh()
+            print(f"Advisory list: {advisories.describe(table)}"
+                  f"{' (updated)' if changed else ' (already current)'}", file=sys.stderr)
+        except Exception as e:                       # the scan still runs
+            print(f"WARNING: advisory list not updated: {e}", file=sys.stderr)
+        if not (args.networks or args.networks_flag or args.profile):
+            return 0
 
     # Merge the positional targets with the --networks alternate spelling,
     # preserving order and dropping duplicates, rather than letting one

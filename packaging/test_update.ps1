@@ -10,6 +10,10 @@
 # itself. The test checks that the exe was replaced, this build started with
 # --updated and cleaned up after itself, and the settings file was left alone.
 #
+# Then the way 2.13 installs by itself: this build's updater, the old copy
+# being this build, installs as the window closes (--no-restart). The exe must
+# be replaced, nothing started after, and the .old copy gone.
+#
 # CI runs it after building the exe (ci.yml). On a PC of your own it works in
 # a temporary folder with its own settings folder; the scanner's window opens
 # twice while it runs, and it never touches a copy running from elsewhere.
@@ -64,6 +68,9 @@ $appData = Join-Path $work 'appdata'
 $settingsDir = Join-Path $appData 'HVACNetworkScanner'
 $log = Join-Path $settingsDir 'update.log'
 $staging = Join-Path ([IO.Path]::GetTempPath()) "HVACNetworkScanner-update-$offered"
+$vp = $version.Split('.')
+$next = "$($vp[0]).$($vp[1]).$([int]$vp[2] + 1)"
+$staging2 = Join-Path ([IO.Path]::GetTempPath()) "HVACNetworkScanner-update-$next"
 New-Item -ItemType Directory -Force $release, $appDir, $settingsDir | Out-Null
 Copy-Item $built $release
 $key = "$(& $Python $helper sign $release $offered)".Trim()
@@ -116,7 +123,8 @@ function Get-Processes {
     @(Get-CimInstance Win32_Process -Filter "Name = '$exeName'" | Where-Object {
         $_.ExecutablePath -and (
             $_.ExecutablePath.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) -or
-            $_.ExecutablePath.StartsWith($staging, [StringComparison]::OrdinalIgnoreCase)) })
+            $_.ExecutablePath.StartsWith($staging, [StringComparison]::OrdinalIgnoreCase) -or
+            $_.ExecutablePath.StartsWith($staging2, [StringComparison]::OrdinalIgnoreCase)) })
 }
 function Get-Copies([string]$exe) {
     $all = Get-Processes
@@ -176,6 +184,46 @@ try {
     Stop-Copies
     $env:APPDATA = $savedAppData
 }
+
+# Installing as the window closes.
+$release2 = Join-Path $work 'release-close'
+$app2Dir = Join-Path $work 'app-close'
+$app2Exe = Join-Path $app2Dir $exeName
+New-Item -ItemType Directory -Force $release2, $app2Dir | Out-Null
+Copy-Item $built $release2
+Copy-Item $built $app2Exe
+$key2 = "$(& $Python $helper sign $release2 $next)".Trim()
+if ($LASTEXITCODE -ne 0 -or -not $key2) { throw "couldn't sign the second test release" }
+(Get-Item $app2Exe).LastWriteTimeUtc = [datetime]'2000-01-01'
+$started2 = (Get-Date).ToUniversalTime().AddSeconds(-2)
+$env:APPDATA = $appData
+try {
+    $old2 = Start-Process $app2Exe -WorkingDirectory $app2Dir -PassThru
+    Start-Sleep -Seconds 8
+    if ($old2.HasExited) { throw "the copy to close exited with $($old2.ExitCode)" }
+    & $Python $helper drive $root $release2 $app2Exe $old2.Id $key2 close
+    if ($LASTEXITCODE -ne 0) { throw "the $version updater failed on close" }
+    Wait-Until { Test-Log 'it opens next time' } 120 'the swap on close'
+    if (Test-Log 'update: failed') { throw "the update on close failed" }
+    $item = Get-Item $app2Exe
+    if ($item.LastWriteTimeUtc -lt $started2) { throw "the exe wasn't replaced on close" }
+    if ((Get-FileHash $app2Exe).Hash -ne (Get-FileHash $built).Hash) { throw "the exe on close isn't the build" }
+    Wait-Until { @(Get-Processes).Count -eq 0 } 30 'the swap to end'
+    Start-Sleep -Seconds 5
+    if (@(Get-Processes).Count -ne 0) { throw "something started after the update on close" }
+    if (Test-Path "$app2Exe.old") { throw "the .old exe was left after the update on close" }
+    if ((Get-FileHash $settings).Hash -ne $hash) { throw "the settings file changed on close" }
+    Show-Log
+    Write-Result notice "ok: $version installed an update as its window closed"
+} catch {
+    Show-Log
+    Write-Result error "install on close: $($_.Exception.Message)"
+    throw
+} finally {
+    Stop-Copies
+    $env:APPDATA = $savedAppData
+}
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
-"update ok: $oldVersion to $version"
+Remove-Item -Recurse -Force $staging2 -ErrorAction SilentlyContinue
+"update ok: $oldVersion to $version, and on close"

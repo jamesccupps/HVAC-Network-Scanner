@@ -5,6 +5,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The advisory list updates itself.** A daily GitHub workflow
+  (`.github/workflows/advisories.yml`, `tools/advisory_watch.py`) reads CISA's
+  CSAF feed, rebuilds the entries for every product family the list covers
+  (Trane Tracer SC and SC+, Siemens APOGEE PXC on BACnet firmware, Desigo DXR2,
+  PXC4/5/7 and CC), and commits the list with a higher serial and a signed copy
+  (`data/advisories.signed.json`). The app downloads that copy with its daily
+  update check and uses it when its serial is higher than the built-in list's;
+  `--update-advisories` does the same from the command line. The copy is
+  signed with a key of its own, held as a repository secret, which signs the
+  list and nothing else: the updater never trusts it. Advisories that cover
+  building-automation products no family maps yet become GitHub issues to
+  review. The report says which list it used and how current it is.
+- **More advisories, from all of CISA's data.** The list is now built from every
+  CISA advisory for those families, not the ten picked by hand in 2.12: older
+  APOGEE (ICSA-17-285-05, -20-105-06, -21-257-07, -21-315-07), Tracer SC and SC+
+  (ICSA-16-259-03, -21-266-02, -21-292-02) and Desigo CC advisories. Desigo CC
+  reports its release over BACnet (9.00 is V9.0), so its entries are matched per
+  release: a V9 server is checked only against advisories that name V9 or no
+  release.
+- **App updates install themselves.** With **Install updates automatically**
+  (Advanced; on by default) the daily check downloads a new release quietly,
+  verifies it, and installs it when the scanner is closed; the header offers
+  **Restart to update to …** to install at once. A window left open checks again
+  once a day. Turn it off to be asked as before.
+
+### Changed
+
+- The advisory list moved from code to `hvac_scanner/advisories.json` (shipped
+  in the exe and the wheel). Each entry records the CSAF revision it was built
+  from, and "no fix" is a field rather than a phrase in the note.
+- The exe build runs `HVACNetworkScanner.exe --self-test` (the advisory list and
+  lazily imported modules load), and the update test also installs an update
+  the way a closing window does.
+
 ## [2.12.0] — 2026-11-06
 
 ### Added

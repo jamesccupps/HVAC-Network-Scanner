@@ -10,15 +10,21 @@ Each release carries ``latest.json``::
 
 The app checks the signature against the public key built into it
 (update_key.py), and only then trusts the size and hash; a download that
-doesn't match them is deleted. Nothing is downloaded without a click.
+doesn't match them is deleted. With "Install updates automatically" on (the
+default since 2.13) the window downloads a new version by itself and
+installs it when it is closed; otherwise nothing is downloaded without a
+click.
 
 The executable is one file, so installing is a swap: the new exe is
 downloaded to a temporary folder and started with ``--finish-update``; it
 waits for this copy to exit, renames the old exe to ``<name>.old``, copies
 itself into place and starts the updated app with ``--updated``, which
-deletes the ``.old`` copy. If anything fails the old exe is put back and
-started with ``--update-failed``. A copy run from source (or pip) is only
-told that a new version exists.
+deletes the ``.old`` copy. Installed as the window closes, the swap is
+started with ``--no-restart`` after the other arguments: it deletes the
+``.old`` copy itself and starts nothing; the next start tidies the staging
+folder. If anything fails the old exe is put back and started with
+``--update-failed``. A copy run from source (or pip) is only told that a
+new version exists.
 
 The design is the one PingerPlot and UniFi Stock Watcher use (sibling
 projects). What this reads from a release can never change, as every copy
@@ -283,9 +289,11 @@ def current_exe() -> Path:
     return Path(sys.executable).resolve()
 
 
-def apply(update: Update, path: Path) -> None:
+def apply(update: Update, path: Path, restart: bool = True) -> None:
     """Start installing the downloaded exe at `path`. The caller must exit
-    straight away after: the new exe waits for this process to end."""
+    straight away after: the new exe waits for this process to end. With
+    restart False the updated app isn't started (installing as the window
+    closes)."""
     target = current_exe()
     if not folder_is_writable(target.parent):
         raise UpdateError(f"{target.parent} can't be written to. Move the scanner to a "
@@ -293,7 +301,8 @@ def apply(update: Update, path: Path) -> None:
                           f"{RELEASES_URL}.")
     log.info("starting the downloaded %s to swap it in", update.version)
     # Its working folder is the staging folder, never the program's.
-    _spawn([path, "--finish-update", target, os.getpid()], cwd=path.parent)
+    _spawn([path, "--finish-update", target, os.getpid(), *([] if restart else ["--no-restart"])],
+           cwd=path.parent)
 
 
 def update_log() -> Path:
@@ -370,9 +379,10 @@ def swap_in(target: Path, new_exe: Path) -> None:
         raise
 
 
-def finish_update(target, pid, new_exe=None) -> int:
+def finish_update(target, pid, new_exe=None, restart: bool = True) -> int:
     """Run by the downloaded exe: swap it in at `target` once process `pid`
-    has ended, then start it there. Returns the exit code."""
+    has ended, then start it there (unless restart is False). Returns the
+    exit code."""
     target = Path(target)
     new_exe = Path(new_exe) if new_exe else current_exe()
     _ulog(f"update: {__version__} waiting for {pid} to exit")
@@ -383,11 +393,36 @@ def finish_update(target, pid, new_exe=None) -> int:
         swap_in(target, new_exe)
     except Exception as e:
         _ulog(f"update: failed, previous version kept: {e!r}")
-        _spawn([target, "--update-failed"], cwd=target.parent)
+        if restart:
+            _spawn([target, "--update-failed"], cwd=target.parent)
         return 1
+    if not restart:
+        # The old copy has ended, so its .old file can go now.
+        try:
+            old_copy(target).unlink(missing_ok=True)
+        except OSError:
+            pass
+        _ulog(f"update: done, {__version__} installed; it opens next time")
+        return 0
     _ulog(f"update: done, starting {__version__}")
     _spawn([target, "--updated"], cwd=target.parent)
     return 0
+
+
+def tidy(exe: Optional[Path] = None) -> None:
+    """Run as the packaged app starts: remove what an update left behind,
+    a .old exe beside this one and staging folders for this version or
+    older (a newer one may be downloading in another window)."""
+    exe = exe or current_exe()
+    try:
+        old_copy(exe).unlink(missing_ok=True)
+    except OSError:
+        pass
+    mine = parse_version(__version__) or (0, 0, 0)
+    for p in Path(tempfile.gettempdir()).glob("HVACNetworkScanner-update-*"):
+        v = parse_version(p.name[len("HVACNetworkScanner-update-"):])
+        if v is not None and v <= mine:
+            shutil.rmtree(p, ignore_errors=True)
 
 
 def cleanup_after_update(exe: Optional[Path] = None) -> None:

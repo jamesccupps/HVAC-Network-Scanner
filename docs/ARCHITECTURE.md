@@ -23,21 +23,23 @@ hvac_scanner/
 ├── diff.py           Baseline comparison
 ├── engine.py         ScanEngine orchestrator + ScanResult export
 ├── report.py         HTML survey report built from a ScanResult or its JSON
-├── advisories.py     CISA ICS advisories (from CISA's CSAF data) matched to reported firmware
+├── advisories.py     CISA ICS advisories matched to reported firmware; the list in use
+├── advisories.json   The advisory list, rebuilt daily by tools/advisory_watch.py
 ├── cli.py            Headless command-line entry point
 ├── gui.py            Tk GUI, thin wrapper over ScanEngine
 ├── settings.py       Remembered GUI settings (JSON in the user's config dir)
 ├── text.py           Device text made safe for logs and spreadsheets
 ├── updater.py        In-app updates: signed manifest check, download, exe swap
 ├── ed25519.py        Pure-Python Ed25519 (RFC 8032) for the update manifest
-├── update_key.py     Public key the release manifest is signed with
+├── update_key.py     Public keys: the release manifest's and the advisory list's
 ├── icon.py           The application icon, drawn in code (PNG and ICO writers)
 ├── __main__.py       `python -m hvac_scanner` → GUI
 └── __init__.py       Public API, version
 
 tools/sim_site.py     Simulated BAS site on loopback — used by tests/test_e2e_site.py
 tools/gui_demo.py     Drives the GUI through a scan of the simulator, takes a screenshot
-packaging/signing.py  Makes the signing key; signs and verifies a release's latest.json
+tools/advisory_watch.py  Rebuilds the advisory list from CISA's CSAF feed (daily workflow)
+packaging/signing.py  Makes the signing keys; signs and verifies latest.json and the advisory list
 ```
 
 ## Layering
@@ -204,7 +206,44 @@ old exe is put back and started with `--update-failed`. Each step goes to
 another URL or a local folder, for testing. `packaging/test_update.ps1` runs
 the whole thing on every executable build: the previous release (or the
 build itself) updates to the new exe from a folder signed with a throwaway
-key.
+key, then the build installs an update the way a closing window does.
+
+With **Install updates automatically** on (the default from 2.13) the daily
+check downloads a new release without asking or showing progress, and the
+header offers **Restart to update to …**. Closing the window starts the swap
+with `--no-restart` after the usual arguments: the new copy swaps itself in,
+deletes the `.old` exe and starts nothing; the next start (`tidy`) removes the
+staging folder and the log says "Updated to …" because the settings remember
+the last version run. A window left open checks again once a day.
+
+### The advisory list (advisories.py)
+
+`hvac_scanner/advisories.json` holds the entries: an advisory ID, the vendor
+and model regex a device's reported identity must match, the property holding
+its version (and an optional regex on it, for a product line or a release),
+the version to update to or `no_fix`, CVEs, CVSS, a note, and the CSAF
+revision it came from. `for_device` compares versions component by component;
+a version too short to place is "check".
+
+`tools/advisory_watch.py` builds the entries. It reads CISA's CSAF feed
+(github.com/cisagov/CSAF), fetches the advisories whose titles name a watched
+vendor, and maps each product to a `FAMILY` (CSAF product name to the model
+name devices report). A product's fix is its range's upper bound, or a later
+version a vendor fix names (Trane's 6.30.2313 against CISA's "<6.3.2310");
+"all versions" with no fix is `no_fix`; anything else is "check". Desigo CC is
+split by release, matched on the version it reports (9.00 is V9). Entries made
+by hand (`"auto": false`) are kept. Building-automation products no family
+covers become GitHub issues. The `Advisories` workflow runs it daily (and when
+the list or the tool changes on main), bumps the serial on any change, and
+signs `data/advisories.signed.json` with a key held as the
+`ADVISORY_SIGNING_KEY` secret. That key's public half is
+`ADVISORY_PUBLIC_KEY`, separate from the update key: it can sign the list and
+nothing else.
+
+The GUI's daily check downloads the signed copy (`refresh`), verifies it and
+keeps it in the settings folder; `current()` uses whichever of it and the
+built-in list has the higher serial, so an old copy served again is ignored.
+`HVAC_ADVISORIES_URL` points the download elsewhere, for testing.
 
 ## Data flow
 
