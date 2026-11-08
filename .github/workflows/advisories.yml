@@ -1,0 +1,67 @@
+name: Advisories
+
+# Keeps the advisory list current (tools/advisory_watch.py): every day it
+# reads CISA's CSAF feed, rebuilds the entries for the product families the
+# list covers, and commits the list with its signed copy when anything
+# changed. Installed copies download the signed copy (data/) with their daily
+# update check. Advisories for building-automation products no family covers
+# become issues to review.
+
+on:
+  schedule:
+    - cron: '41 16 * * *'     # daily; CISA publishes on weekdays, US morning
+  push:
+    branches: [main]
+    paths:
+      - 'hvac_scanner/advisories.json'   # an edit by hand gets signed
+      - 'tools/advisory_watch.py'        # a new family applies at once
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update the advisory list
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # commits the list to main
+      issues: write     # asks for review of products no family covers
+    steps:
+      # Pinned by commit SHA, like ci.yml; Dependabot updates them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          persist-credentials: true    # this job pushes the list
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Read CISA's advisories and rebuild the list
+        env:
+          ADVISORY_SIGNING_KEY: ${{ secrets.ADVISORY_SIGNING_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python tools/advisory_watch.py --sign --issues --message "$RUNNER_TEMP/message.txt"
+
+      - name: Check the signed copy the way the app does
+        run: python packaging/signing.py verify-data
+
+      - name: Commit the new list
+        run: |
+          if git diff --quiet -- hvac_scanner/advisories.json data/advisories.signed.json; then
+            echo "no change"
+            exit 0
+          fi
+          [ -f "$RUNNER_TEMP/message.txt" ] || echo "Advisory list: signed" > "$RUNNER_TEMP/message.txt"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add hvac_scanner/advisories.json data/advisories.signed.json
+          git commit -F "$RUNNER_TEMP/message.txt"
+          # main may have moved on while this ran (a merge): go on from it.
+          git pull --rebase origin main
+          git push origin HEAD:main

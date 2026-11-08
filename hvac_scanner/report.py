@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import __version__
+
+log = logging.getLogger(__name__)
 
 SEVERITIES = ("high", "medium", "low", "info")
 _PRIMARY = ('BACnet/IP', 'BACnet/MSTP', 'Modbus TCP', 'SNMP', 'APOGEE P2', 'KNXnet/IP',
@@ -454,7 +457,14 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             ["Address", "Device", "Class", "Name", "Recipient"], rows))
 
     # Firmware covered by published security advisories (advisories.py)
-    from .advisories import for_device
+    from . import advisories as adv_mod
+    try:
+        table = adv_mod.current()
+    except (OSError, ValueError, adv_mod.AdvisoryDataError) as e:   # never stop a report
+        log.warning("advisory list unavailable: %s", e)
+        table = None
+    as_of = (f" Advisory list as of {table.as_of} (list {table.serial}, {table.origin})."
+             if table else "")
     hit: dict[tuple, list] = {}
     check: dict[tuple, list] = {}
     worst = 0.0
@@ -462,7 +472,7 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
         if not str(d.get('protocol', '')).startswith('BACnet'):
             continue
         model = (d.get('properties') or {}).get('model_name', '')
-        found = for_device(d)
+        found = adv_mod.for_device(d, table) if table else []
         firm = [m for m in found if m['status'] in ('affected', 'no fix')]
         if firm:
             reported = firm[0]['reported']
@@ -490,7 +500,7 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "fixed version yet. Plan the updates; until then, the advisories list mitigations, "
             "chiefly limiting who can reach the devices. The scanner compared versions only "
             "and did not test for the vulnerabilities. Advisories: "
-            "cisa.gov/news-events/ics-advisories.",
+            "cisa.gov/news-events/ics-advisories." + as_of,
             ["Address", "Model", "Reports", "Advisories"], rows))
     rows = [[_addresses(d.get('ip') for d in ds),
              model + (f" ({len(ds)} devices)" if len(ds) > 1 else ""), reported, "; ".join(checks)]
@@ -501,7 +511,7 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
             "An advisory covers these models, but the version they report cannot be placed "
             "against its fix (it is too short, was not read, or the advisory names a release "
             "the device does not report). Look up the installed version in the vendor's tool "
-            "and compare.",
+            "and compare." + as_of,
             ["Address", "Model", "Reports", "Advisories"], rows))
 
     # Network health: controllers that left the scanner's requests unanswered

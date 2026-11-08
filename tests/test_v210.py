@@ -226,13 +226,15 @@ def test_finish_update_reports_failure_and_starts_the_old_one(tmp_path, monkeypa
 def test_gui_update_arguments(monkeypatch):
     from hvac_scanner import gui
     calls = []
-    monkeypatch.setattr(updater, "finish_update", lambda t, p: calls.append((t, p)) or 0)
+    monkeypatch.setattr(updater, "finish_update",
+                        lambda t, p, restart=True: calls.append((t, p, restart)) or 0)
     monkeypatch.setattr(updater, "cleanup_after_update", lambda: calls.append("clean"))
     assert gui._update_args(["x", "--finish-update", "C:/a.exe", "42"]) == (0, None)
+    assert gui._update_args(["x", "--finish-update", "C:/a.exe", "42", "--no-restart"]) == (0, None)
     assert gui._update_args(["x", "--updated"])[1].startswith("Updated to")
     assert "could not be installed" in gui._update_args(["x", "--update-failed"])[1]
     assert gui._update_args(["x"]) == (None, None)
-    assert calls == [("C:/a.exe", "42"), "clean"]
+    assert calls == [("C:/a.exe", "42", True), ("C:/a.exe", "42", False), "clean"]
 
 
 # -- what the user's first real scan asked for --------------------------------
@@ -329,6 +331,7 @@ def test_gui_update_click_downloads_installs_and_closes(gui_app, tmp_path, monke
     rel = _release(tmp_path / "rel", "99.0.0")
     monkeypatch.setattr(updater, "install_kind", lambda: "exe")
     up = updater.check(source=str(rel), public_key=PUB)
+    gui_app.auto_update_var.set(False)          # 2.13 installs by itself; this is the click
     gui_app._update_event('update-found', (up, False))
     asked, applied, later = [], [], []
     monkeypatch.setattr(gui_mod.messagebox, "askyesno", lambda *a, **k: asked.append(a) or True)

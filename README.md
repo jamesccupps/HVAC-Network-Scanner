@@ -173,14 +173,21 @@ gh attestation verify .\HVACNetworkScanner.exe --repo jamesccupps/HVAC-Network-S
 If you would rather not trust a binary at all, build it yourself with the two
 commands above; it is the same spec file and the same pinned tooling CI uses.
 
-**Updates.** From 2.10 the executable checks for a new release once a day and
-offers it in the header (**Update to …**). One click downloads it and checks
-it against the release's `latest.json`, a manifest signed with the project's
-Ed25519 key (the public half is built into the app), then swaps the new exe
-in and reopens; if anything fails, the previous one is put back. Turn the
-daily check off in Advanced, or press **Check for updates** whenever you
-like. A copy run from Python is told about new versions instead. Copies
-older than 2.10 need one manual download.
+**Updates.** The executable checks for a new release once a day. From 2.13
+it downloads it by itself, checks it against the release's `latest.json` (a
+manifest signed with the project's Ed25519 key; the public half is built into
+the app) and installs it when you close the scanner; **Restart to update to …**
+in the header installs it at once. If anything fails, the previous exe is put
+back. Turn **Install updates automatically** off in Advanced to be asked
+instead (**Update to …**), or the daily check off altogether. A copy run from
+Python is told about new versions instead. Copies older than 2.10 need one
+manual download.
+
+**Advisory list.** The firmware findings come from CISA's ICS advisories. A
+daily GitHub workflow rebuilds the list from CISA's machine-readable data and
+publishes it signed; the app picks it up with its daily check (or
+`--update-advisories`), so new advisories reach the report without a new
+release. The report says how current its list is.
 
 ## Using the GUI
 
@@ -585,20 +592,24 @@ hvac_scanner/
 ├── diff.py            # Baseline comparison (what changed since last scan)
 ├── report.py          # HTML survey report (findings, inventory, services)
 ├── advisories.py      # Published ICS advisories matched to reported firmware
+├── advisories.json    # The advisory list (rebuilt daily from CISA's data)
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
 ├── text.py            # Device text made safe for logs and spreadsheets
 ├── updater.py         # In-app updates: signed manifest check, download, swap
 ├── ed25519.py         # Ed25519 signature check for the update manifest
-├── update_key.py      # The public key releases are signed with
+├── update_key.py      # The public keys releases and the advisory list are signed with
 ├── icon.py            # The app icon, drawn in code
 ├── __main__.py        # `python -m hvac_scanner` → GUI
 └── __init__.py        # Public API
 
 tools/
 ├── sim_site.py        # Simulated BAS site on loopback (tests, demos, screenshots)
-└── gui_demo.py        # Drive the GUI through a simulated scan and screenshot it
+├── gui_demo.py        # Drive the GUI through a simulated scan and screenshot it
+└── advisory_watch.py  # Rebuild the advisory list from CISA's CSAF feed (daily workflow)
+
+data/advisories.signed.json  # The signed advisory list installed copies download
 
 packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entry point,
                        # signing.py (signs the release's latest.json),
@@ -606,7 +617,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 837 tests
+tests/                 # 882 tests
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions
@@ -618,6 +629,7 @@ tests/                 # 837 tests
 ├── test_v291.py                     # 2.9.1: the external review's findings, one by one
 ├── test_v210.py                     # 2.10: updater, signing, report grouping, coverage
 ├── test_v211.py                     # 2.11: LonWorks/IP, Moxa, OPC UA, naming, adaptive timeout
+├── test_v213.py                     # 2.13: advisory list download and CISA watcher, install on close
 ├── test_no_site_data.py             # Guard: no site-identifying data in the tree
 └── conftest.py
 ```

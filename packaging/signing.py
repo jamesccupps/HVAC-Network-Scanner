@@ -15,6 +15,12 @@
         non-zero on any mismatch, so a release signed with the wrong key is
         stopped before it is published rather than by users' updaters.
 
+    python packaging/signing.py new-data-key | sign-data | verify-data
+        The advisory list's own key (ADVISORY_PUBLIC_KEY in update_key.py),
+        and data/advisories.signed.json: hvac_scanner/advisories.json signed
+        with it, and checked the way the app does. The advisories workflow
+        signs with the key in its ADVISORY_SIGNING_KEY secret.
+
 The private key is read from the file named by HVAC_SIGNING_KEY, or
 ~/.hvac-scanner/update-signing-key.pem. It never goes in the repository.
 Releases are signed on the maintainer's PC when the draft is made, so no
@@ -34,6 +40,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,11 +48,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from hvac_scanner import __version__, ed25519, updater  # noqa: E402
+from hvac_scanner import __version__, advisories, ed25519, updater  # noqa: E402
 
 KEY_ENV = "HVAC_SIGNING_KEY"
 DEFAULT_KEY = Path.home() / ".hvac-scanner" / "update-signing-key.pem"
 PUBLIC_FILE = ROOT / "hvac_scanner" / "update_key.py"
+
+# The advisory list's key: a file (HVAC_ADVISORY_KEY, or the default below)
+# on the maintainer's PC, or the PEM text itself in ADVISORY_SIGNING_KEY,
+# which is how the advisories workflow passes its repository secret.
+DATA_KEY_ENV = "HVAC_ADVISORY_KEY"
+DATA_KEY_TEXT_ENV = "ADVISORY_SIGNING_KEY"
+DEFAULT_DATA_KEY = Path.home() / ".hvac-scanner" / "advisory-signing-key.pem"
+DATA_SOURCE = ROOT / "hvac_scanner" / "advisories.json"
+DATA_SIGNED = ROOT / "data" / "advisories.signed.json"
 
 # PKCS#8 for Ed25519 is a fixed 16-byte DER header and the 32-byte seed
 # (RFC 8410, section 7).
@@ -76,13 +92,14 @@ def public_key_b64(seed: bytes) -> str:
     return base64.b64encode(ed25519.public_key(seed)).decode("ascii")
 
 
-def write_public_key(public_b64: str, path: Path = PUBLIC_FILE) -> None:
-    path.write_bytes((
-        '"""Public half of the release-signing key (packaging/signing.py new-key).\n\n'
-        "The updater installs only releases whose latest.json is signed by the\n"
-        "matching private key, which lives on the maintainer's PC, never in the\n"
-        'repository.\n"""\n\n'
-        f'UPDATE_PUBLIC_KEY = "{public_b64}"\n').encode("utf-8"))
+def write_public_key(public_b64: str, path: Path = PUBLIC_FILE,
+                     name: str = "UPDATE_PUBLIC_KEY") -> None:
+    """Set `name` in update_key.py, leaving the other key as it is."""
+    text = path.read_text(encoding="utf-8")
+    line = re.compile(rf'^{name} = "[^"]*"$', re.M)
+    if not line.search(text):
+        raise SystemExit(f"{path} has no {name} line")
+    path.write_bytes(line.sub(f'{name} = "{public_b64}"', text).encode("utf-8"))
 
 
 def new_key(path: Path) -> str:
@@ -135,10 +152,44 @@ def verify(folder: Path, expected: str | None = None, public_key: str | None = N
             f"ok  latest.json  version {m['version']}, signed by the key this app trusts"]
 
 
+def data_key_seed() -> bytes:
+    """The advisory list's private key: the PEM text in ADVISORY_SIGNING_KEY,
+    else the file HVAC_ADVISORY_KEY names, else the default file."""
+    text = os.environ.get(DATA_KEY_TEXT_ENV)
+    if not text:
+        text = Path(os.environ.get(DATA_KEY_ENV) or DEFAULT_DATA_KEY).read_text(encoding="ascii")
+    return seed_from_pem(text)
+
+
+def sign_data(seed: bytes, source: Path = DATA_SOURCE, out: Path = DATA_SIGNED) -> Path:
+    """Write the signed copy of the advisory list `source` to `out`."""
+    obj = json.loads(Path(source).read_text(encoding="utf-8"))
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(advisories.signed_text(obj, seed).encode("utf-8"))
+    return out
+
+
+def verify_data(signed: Path = DATA_SIGNED, source: Path | None = DATA_SOURCE,
+                public_key: str | None = None) -> list[str]:
+    """Check the signed list the way the app does, and that it holds the
+    same list as `source`. Raises AdvisoryDataError or SystemExit."""
+    t = advisories.verify_signed(Path(signed).read_text(encoding="utf-8"), public_key)
+    if source is not None:
+        want = advisories.canonical(json.loads(Path(source).read_text(encoding="utf-8")))
+        if advisories.canonical(advisories.table_to_dict(t)) != want:
+            raise SystemExit(f"{signed} doesn't hold the list in {source}: sign it again")
+    return [f"ok  {Path(signed).name}  list {t.serial} as of {t.as_of}, "
+            f"{len(t.advisories)} entries, signed by the key this app trusts"]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("new-key")
+    sub.add_parser("new-data-key")
+    sub.add_parser("sign-data")
+    sub.add_parser("verify-data")
     for name in ("sign", "verify"):
         p = sub.add_parser(name)
         p.add_argument("folder")
@@ -153,6 +204,25 @@ def main(argv=None) -> int:
         write_public_key(new_key(path))
         print(f"private key: {path}  (back this up; keep it out of the repository)")
         print(f"public key:  {PUBLIC_FILE}")
+        return 0
+    if a.cmd == "new-data-key":
+        path = Path(os.environ.get(DATA_KEY_ENV) or DEFAULT_DATA_KEY)
+        if path.exists():
+            raise SystemExit(f"{path} already exists; refusing to replace it.")
+        write_public_key(new_key(path), name="ADVISORY_PUBLIC_KEY")
+        print(f"private key: {path}  (store it as the ADVISORY_SIGNING_KEY repository "
+              f"secret; keep it out of the repository)")
+        print(f"public key:  {PUBLIC_FILE}")
+        return 0
+    if a.cmd == "sign-data":
+        print("signed:", sign_data(data_key_seed()))
+        return 0
+    if a.cmd == "verify-data":
+        try:
+            for line in verify_data():
+                print(line)
+        except advisories.AdvisoryDataError as e:
+            raise SystemExit(f"advisory list: {e}") from e
         return 0
     version = (a.version or __version__).lstrip("v")
     if a.cmd == "sign":

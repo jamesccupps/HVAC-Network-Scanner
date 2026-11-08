@@ -78,6 +78,7 @@ All protocols are enabled by default. Any flag turns the corresponding protocol 
 | `--csv PATH` | Write results as CSV (UTF-8 BOM, Excel-friendly). A device-supplied value that a spreadsheet would read as a formula (starting `=`, `+`, `-`, `@`) is written as text. |
 | `--points-csv PATH` | Write the point list: one row per BACnet point and Modbus register, with value, units and status. |
 | `--html PATH` | Write a self-contained HTML survey report: findings ranked by severity, device inventory, open services. `python -m hvac_scanner.report scan.json -o out.html` builds the same report from a saved JSON export. |
+| `--update-advisories` | Download the latest signed advisory list before scanning (the GUI does this daily); on its own, just that. A failure only warns. |
 | `--export-classification PATH` | Write a plain-text report of how each BACnet device was classified: which profile matched, the cap applied, and the observed object count. Devices are numbered: no addresses, instance numbers, names or point values. Intended for attaching to a public issue when submitting a device profile for hardware the project has not seen. |
 | `--print FORMAT` | Stdout: `summary` (default), `table`, `json`, `none`. |
 | `--quiet` / `-q` | Suppress progress log on stderr. |
