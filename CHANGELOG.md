@@ -5,6 +5,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.13.1] — 2026-11-10
+
+### Changed
+
+- **The executable is code-signed.** `HVACNetworkScanner.exe` carries an
+  Authenticode signature from James Cupps (Azure Artifact Signing, the
+  certificate his other Windows apps are signed with), so Windows names the
+  publisher. CI signs it in a job of its own that installs nothing from PyPI
+  and never runs the program; the smoke tests, the update test, the published
+  SHA-256 and the build attestation are all of the signed file. In-app updates
+  are still checked against the signed `latest.json` first, as before. Nothing
+  else changes.
+
 ## [2.13.0] — 2026-11-08
 
 ### Added

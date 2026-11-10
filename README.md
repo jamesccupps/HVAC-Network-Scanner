@@ -158,10 +158,11 @@ dependency-free at runtime. `packaging/requirements-build.txt` pins it and
 everything it needs by version and hash, the same file CI builds from. The executable ships the GUI — the CLI remains
 available from a normal Python install.
 
-**The executable is not code-signed.** On first run Windows SmartScreen will
-show *"Windows protected your PC"* and you will need **More info → Run
-anyway**. That warning means the binary has no purchased signing certificate,
-not that anything is wrong with it — but a network scanner is exactly the sort
+**The executable is code-signed** (from 2.13.1): its Authenticode signature
+names James Cupps as the publisher, and Windows checks it. SmartScreen can
+still warn about a new release until enough people have downloaded it; then
+**More info** shows the publisher, and **Run anyway** goes on. A signature says
+who built the file, not what it does, and a network scanner is exactly the sort
 of program where you should not simply take that on trust.
 
 Verify it before you run it. Each release publishes the SHA-256 of the
@@ -357,6 +358,11 @@ Exit codes:
 - `4` — scan completed and differed from the baseline (`--fail-on-change`)
 
 ## What's new
+
+### v2.13.1 (2026-11-10)
+
+- **Code-signed**: `HVACNetworkScanner.exe` is signed by James Cupps, so
+  Windows names the publisher. Nothing else changes.
 
 ### v2.13.0 (2026-11-08)
 
