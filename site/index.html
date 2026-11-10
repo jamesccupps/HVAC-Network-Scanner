@@ -196,7 +196,7 @@ scoop install jamesccupps/hvac-network-scanner</pre></div>
     <div class="two">
       <div class="card" id="windows">
         <h3>Windows 10 and 11</h3>
-        <p><a href="https://github.com/jamesccupps/HVAC-Network-Scanner/releases/latest/download/HVACNetworkScanner.exe">Download HVACNetworkScanner.exe</a> and run it: one file, nothing to install. It isn't code-signed, so SmartScreen says <em>"Windows protected your PC"</em> (More info → Run anyway). Check the file first; its SHA-256 is in the release notes:</p>
+        <p><a href="https://github.com/jamesccupps/HVAC-Network-Scanner/releases/latest/download/HVACNetworkScanner.exe">Download HVACNetworkScanner.exe</a> and run it: one file, nothing to install. It's code-signed by James Cupps; if SmartScreen still warns about a new release, <em>More info</em> shows the publisher, then <em>Run anyway</em>. Check the file first; its SHA-256 is in the release notes:</p>
         <div class="cmd"><button class="copy" type="button">Copy</button><pre>Get-FileHash .\HVACNetworkScanner.exe -Algorithm SHA256</pre></div>
         <p style="margin-top:10px">GitHub Actions builds it from the tagged commit and signs an attestation saying so; with the GitHub CLI:</p>
         <div class="cmd"><button class="copy" type="button">Copy</button><pre>gh attestation verify .\HVACNetworkScanner.exe --repo jamesccupps/HVAC-Network-Scanner</pre></div>
