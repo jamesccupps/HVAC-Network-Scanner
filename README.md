@@ -125,6 +125,19 @@ python -m hvac_scanner              # scan 127.0.0.2-30 in the GUI
 The screenshot above was taken against it. Windows and Linux only (macOS
 needs loopback aliases); ports below 1024 need root on Linux.
 
+### Install with Scoop
+
+On Windows with [Scoop](https://scoop.sh), the executable below installs with
+two commands and gets a Start menu shortcut:
+
+```powershell
+scoop bucket add jamesccupps https://github.com/jamesccupps/scoop-bucket
+scoop install jamesccupps/hvac-network-scanner
+```
+
+No Scoop yet? [scoop.sh](https://scoop.sh) shows how to install it. The
+scanner still updates itself; `scoop update hvac-network-scanner` works too.
+
 ### Standalone executable
 
 For a Windows machine without Python — an engineering workstation you would

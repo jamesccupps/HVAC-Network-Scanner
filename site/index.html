@@ -66,6 +66,10 @@
   .btn.ghost:hover { background: rgba(255,255,255,.1); }
   .btn small { font-weight: 400; opacity: .75; font-size: 13px; }
   .sub { color: #b4c8e8; font-size: 14px; margin-top: 12px; }
+  .scoop { margin-top: 18px; max-width: 640px; }
+  .scoop p { color: #b4c8e8; font-size: 14px; margin: 0; }
+  .scoop a { color: #dbe7fb; }
+  .hero pre { background: rgba(0,0,0,.3); border-color: rgba(255,255,255,.18); color: #e8f0ff; }
   .sub a { color: #dbe7fb; }
   .demo { margin: 34px 0 0; }
   .demo img { width: 100%; height: auto; display: block; border-radius: 8px; box-shadow: 0 18px 50px rgba(0,0,0,.45); }
@@ -115,6 +119,11 @@
       <a class="btn" id="primary" href="https://github.com/jamesccupps/HVAC-Network-Scanner/releases/latest/download/HVACNetworkScanner.exe">Download for Windows <small id="primary-note">HVACNetworkScanner.exe, one file</small></a>
       <a class="btn ghost" id="secondary" href="#python">Run it with Python</a>
       <a class="btn ghost" href="https://github.com/jamesccupps/HVAC-Network-Scanner">Source on GitHub</a>
+    </div>
+    <div class="scoop" id="scoop">
+      <p>Or install it with Scoop on Windows (new to Scoop? <a href="https://scoop.sh">scoop.sh</a> shows how to get it):</p>
+      <div class="cmd"><button class="copy" type="button">Copy</button><pre>scoop bucket add jamesccupps https://github.com/jamesccupps/scoop-bucket
+scoop install jamesccupps/hvac-network-scanner</pre></div>
     </div>
     <p class="sub"><span id="version">Free and open source (MIT).</span> Windows 10 and 11 as an executable; anywhere Python 3.10 runs from source, with no other packages. <a href="https://github.com/jamesccupps/HVAC-Network-Scanner/releases">All releases</a></p>
     <div class="demo"><img src="images/main-window.png" width="1500" height="860" alt="HVAC Network Scanner after a scan: a device list of Trane, Siemens, Johnson Controls and other controllers with their models, vendors and points, and the scan log below"></div>
@@ -187,7 +196,7 @@
         <p style="margin-top:10px">GitHub Actions builds it from the tagged commit and signs an attestation saying so; with the GitHub CLI:</p>
         <div class="cmd"><button class="copy" type="button">Copy</button><pre>gh attestation verify .\HVACNetworkScanner.exe --repo jamesccupps/HVAC-Network-Scanner</pre></div>
         <p style="margin-top:10px">If Windows Firewall asks, allow it on the networks you scan: replies to a BACnet broadcast are dropped otherwise.</p>
-        <p style="margin-top:10px">From 2.10 it keeps itself up to date: a new release is offered in the window, checked against a signed manifest, and installed with one click.</p>
+        <p style="margin-top:10px">It keeps itself up to date: a new release downloads in the background, is checked against a signed manifest, and installs when you close the scanner.</p>
       </div>
       <div class="card" id="python">
         <h3>Any OS, with Python 3.10 or newer</h3>
