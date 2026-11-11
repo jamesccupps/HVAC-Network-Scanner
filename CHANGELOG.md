@@ -5,6 +5,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Desigo PX and TALON TC in the advisory list.** The CISA watcher now maps
+  Desigo PX controllers (PXC00/50/100/200-E.D, PXC00/64/128-U, PXM20-E and
+  the rest of the types CISA lists) and TALON TC Compact and Modular panels,
+  adding 13 entries from 9 advisories, among them ICSA-26-295-08. Neither has
+  been seen on a device yet: Desigo PX is matched on its type designation as
+  the model name (as the newer Desigo PXC and DXR2 report theirs), TALON on
+  "TALON" or a TC type. A device that reports something else stays unmatched.
+  The list reaches installed copies through the signed daily download; no new
+  release is needed.
+
+### Fixed
+
+- **Older CISA version ranges.** Ranges written `>=V2.3_and_<V6.30.016` were
+  read as "all versions"; they now give the version to update to.
+
 ## [2.13.1] — 2026-11-10
 
 ### Changed
