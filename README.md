@@ -1,16 +1,17 @@
 # HVAC Network Scanner
 
-A multi-protocol discovery and audit tool for HVAC and building automation networks. Zero third-party dependencies — everything runs on the Python 3.10+ standard library.
-
-**Website: [jamesccupps.github.io/HVAC-Network-Scanner](https://jamesccupps.github.io/HVAC-Network-Scanner/)**
-
-Looking for a Siemens APOGEE P2 scanner or P2 Wireshark Decoder? See this project [P2Scanner](https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner)
-
 [![CI](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesccupps/HVAC-Network-Scanner/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/jamesccupps/HVAC-Network-Scanner?label=release)](https://github.com/jamesccupps/HVAC-Network-Scanner/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
+A multi-protocol discovery and audit tool for HVAC and building automation networks. Zero third-party dependencies — everything runs on the Python 3.10+ standard library.
+
+**Website: [jamesccupps.github.io/HVAC-Network-Scanner](https://jamesccupps.github.io/HVAC-Network-Scanner/)** · [Download for Windows](https://github.com/jamesccupps/HVAC-Network-Scanner/releases/latest/download/HVACNetworkScanner.exe) · [All releases](https://github.com/jamesccupps/HVAC-Network-Scanner/releases)
+
 ![HVAC Network Scanner](docs/screenshots/main-window.png)
+
+Working with Siemens APOGEE P2? The [APOGEE P2 toolkit](https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner) has a Wireshark dissector, a read-only P2 scanner and the [protocol reference](https://jamesccupps.github.io/p2/).
 
 ## What it does
 
@@ -21,7 +22,7 @@ Works against:
 - **BACnet/IP** — raw UDP `Who-Is` / `I-Am`, `ReadProperty`, and `ReadPropertyMultiple`. No BAC0 dependency, works on newer python versions. Reaches other subnets and VLANs by unicast discovery or through a BBMD. Reads BBMDs' broadcast and foreign-device tables, and each controller's trend logs, schedules and calendars as metadata.
 - **BACnet MSTP** — device enumeration behind BACnet routers via `Who-Is-Router-To-Network` and targeted `Who-Is` to remote DNETs, including routers on other subnets with no BBMD.
 - **BACnet/SC** — detects BACnet Secure Connect hubs (including ones devices name on nonstandard ports), and reports any that let a connection in without a client certificate.
-- **KNXnet/IP** — finds KNX IP interfaces and routers on UDP 3671 and flags the ones offering tunnelling or routing without KNX Secure.
+- **KNXnet/IP** — finds KNX IP interfaces and routers on UDP 3671 and flags the ones offering tunneling or routing without KNX Secure.
 - **LonWorks/IP (IP-852)** — finds IP-852 routers and nodes on UDP 1628 (i.LON and SmartServer, LOYTEC L-IP, and controllers with an IP-852 channel of their own) and reads what each says about itself: node type, the name it was given, Neuron IDs, configuration server, and whether IP-852 authentication is on.
 - **Serial gateways** — finds Moxa NPort, MGate and OnCell devices with Moxa's identify request on UDP 4800 (never its credential functions). These are often where P1, N2, MS/TP and Modbus RTU buses reach the network.
 - **Modbus TCP** — port sweep, device identification (FC 43 / MEI 14), holding/input register reads, and coil reads.
@@ -223,7 +224,7 @@ Ctrl+Enter). Results appear as each device finishes, not at the end:
   ("Occupied"). Double-click a point for its full name and description.
 - **Trends, Schedules & Alarms** — what each trend log records, how often,
   and whether it is still recording (disabled or full-and-stopped logs stand
-  out); each schedule's weekly programme and the objects it controls; and
+  out); each schedule's weekly program and the objects it controls; and
   each notification class's alarm recipients, priorities and
   acknowledgement (a class routed to no one stands out).
 - **Modbus Registers**, **Services** (open ports, banners, page titles, TLS
@@ -444,7 +445,7 @@ devices, gentler traffic, and exports that say what they are. Full list in
   stops probing a Modbus unit a gateway says is absent.
 - **Exports say what was scanned**: passes that were off, failed or stopped
   are recorded, and the report shows "Not scanned" instead of "None".
-  Spreadsheet formulas in device names are neutralised; the classification
+  Spreadsheet formulas in device names are neutralized; the classification
   report no longer holds addresses or names; a site's own SNMP community is
   not exported.
 - Chunked Who-Is covers the whole instance range; the diff tells apart
@@ -473,7 +474,7 @@ The rest of the BACnet roadmap, and saved sites. Full list in
 - **BBMD tables**: which subnets each BBMD links, and who is registered as a
   foreign device to hear the site's broadcasts.
 - **Trend logs and schedules** as metadata — what is trended, how often,
-  whether it is still recording; weekly programmes and what they control —
+  whether it is still recording; weekly programs and what they control —
   in a new tab and in the survey report.
 - **BACnet/SC detection**, with a high-severity finding for a hub that
   accepts connections without a client certificate.
@@ -501,7 +502,7 @@ A review-and-polish release. Highlights; the full list is in
 - **Modbus no longer reports phantom devices.** A gateway's "no device at
   this unit" exception counted as a device, and a meter that answers every
   unit ID was listed nine times.
-- MS/TP devices found by the global Who-Is are labelled and counted as MS/TP.
+- MS/TP devices found by the global Who-Is are labeled and counted as MS/TP.
   Binary points read active/inactive. Older HTTPS gear (TLS 1.0/1.1) now
   yields its banner and certificate.
 

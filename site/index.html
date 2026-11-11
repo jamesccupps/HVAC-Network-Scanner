@@ -110,6 +110,14 @@
     .tagline { font-size: 19px; }
     th { width: auto; }
   }
+
+  /* More tools from James Cupps */
+  .jc-more-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .jc-more-grid a { display: block; text-decoration: none; background: var(--panel, var(--card, transparent)); border: 1px solid var(--line, rgba(127,127,127,.3));
+                    border-radius: 10px; padding: 14px 16px; color: var(--text, inherit); }
+  .jc-more-grid a:hover { border-color: var(--accent, currentColor); }
+  .jc-more-grid b { display: block; color: var(--accent, inherit); }
+  .jc-more-grid span { color: var(--muted, inherit); font-size: 14px; }
 </style>
 </head>
 <body>
@@ -152,7 +160,7 @@ scoop install jamesccupps/hvac-network-scanner</pre></div>
     <h2>Screens</h2>
     <div class="shots">
       <figure><img src="images/points.png" width="1500" height="860" alt="The BACnet Points tab: points with present values, units and status, alarms and overrides highlighted" loading="lazy"><figcaption>Every point read, with value, units and status; alarms red, overrides amber.</figcaption></figure>
-      <figure><img src="images/trends-schedules-alarms.png" width="1500" height="860" alt="The Trends, Schedules and Alarms tab: trend logs with their interval and state, schedules with their weekly programme, notification classes with their recipients" loading="lazy"><figcaption>Trend logs, schedules and alarm routing, read as metadata.</figcaption></figure>
+      <figure><img src="images/trends-schedules-alarms.png" width="1500" height="860" alt="The Trends, Schedules and Alarms tab: trend logs with their interval and state, schedules with their weekly program, notification classes with their recipients" loading="lazy"><figcaption>Trend logs, schedules and alarm routing, read as metadata.</figcaption></figure>
     </div>
     <p style="color:var(--muted);font-size:14px">Screens from the simulated site that comes with the scanner (<code>tools/sim_site.py</code>): made-up controllers on this PC's loopback addresses, so you can try it without a building.</p>
   </section>
@@ -229,12 +237,23 @@ hvac-scanner-gui</pre></div>
 
   <section>
     <h2>Feedback</h2>
-    <p>Found a bug, or scanned gear it didn't recognise? <a href="https://github.com/jamesccupps/HVAC-Network-Scanner/issues/new/choose">Open an issue</a>. The command-line reference, the changelog and the roadmap are in the <a href="https://github.com/jamesccupps/HVAC-Network-Scanner#readme">README</a>. Siemens APOGEE P2 sites: see the <a href="https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner">P2 scanner and Wireshark dissector</a>.</p>
+    <p>Found a bug, or scanned gear it didn't recognize? <a href="https://github.com/jamesccupps/HVAC-Network-Scanner/issues/new/choose">Open an issue</a>. The command-line reference, the changelog and the roadmap are in the <a href="https://github.com/jamesccupps/HVAC-Network-Scanner#readme">README</a>. Siemens APOGEE P2 sites: see the <a href="https://github.com/jamesccupps/P2_Wireshark_Dissector_And_P2_Scanner">P2 scanner and Wireshark dissector</a> and the <a href="https://jamesccupps.github.io/p2/">protocol reference</a>.</p>
+  </section>
+
+  <section aria-labelledby="jc-more">
+    <h2 id="jc-more">More tools from James Cupps</h2>
+    <div class="jc-more-grid">
+      <a href="https://jamesccupps.github.io/p2/"><b>APOGEE P2 reference</b><span>The Siemens APOGEE P2 protocol, documented</span></a>
+      <a href="https://jamesccupps.github.io/PPCL/"><b>PPCL Workbench</b><span>IDE, linter and simulator for Siemens PPCL</span></a>
+      <a href="https://jamesccupps.github.io/HVACTrend/"><b>HVACTrend</b><span>Read-only BACnet trend logger and alarms</span></a>
+      <a href="https://jamesccupps.github.io/CoolingTowerSim/"><b>Cooling Tower Sim</b><span>A condenser-water loop simulator in the browser</span></a>
+      <a href="https://jamesccupps.github.io/"><b>Everything else</b><span>Every project, on one page</span></a>
+    </div>
   </section>
 </main>
 
 <footer>
-  <div class="wrap">HVAC Network Scanner is free and open source under the MIT license, made by <a href="https://github.com/jamesccupps">James Cupps</a>. <a href="https://github.com/jamesccupps/HVAC-Network-Scanner">github.com/jamesccupps/HVAC-Network-Scanner</a></div>
+  <div class="wrap">HVAC Network Scanner is free and open source under the MIT license, made by <a href="https://jamesccupps.github.io/">James Cupps</a>. <a href="https://github.com/jamesccupps/HVAC-Network-Scanner">github.com/jamesccupps/HVAC-Network-Scanner</a></div>
 </footer>
 
 <script>
