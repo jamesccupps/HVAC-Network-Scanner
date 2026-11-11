@@ -1,8 +1,8 @@
 {
  "app": "hvac-network-scanner",
  "kind": "advisories",
- "serial": 1,
- "as_of": "2026-11-07",
+ "serial": 2,
+ "as_of": "2026-11-11",
  "advisories": [
   {
    "id": "ICSA-16-259-03",
@@ -18,6 +18,25 @@
    "cvss": 5.3,
    "firmware": "",
    "note": "affected: <=4.2.1134: compare the reported version by hand",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-17-285-05",
+   "published": "2017-10-12",
+   "title": "Siemens BACnet Field Panels (Update A)",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5",
+   "cves": [
+    "CVE-2017-9946",
+    "CVE-2017-9947"
+   ],
+   "cvss": 7.5,
+   "firmware": "",
+   "note": "",
    "no_fix": false,
    "revision": "2",
    "auto": true
@@ -140,6 +159,42 @@
    "published": "2020-04-14",
    "title": "Siemens SIMOTICS, Desigo, APOGEE, and TALON",
    "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2019-13939"
+   ],
+   "cvss": 7.1,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-105-06",
+   "published": "2020-04-14",
+   "title": "Siemens SIMOTICS, Desigo, APOGEE, and TALON",
+   "vendor": "siemens",
+   "model": "^(?:pxc(?:00|001|100|12|200|22|22\\.1|36\\.1|50)-e\\.d|pxc(?:00|64|128)-u|pxm20-e)(?![\\w.])",
+   "field": "firmware_revision",
+   "fixed": "6.0.327",
+   "cves": [
+    "CVE-2019-13939"
+   ],
+   "cvss": 7.1,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-20-105-06",
+   "published": "2020-04-14",
+   "title": "Siemens SIMOTICS, Desigo, APOGEE, and TALON",
+   "vendor": "siemens",
    "model": "^siemens bacnet field panel$",
    "field": "firmware_revision",
    "fixed": "3.5.3",
@@ -205,6 +260,24 @@
    "note": "Desigo CC: V4.x; Desigo CC Compact: V4.x; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
    "no_fix": false,
    "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-257-07",
+   "published": "2021-09-14",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.3",
+   "cves": [
+    "CVE-2021-27391"
+   ],
+   "cvss": 9.8,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
    "auto": true
   },
   {
@@ -338,6 +411,66 @@
    "published": "2021-11-09",
    "title": "Siemens Nucleus RTOS-based APOGEE and TALON Products (Update C)",
    "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.4",
+   "cves": [
+    "CVE-2021-31344",
+    "CVE-2021-31345",
+    "CVE-2021-31346",
+    "CVE-2021-31881",
+    "CVE-2021-31882",
+    "CVE-2021-31883",
+    "CVE-2021-31884",
+    "CVE-2021-31885",
+    "CVE-2021-31886",
+    "CVE-2021-31887",
+    "CVE-2021-31888",
+    "CVE-2021-31889",
+    "CVE-2021-31890"
+   ],
+   "cvss": 9.8,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-315-07",
+   "published": "2021-11-09",
+   "title": "Siemens Nucleus RTOS-based APOGEE and TALON Products (Update C)",
+   "vendor": "siemens",
+   "model": "^(?:pxc(?:00|001|100|12|200|22|22\\.1|36\\.1|50)-e\\.d|pxc(?:00|64|128)-u|pxm20-e)(?![\\w.])",
+   "field": "firmware_revision",
+   "fixed": "6.30.016",
+   "cves": [
+    "CVE-2021-31344",
+    "CVE-2021-31345",
+    "CVE-2021-31346",
+    "CVE-2021-31881",
+    "CVE-2021-31882",
+    "CVE-2021-31883",
+    "CVE-2021-31884",
+    "CVE-2021-31885",
+    "CVE-2021-31886",
+    "CVE-2021-31887",
+    "CVE-2021-31888",
+    "CVE-2021-31889",
+    "CVE-2021-31890"
+   ],
+   "cvss": 9.8,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "5",
+   "auto": true
+  },
+  {
+   "id": "ICSA-21-315-07",
+   "published": "2021-11-09",
+   "title": "Siemens Nucleus RTOS-based APOGEE and TALON Products (Update C)",
+   "vendor": "siemens",
    "model": "^siemens bacnet field panel$",
    "field": "firmware_revision",
    "fixed": "3.5.4",
@@ -423,6 +556,42 @@
    "published": "2022-10-11",
    "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
    "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2022-38371"
+   ],
+   "cvss": 7.5,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "4",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-286-12",
+   "published": "2022-10-11",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^(?:pxc(?:00|001|100|12|200|22|22\\.1|36\\.1|50)-e\\.d|pxc(?:00|64|128)-u|pxm20-e)(?![\\w.])",
+   "field": "firmware_revision",
+   "fixed": "6.30.37",
+   "cves": [
+    "CVE-2022-38371"
+   ],
+   "cvss": 7.5,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "4",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-286-12",
+   "published": "2022-10-11",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
    "model": "^siemens bacnet field panel$",
    "field": "firmware_revision",
    "fixed": "3.5.7",
@@ -470,6 +639,31 @@
    "note": "Desigo CC: all versions; Desigo CC Compact: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
    "no_fix": false,
    "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-22-349-16",
+   "published": "2022-12-13",
+   "title": "Siemens APOGEE and TALON",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.5",
+   "cves": [
+    "CVE-2020-15795",
+    "CVE-2020-27009",
+    "CVE-2020-27736",
+    "CVE-2020-27737",
+    "CVE-2020-27738",
+    "CVE-2020-28388",
+    "CVE-2021-25677",
+    "CVE-2022-45937"
+   ],
+   "cvss": 8.8,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "3",
    "auto": true
   },
   {
@@ -578,6 +772,25 @@
    "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
    "no_fix": false,
    "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-044-11",
+   "published": "2025-02-11",
+   "title": "Siemens Apogee PXC100 Devices",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2024-54089",
+    "CVE-2024-54090"
+   ],
+   "cvss": 7.5,
+   "firmware": "",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
+   "revision": "1",
    "auto": true
   },
   {
@@ -704,6 +917,24 @@
    "firmware": "^\\s*v?0*8\\.",
    "note": "Desigo CC family V8: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
    "no_fix": false,
+   "revision": "1",
+   "auto": true
+  },
+  {
+   "id": "ICSA-25-254-05",
+   "published": "2025-09-09",
+   "title": "Siemens Apogee PXC and Talon TC Devices",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2025-40757"
+   ],
+   "cvss": 5.3,
+   "firmware": "",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
    "revision": "1",
    "auto": true
   },
@@ -1000,6 +1231,45 @@
    "firmware": "^\\s*v?0*7\\.",
    "note": "Desigo CC family V7: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
    "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-295-08",
+   "published": "2026-10-13",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "\\btalon\\b|^tc(?:-?(?:1000|16|24|36)(?!\\d)| (?:compact|modular)\\b)",
+   "field": "firmware_revision",
+   "fixed": "3.5.7",
+   "cves": [
+    "CVE-2026-102073",
+    "CVE-2026-102074",
+    "CVE-2026-102075",
+    "CVE-2026-102076"
+   ],
+   "cvss": 8.2,
+   "firmware": "",
+   "note": "",
+   "no_fix": false,
+   "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-295-08",
+   "published": "2026-10-13",
+   "title": "Siemens APOGEE, TALON and Desigo PXC/PXM Products",
+   "vendor": "siemens",
+   "model": "^(?:pxc(?:00|001|100|12|200|22|22\\.1|36\\.1|50)-e\\.d|pxc(?:00|64|128)-u|pxm20-e)(?![\\w.])",
+   "field": "firmware_revision",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-89208"
+   ],
+   "cvss": 5.3,
+   "firmware": "",
+   "note": "all versions; no fixed version, mitigations in the advisory",
+   "no_fix": true,
    "revision": "2",
    "auto": true
   },
