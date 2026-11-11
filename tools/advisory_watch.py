@@ -19,7 +19,8 @@ advisories whose titles name a building-automation vendor, and:
     those need someone to find out what model name the devices report.
 
 Only the families below are mapped, each with a model name checked against
-real devices or the vendor's documentation. Adding one is the way to cover a
+real devices or the vendor's documentation (Desigo PX and TALON TC: inferred
+from their type designations, see FAMILIES). Adding one is the way to cover a
 new product line: add it, run with --dry-run, and check the entries.
 
 Exits non-zero, writing nothing, if any advisory can't be fetched: a list
@@ -71,9 +72,23 @@ class Family:
     by_release: bool = False      # one entry per release the advisory names (see releases())
 
 
+# Desigo PX controllers (firmware V2.3 to V6), by the type designations
+# Siemens and CISA list. Not yet seen on a device: the model name is taken to
+# be the type designation, as the newer Desigo PXC4/5/7 and DXR2 report theirs
+# ("PXC5.E24.A", "DXR2.E10PL-1"). One that reports something else stays
+# unmatched, as before.
+_DESIGO_PX = (r"(?:pxc(?:00|001|100|12|200|22|22\.1|36\.1|50)-e\.d"
+              r"|pxc(?:00|64|128)-u|pxm20-e)")
+
 # Model names are the ones devices report (BACnet modelName), as the
 # scanner's fingerprint.py names them. Firmware lines tell APOGEE PXC
 # Modular (PXME) and Compact (EPXC) apart on BACnet firmware.
+#
+# TALON TC panels (TC-1000 Modular; TC-16, -24 and -36 Compact) share APOGEE
+# PXC's firmware line: every advisory names the same fixed versions for both.
+# Not yet seen on a device either, so they are matched on "TALON" or a TC type
+# in the model name. One that reports APOGEE's "Siemens BACnet Field Panel"
+# with PXME or EPXC firmware is already matched by the APOGEE entries.
 FAMILIES: tuple[Family, ...] = (
     Family("tracer-sc+", r"^trane", r"^tracer sc\+$",
            "trane", r"^tracer sc\+$", "application_software_version"),
@@ -86,6 +101,9 @@ FAMILIES: tuple[Family, ...] = (
     Family("apogee-pxc", r"^siemens", r"^apogee pxc(?: ?\+ ?talon tc)? series \(bacnet\)$",
            "siemens", r"^siemens bacnet field panel$", "firmware_revision",
            firmware=r"^(PXME|EPXC)\b"),
+    Family("talon-tc", r"^siemens", r"^talon tc (?:compact|modular|series) \(bacnet\)$",
+           "siemens", r"\btalon\b|^tc(?:-?(?:1000|16|24|36)(?!\d)| (?:compact|modular)\b)",
+           "firmware_revision"),
     Family("desigo-dxr2", r"^siemens", r"^desigo dxr2$",
            "siemens", r"^dxr2", "firmware_revision"),
     Family("desigo-pxc4", r"^siemens", r"^desigo pxc4$",
@@ -98,6 +116,8 @@ FAMILIES: tuple[Family, ...] = (
            "siemens", r"^pxc5\.e24", "firmware_revision"),
     Family("desigo-pxc7", r"^siemens", r"^desigo pxc7$",
            "siemens", r"^pxc7", "firmware_revision"),
+    Family("desigo-px", r"^siemens", rf"^desigo {_DESIGO_PX}$",
+           "siemens", rf"^{_DESIGO_PX}(?![\w.])", "firmware_revision"),
     Family("desigo-cc", r"^siemens", r"^desigo cc(?: compact| family)?(?: v\d+(?:\.\d+)?)?$",
            "siemens", r"^desigo cc$", "application_software_version", check_only=True,
            by_release=True,
@@ -202,7 +222,8 @@ def parse_range(text: str) -> dict[str, Any]:
     if m:
         t = m.group(1)
     below, kind = None, "all"
-    for part in (p.strip() for p in t.split("|")):
+    parts = re.split(r"\||_and_", t)               # older files: ">=V2.3_and_<V6.30.016"
+    for part in (p.strip() for p in parts):
         if part in ("", "*"):
             continue
         if part.startswith(">=") or (part.startswith(">") and not part.startswith(">=")):
@@ -212,7 +233,7 @@ def parse_range(text: str) -> dict[str, Any]:
             kind = "below"
         else:
             kind = "other"
-            below = " | ".join(x.strip().lstrip("=") for x in t.split("|") if x.strip())
+            below = " | ".join(x.strip().lstrip("=") for x in parts if x.strip())
             break
     if kind == "below":
         m = _CLEAN.fullmatch(below)

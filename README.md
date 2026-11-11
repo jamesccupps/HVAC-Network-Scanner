@@ -15,7 +15,7 @@ Working with Siemens APOGEE P2? The [APOGEE P2 toolkit](https://github.com/james
 
 ## What it does
 
-Scans a network and tells you what building-automation gear lives on it. For each device found it tries to identify the exact model, pull readable points or registers, and surface the factory-default credentials that ship with that product so you can confirm they've been changed. The report also checks the firmware each controller reports against published CISA ICS advisories (Trane Tracer SC+, Siemens APOGEE PXC, Desigo PXC and DXR2, Desigo CC), and says which to update and which to check by hand.
+Scans a network and tells you what building-automation gear lives on it. For each device found it tries to identify the exact model, pull readable points or registers, and surface the factory-default credentials that ship with that product so you can confirm they've been changed. The report also checks the firmware each controller reports against published CISA ICS advisories (Trane Tracer SC+, Siemens APOGEE PXC and TALON TC, Desigo PX, PXC and DXR2, Desigo CC), and says which to update and which to check by hand.
 
 Works against:
 

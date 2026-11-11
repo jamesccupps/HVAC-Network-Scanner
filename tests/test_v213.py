@@ -174,6 +174,8 @@ def test_the_report_says_which_list_it_used(monkeypatch):
     ("vers:all/*", "all", None, ""),
     ("vers:intdot/>=2.3", "all", None, ""),
     ("<=4.2.1134", "other", None, ""),
+    (">=V2.3_and_<V6.30.016", "below", "6.30.016", ""),      # older CISA files
+    (">=V2.3x_and_<V6.00.327", "below", "6.00.327", ""),
 ])
 def test_csaf_version_ranges(text, kind, version, suffix):
     r = watch.parse_range(text)
@@ -198,10 +200,12 @@ def test_apogee_pxc_lines_by_firmware_and_p2_left_out():
     e = _by_model(entries)
     assert e[(r"^siemens bacnet field panel$", r"^EPXC\b")]["fixed"] == "3.5.5"
     assert e[(r"^siemens bacnet field panel$", r"^PXME\b")]["fixed"] == "3.5.5"
-    assert {p.name for p in uncovered} == {"TALON TC Compact (BACnet)", "TALON TC Modular (BACnet)"}
+    assert e[(_model("talon-tc"), "")]["fixed"] == "3.5.5"
+    assert uncovered == []                                           # P2 is never listed
     nofix, _ = watch.map_advisory(_doc("icsa-25-044-11.json"))
-    assert [(x["firmware"], x["fixed"], x["no_fix"]) for x in nofix] == \
-        [(r"^(PXME|EPXC)\b", None, True)]
+    assert sorted((x["model"], x["firmware"], x["fixed"], x["no_fix"]) for x in nofix) == \
+        sorted([(r"^siemens bacnet field panel$", r"^(PXME|EPXC)\b", None, True),
+                (_model("talon-tc"), "", None, True)])
 
 
 def test_desigo_dxr2_and_pxc_with_their_own_fixes():
@@ -212,6 +216,45 @@ def test_desigo_dxr2_and_pxc_with_their_own_fixes():
         assert e[(model, "")]["fixed"] == "02.21.194.36"
     # CISA marks only the DXR2 affected in ICSA-22-132-10's data.
     assert [x["model"] for x in watch.map_advisory(_doc("icsa-22-132-10.json"))[0]] == ["^dxr2"]
+
+
+def _model(key: str) -> str:
+    return next(f.model for f in watch.FAMILIES if f.key == key)
+
+
+def test_desigo_px_and_talon_tc_in_the_apogee_advisories():
+    entries, uncovered = watch.map_advisory(_doc("icsa-26-295-08.json"))
+    e = _by_model(entries)
+    px = e[(_model("desigo-px"), "")]
+    assert (px["fixed"], px["no_fix"], px["cves"], px["cvss"]) == (None, True, ["CVE-2026-89208"], 5.3)
+    talon = e[(_model("talon-tc"), "")]
+    assert talon["fixed"] == "3.5.7"
+    assert talon["cves"] == e[(r"^siemens bacnet field panel$", r"^PXME\b")]["cves"]
+    # No model name is known for MBC/MEC on BACnet: still left for review.
+    assert sorted(p.name for p in uncovered) == ["APOGEE MBC (PPC) (BACnet)", "APOGEE MEC (PPC) (BACnet)"]
+    # An older file, with ">=V2.3x_and_<V6.00.327" ranges for the -U types.
+    old = _by_model(watch.map_advisory(_doc("icsa-20-105-06.json"))[0])
+    assert old[(_model("desigo-px"), "")]["fixed"] == "6.0.327"
+    assert old[(_model("talon-tc"), "")]["fixed"] == "3.5.3"
+
+
+def test_desigo_px_and_talon_tc_match_their_type_names_only():
+    t = advisories.parse_table(_list(entries=watch.map_advisory(_doc("icsa-26-295-08.json"))[0]
+                                     + watch.map_advisory(_doc("icsa-20-105-06.json"))[0]))
+
+    def status(model, version):
+        return {m["advisory"].id: m["status"]
+                for m in advisories.for_device(_dev(model, firmware_revision=version), t)}
+    assert status("PXC100-E.D", "V6.00.308") == {"ICSA-26-295-08": "no fix", "ICSA-20-105-06": "affected"}
+    for px in ("PXC22.1-E.D", "PXC00-U", "PXC128-U", "PXM20-E"):
+        assert status(px, "V6.30.037") == {"ICSA-26-295-08": "no fix"}
+    for talon in ("TC1000-E96.T", "TC16.2-EF.T", "TC-36", "TALON TC Compact"):
+        assert status(talon, "3.5.5") == {"ICSA-26-295-08": "affected"}
+    assert status("TC1000-E96.T", "3.5.7") == {}
+    # The newer Desigo lines, other types and APOGEE's own name are not these families.
+    for other in ("PXC5.E24.A", "PXC4.E16", "PXC50", "PXC36-E.D", "DXR2.E10PL-1", "TC160",
+                  "Siemens BACnet Field Panel"):
+        assert status(other, "V3.5.5") == {}, other
 
 
 def test_desigo_cc_is_split_by_release():
