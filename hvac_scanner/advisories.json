@@ -1,8 +1,8 @@
 {
  "app": "hvac-network-scanner",
  "kind": "advisories",
- "serial": 2,
- "as_of": "2026-11-11",
+ "serial": 3,
+ "as_of": "2026-11-12",
  "advisories": [
   {
    "id": "ICSA-16-259-03",
@@ -1313,6 +1313,42 @@
    "note": "",
    "no_fix": false,
    "revision": "2",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-316-02",
+   "published": "2026-10-30",
+   "title": "Siemens Desigo, Gridscale",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-111497"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*8\\.",
+   "note": "Desigo CC family V8: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "4",
+   "auto": true
+  },
+  {
+   "id": "ICSA-26-316-02",
+   "published": "2026-10-30",
+   "title": "Siemens Desigo, Gridscale",
+   "vendor": "siemens",
+   "model": "^desigo cc$",
+   "field": "application_software_version",
+   "fixed": null,
+   "cves": [
+    "CVE-2026-111497"
+   ],
+   "cvss": 9.8,
+   "firmware": "^\\s*v?0*9\\.",
+   "note": "Desigo CC family V9: all versions; Desigo CC reports its release (9.00 is V9.0) but not its quality update: check the installed one",
+   "no_fix": false,
+   "revision": "4",
    "auto": true
   }
  ]
