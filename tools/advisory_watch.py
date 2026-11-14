@@ -17,6 +17,7 @@ advisories whose titles name a building-automation vendor, and:
   * with --issues, opens a GitHub issue for an advisory updated in the last
     --days days that covers building-automation products no family maps:
     those need someone to find out what model name the devices report.
+    Products the advisory lists only as not affected don't count.
 
 Only the families below are mapped, each with a model name checked against
 real devices or the vendor's documentation (Desigo PX and TALON TC: inferred
@@ -251,6 +252,17 @@ def _rank_affected(v: dict, pid: str) -> bool:
     return any(pid in (st.get(k) or []) for k in ("known_affected", "first_affected", "last_affected"))
 
 
+def _needs_review(doc: dict, pid: str) -> bool:
+    """Whether an unmapped product is worth an issue: some vulnerability lists
+    it as affected or under investigation, or none gives it a status. A
+    vendor's "status of impact" advisory lists many products only as not
+    affected (ICSA-26-316-01: Desigo, Climatix, Building X)."""
+    seen = {k for v in doc.get("vulnerabilities") or []
+            for k, ids in (v.get("product_status") or {}).items() if pid in (ids or [])}
+    return not seen or bool(seen & {"known_affected", "first_affected", "last_affected",
+                                    "under_investigation"})
+
+
 def _score(v: dict, pid: str) -> float:
     best = 0.0
     for s in v.get("scores") or []:
@@ -381,7 +393,7 @@ def map_advisory(doc: dict) -> tuple[list[dict], list[Product]]:
     for p in products(doc):
         fam = family_for(p)
         if fam is None:
-            if relevant(p):
+            if relevant(p) and _needs_review(doc, p.pid):
                 uncovered.append(p)
             continue
         e = _product_entry(doc, p, fam)
