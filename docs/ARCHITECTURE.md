@@ -233,7 +233,8 @@ version a vendor fix names (Trane's 6.30.2313 against CISA's "<6.3.2310");
 "all versions" with no fix is `no_fix`; anything else is "check". Desigo CC is
 split by release, matched on the version it reports (9.00 is V9). Entries made
 by hand (`"auto": false`) are kept. Building-automation products no family
-covers become GitHub issues. The `Advisories` workflow runs it daily (and when
+covers become GitHub issues, unless the advisory lists them only as not
+affected. The `Advisories` workflow runs it daily (and when
 the list or the tool changes on main), bumps the serial on any change, and
 signs `data/advisories.signed.json` with a key held as the
 `ADVISORY_SIGNING_KEY` secret. That key's public half is

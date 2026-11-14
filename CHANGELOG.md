@@ -21,6 +21,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Older CISA version ranges.** Ranges written `>=V2.3_and_<V6.30.016` were
   read as "all versions"; they now give the version to update to.
+- **No review issues for products an advisory lists as not affected.** A
+  vendor's "status of impact" advisory names many products only to say they
+  aren't affected (ICSA-26-316-01 lists Desigo, Climatix and Building X that
+  way); the watcher opened an issue for them anyway. It now asks for review
+  only of products listed as affected or under investigation, or given no
+  status.
 
 ## [2.13.1] — 2026-11-10
 

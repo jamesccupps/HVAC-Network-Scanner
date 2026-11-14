@@ -238,6 +238,16 @@ def test_desigo_px_and_talon_tc_in_the_apogee_advisories():
     assert old[(_model("talon-tc"), "")]["fixed"] == "3.5.3"
 
 
+def test_products_listed_as_not_affected_need_no_review():
+    # A vendor's "status of impact" advisory: 60 Siemens products, every
+    # building one (Desigo CC/DXR/PXC, Climatix, Building X) not affected.
+    assert watch.map_advisory(_doc("icsa-26-316-01.json")) == ([], [])
+    doc = {"vulnerabilities": [{"product_status": {"known_not_affected": ["A", "C"],
+                                                   "under_investigation": ["B"]}},
+                               {"product_status": {"known_affected": ["C"]}}]}
+    assert [watch._needs_review(doc, p) for p in "ABCD"] == [False, True, True, True]
+
+
 def test_desigo_px_and_talon_tc_match_their_type_names_only():
     t = advisories.parse_table(_list(entries=watch.map_advisory(_doc("icsa-26-295-08.json"))[0]
                                      + watch.map_advisory(_doc("icsa-20-105-06.json"))[0]))
