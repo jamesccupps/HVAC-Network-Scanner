@@ -68,6 +68,12 @@ SCAN_DEPTH_PRESETS = {
     "full":   {"multiplier": None, "floor":    0, "label": "Full (no cap)"},
 }
 
+# The depths, gentlest first: the one list the command line, the window and
+# saved site profiles check against. "devices" came later than the others and
+# two places that restore a saved depth didn't know it, so a site saved at
+# that depth ran at "normal" (every object on every controller).
+SCAN_DEPTHS: tuple[str, ...] = tuple(SCAN_DEPTH_PRESETS)
+
 
 # --- DEVICE_PROFILES: verified entries only --------------------------------
 #
@@ -394,9 +400,11 @@ def apply_max_objects_override(
     """Apply an explicit user ceiling (--max-objects) over a profile cap.
 
     `None` means the user did not ask for an override, so the profile's own
-    cap stands. A value only ever lowers the cap — raising it past a verified
-    profile would defeat the point of having verified profiles, and the
-    heuristic path already sizes itself to the device.
+    cap stands. Here a value only ever lowers the cap — raising it past a
+    verified profile would defeat the point of having verified profiles, and
+    the heuristic path already sizes itself to the device. (The engine's
+    20,000-object ceiling for every device is another matter: a value above
+    it raises that ceiling; see engine.OBJECT_CEILING.)
 
     Returns the (possibly adjusted) profile and an explanation string.
     """

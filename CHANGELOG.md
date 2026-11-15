@@ -48,6 +48,31 @@ made since 2.13.1.
 
 ### Fixed
 
+- **One device's alarm routing could stop the HTML report for the whole
+  scan.** A Notification Class recipient whose network number came with a
+  context tag kept that tag object, which JSON can't hold; the device's whole
+  `notification_classes` became one string, and the report failed on it (an
+  error box in the window, a traceback on the command line after the scan).
+  The decoder now keeps a recipient's network and address only as a number
+  and an address; the export turns anything else into text field by field,
+  not key by key; and the command line names a failed export, still writes
+  the others, and exits 3.
+- **A site saved at depth "devices" ran as a normal deep scan**, from the
+  command line (`--profile`) and in the window, which also forgot that depth
+  between runs: the places that restore a saved depth knew only quick,
+  normal and full. One list of depths serves all of them now.
+- **The OPC UA probe had no overall time limit.** A server sending one byte
+  just inside the read timeout could hold the scan, and Stop, for hours. It
+  has the other probes' 15-second limit now, and that limit covers the HTTPS
+  probe's TLS handshake too (it started after the request).
+- **Device text reached the terminal with control characters** in two
+  places: BACnet device properties and Modbus identification strings, seen
+  in `--print table` and the baseline comparison. They are cleaned where they
+  are read, like everything else a device says; so are the certificate names
+  from the HTTPS probe.
+- **A short range with an impossible prefix was accepted**: `300.1.1.2-4`
+  gave three "addresses", which the sweeps then handed to the resolver as
+  host names. Its first three octets are checked like the other forms'.
 - **One malformed value dropped a device's trend logs, schedules, alarm
   routing and network ports, silently.** A Date, Time or Object Identifier
   cut short by the end of the packet raised an error the metadata decoders
@@ -77,6 +102,10 @@ made since 2.13.1.
   CI checks a release tag against `__version__` only.
 - **Older CISA version ranges.** Ranges written `>=V2.3_and_<V6.30.016` were
   read as "all versions"; they now give the version to update to.
+- **Review issues quote the feed's text.** Vendor and product names from
+  CISA's feed went into the issue table as they were: a `|` broke the table,
+  and an `@name` would have notified that account. They are in backticks now,
+  with `|` escaped.
 - **No review issues for products an advisory lists as not affected.** A
   vendor's "status of impact" advisory names many products only to say they
   aren't affected (ICSA-26-316-01 lists Desigo, Climatix and Building X that

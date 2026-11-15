@@ -2637,6 +2637,29 @@ def _str(val: Any) -> str:
         return f"<{type(val).__name__} too large to show>"
 
 
+def _json_safe(v: Any, depth: int = 0) -> Any:
+    """`v` with whatever JSON can't hold turned into text, leaf by leaf, so
+    one odd value costs one field. The whole key used to become one string:
+    a device's notification classes as text, which the HTML report then
+    read character by character and failed on."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        try:
+            str(v)                                   # over 4,300 digits can't be written
+            return v
+        except ValueError:
+            return _str(v)
+    if v is None or isinstance(v, (str, float, bool)):
+        return v
+    if depth > 40:                                   # a cycle, or absurd nesting
+        return _str(v)
+    if isinstance(v, dict):
+        return {(k if k is None or isinstance(k, (str, int, float, bool)) else _str(k)):
+                _json_safe(x, depth + 1) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x, depth + 1) for x in v]
+    return _str(v)
+
+
 def _sanitize_for_json(dev: dict[str, Any]) -> dict[str, Any]:
     """Strip un-serializable private fields and stringify anything weird."""
     out: dict[str, Any] = {}
@@ -2652,7 +2675,7 @@ def _sanitize_for_json(dev: dict[str, Any]) -> dict[str, Any]:
             json.dumps(v)
             out[k] = v
         except (TypeError, ValueError):
-            out[k] = _str(v)
+            out[k] = _json_safe(v)
 
     fp = dev.get('_fingerprint', {})
     if fp:

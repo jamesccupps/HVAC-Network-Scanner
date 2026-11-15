@@ -1166,12 +1166,15 @@ def decode_recipient_list(raw: bytes) -> list[dict[str, Any]]:
             obj = decode_object_id(who.value)
             recipient = {'device': obj[1]} if obj else {}
         elif who.tag == 1 and isinstance(who.value, list) and len(who.value) >= 2:
+            # Kept only as the types they should be: a network number sent
+            # with a context tag came through as a Ctx object, which no
+            # export could write, and the HTML report failed for the scan.
             net, mac = who.value[0], who.value[1]
             try:
-                mac_text = format_bacnet_mac(bytes.fromhex(str(mac)))
+                mac_text = format_bacnet_mac(bytes.fromhex(mac)) if isinstance(mac, str) else None
             except ValueError:
-                mac_text = str(mac)
-            recipient = {'network': net, 'address': mac_text}
+                mac_text = None
+            recipient = {'network': net if type(net) is int else None, 'address': mac_text}
         else:
             recipient = {}
         day_bits = decode_bits(days)

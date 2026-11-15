@@ -507,10 +507,19 @@ class GitHub:
             return json.load(r).get("html_url", "")
 
 
+def _cell(text: str) -> str:
+    """A table cell from the feed's text, as written: in backticks, so an
+    @name in it can't notify anyone and markup shows as text; a | escaped so
+    it can't end the cell."""
+    t = re.sub(r"\s+", " ", str(text)).strip().replace("`", "'").replace("|", "\\|")
+    return f"`{t}`" if t else ""
+
+
 def issue_body(doc: dict, uncovered: list[Product]) -> str:
     track = doc["document"]["tracking"]
     url = f"https://www.cisa.gov/news-events/ics-advisories/{track['id'].lower()}"
-    rows = "\n".join(f"| {p.vendor} | {p.name} | {p.version or 'not given'} |" for p in uncovered)
+    rows = "\n".join(f"| {_cell(p.vendor)} | {_cell(p.name)} | {_cell(p.version) or 'not given'} |"
+                     for p in uncovered)
     return (f"CISA published or revised [{track['id']}]({url}): "
             f"{_norm_title(doc['document'].get('title', ''))} (revision {track.get('version')}).\n\n"
             f"It covers building-automation products the advisory list can't match yet:\n\n"

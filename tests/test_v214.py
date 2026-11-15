@@ -1,5 +1,6 @@
 """2.14: fixes from the 2026-11-14 audit. Network-free."""
 import hashlib
+import json
 import os
 import random
 import stat
@@ -323,3 +324,149 @@ def test_the_version_is_the_same_in_both_places():
     from hvac_scanner import __version__
     text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r'^version = "([^"]+)"', text, re.M).group(1) == __version__
+
+
+# -- 17: one device's alarm recipients and the exports ------------------------------
+
+# A recipient given as an address whose network number has a context tag.
+_ODD_RECIPIENTS = bytes.fromhex("8201FEB400000000B4173B3B631E0A000161051F2101118205E0")
+
+
+def _scan_with_odd_recipients():
+    engine = ScanEngine(ScanOptions(networks=[]), callback=lambda _m: None)
+    dev = {'ip': '192.0.2.10', 'instance': 1, 'protocol': 'BACnet/IP', 'objects': [],
+           'properties': {'object_name': 'D1'}}
+    engine._apply_metadata(dev, [('Notification Class', 1, {'objectName': 'NC1',
+                                                            'recipientList': _ODD_RECIPIENTS})])
+    result = ScanResult()
+    result.devices.append(dev)
+    return result
+
+
+def test_an_odd_recipient_keeps_only_well_typed_parts():
+    (r,) = codec.decode_recipient_list(_ODD_RECIPIENTS)
+    assert r['network'] is None and r['address'] == '5' and r['process'] == 1
+
+
+def test_one_devices_alarm_routing_cannot_break_the_report(tmp_path):
+    result = _scan_with_odd_recipients()
+    ncs = result.to_dict()['devices'][0]['notification_classes']
+    assert isinstance(ncs, list) and ncs[0]['name'] == 'NC1'
+    result.write_html(str(tmp_path / "r.html"))
+    assert "NC1" in (tmp_path / "r.html").read_text(encoding="utf-8")
+
+
+def test_json_cleanup_costs_one_field_not_the_key():
+    from hvac_scanner.engine import _sanitize_for_json
+    out = _sanitize_for_json({'notification_classes': [
+        {'name': 'NC1', 'recipients': [{'network': codec.Ctx(0, b'\x00\x01'), 'address': '5'}]}]})
+    rec = out['notification_classes'][0]['recipients'][0]
+    assert rec['address'] == '5' and isinstance(rec['network'], str)
+    json_text = json.dumps(out)
+    assert "NC1" in json_text
+
+
+def test_cli_names_a_failed_export_writes_the_others_and_exits_3(monkeypatch, tmp_path, capsys):
+    result = ScanResult()
+
+    def broken(path):
+        raise AttributeError("'str' object has no attribute 'get'")
+    monkeypatch.setattr(result, "write_html", broken)
+    out_json, out_html = tmp_path / "s.json", tmp_path / "r.html"
+    code, _ = _cli(monkeypatch, ["127.0.0.1", "--html", str(out_html), "--json", str(out_json)],
+                   result)
+    assert code == 3
+    assert out_json.exists() and not out_html.exists()
+    assert "HTML report could not be made" in capsys.readouterr().err
+
+
+# -- 18, 24: the "devices" depth is kept --------------------------------------------
+
+@pytest.mark.parametrize("depth", ["devices", "quick", "normal", "full"])
+def test_every_depth_survives_a_profile(depth):
+    from hvac_scanner.settings import profile_options
+    assert profile_options({'targets': '127.0.0.1', 'depth': depth})['scan_depth'] == depth
+
+
+def test_the_window_restores_the_devices_depth(gui_app):
+    gui_app.scan_depth_var.set("full")
+    gui_app._apply_settings({'depth': 'devices'})
+    assert gui_app.scan_depth_var.get() == "devices"
+
+
+# -- 19: the OPC UA exchange has an overall limit -----------------------------------
+
+def test_opcua_probe_gives_up_on_a_dribbling_server(monkeypatch):
+    import socket
+    import threading
+    import time
+    from hvac_scanner import netsweep, opcua
+    monkeypatch.setattr(netsweep, "PROBE_TIME_LIMIT_S", 1.5)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        conn, _ = srv.accept()
+        with conn:
+            conn.recv(4096)                                   # Hello
+            conn.sendall(b"ACKF" + struct.pack("<I", 28) + bytes(20))
+            conn.recv(4096)                                   # OpenSecureChannel
+            conn.sendall(b"OPNF" + struct.pack("<I", 200_000))
+            # A byte at a time; for 8 s at most, so a probe with no limit
+            # fails the timing check below instead of hanging the suite.
+            end = time.monotonic() + 8
+            while not stop.is_set() and time.monotonic() < end:
+                try:
+                    conn.sendall(b"\x00")
+                except OSError:
+                    return
+                time.sleep(0.3)
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    started = time.monotonic()
+    try:
+        assert opcua.probe("127.0.0.1", port, timeout=1.0) == {}
+        assert time.monotonic() - started < 6
+    finally:
+        stop.set()
+        srv.close()
+
+
+# -- 20: device text without control characters --------------------------------------
+
+def test_device_properties_and_modbus_ids_are_cleaned():
+    from hvac_scanner.bacnet import _stringify
+    from hvac_scanner.modbus import ModbusScanner
+    assert _stringify("AHU\x1b[2J-1\x07") == "AHU[2J-1"
+    name = b"Acme\x1b]0;owned\x07"
+    resp = bytes(13) + bytes([1, 0, len(name)]) + name
+    assert "\x1b" not in ModbusScanner._parse_device_id_response(resp)['vendor']
+
+
+# -- 21: a short range's prefix is checked --------------------------------------------
+
+@pytest.mark.parametrize("token", ["300.1.1.2-4", "10.0.256.1-5", "010.0.0.2-5"])
+def test_short_range_with_a_bad_prefix_is_refused(token):
+    from hvac_scanner.netrange import InvalidTargetSyntaxError, parse_targets
+    with pytest.raises(InvalidTargetSyntaxError):
+        parse_targets(token)
+
+
+def test_short_range_still_works():
+    from hvac_scanner.netrange import parse_targets
+    assert parse_targets("192.0.2.2-4") == ["192.0.2.2", "192.0.2.3", "192.0.2.4"]
+
+
+# -- 23: review issues quote the feed's text ------------------------------------------
+
+def test_review_issue_cells_cannot_notify_or_break_the_table():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import advisory_watch as watch
+    assert watch._cell("Box | @someone") == "`Box \\| @someone`"
+    assert watch._cell("a `b`") == "`a 'b'`"
+    assert watch._cell("") == ""

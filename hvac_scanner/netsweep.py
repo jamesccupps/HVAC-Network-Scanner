@@ -22,9 +22,47 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Iterable, Optional
+import socket
+import threading
+from contextlib import contextmanager
+from typing import Any, Callable, Iterable, Optional
 
 log = logging.getLogger(__name__)
+
+# Longest any one probe may take once connected. Each read has the probe
+# timeout, but a peer sending one byte just inside it, again and again,
+# could otherwise hold a probe (and the scan, which Stop could not end) for
+# hours. Used by the service probes and the OPC UA exchange.
+PROBE_TIME_LIMIT_S = 15.0
+
+
+@contextmanager
+def time_limit(sock: Any, seconds: Optional[float] = None):
+    """Shut the socket down if the block has not finished within `seconds`
+    (default PROBE_TIME_LIMIT_S), which ends any read in progress on it.
+    `sock` may also be a function returning the socket, or None while there
+    is none yet: an HTTPS request makes its own, and does its TLS handshake
+    inside the request."""
+    seconds = PROBE_TIME_LIMIT_S if seconds is None else seconds
+
+    def expire() -> None:
+        s = sock() if callable(sock) else sock
+        if s is None:
+            return
+        try:
+            # The plain socket's shutdown, even for a TLS socket: the TLS
+            # one also drops its TLS state, which another thread may be
+            # using at this moment.
+            socket.socket.shutdown(s, socket.SHUT_RDWR)
+        except OSError:
+            pass
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
 
 # Hard ceiling on simultaneous connection attempts. Windows and Linux both
 # handle this comfortably; much past it, a home-grade firewall's connection

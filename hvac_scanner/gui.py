@@ -37,6 +37,7 @@ from typing import Any, Optional
 
 from . import __version__, limits
 from . import settings as settings_mod
+from .device_profiles import SCAN_DEPTHS
 from .engine import ScanEngine, ScanOptions
 from .report import (recipient_summary, trend_interval, trend_records, trend_state,
                      week_summary)
@@ -426,7 +427,7 @@ class HVACNetworkScannerGUI:
         ttk.Label(row2, text="Depth", style="Header.TLabel").pack(side=tk.LEFT, padx=(18, 6))
         self.scan_depth_var = tk.StringVar(value="normal")
         ttk.Combobox(row2, textvariable=self.scan_depth_var, width=8, state="readonly",
-                     values=["devices", "quick", "normal", "full"]).pack(side=tk.LEFT)
+                     values=list(SCAN_DEPTHS)).pack(side=tk.LEFT)
 
         self.adv_btn = ttk.Button(row2, text="Advanced ▾", style="Link.TButton",
                                   command=self._toggle_advanced)
@@ -2312,7 +2313,7 @@ class HVACNetworkScannerGUI:
         if isinstance(data.get('targets'), str) and data['targets'].strip():
             self.network_entry.delete(0, tk.END)
             self.network_entry.insert(0, data['targets'])
-        if data.get('depth') in ("quick", "normal", "full"):
+        if data.get('depth') in SCAN_DEPTHS:
             self.scan_depth_var.set(data['depth'])
         if isinstance(data.get('check_updates'), bool):
             self.check_updates_var.set(data['check_updates'])

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import limits
+from .device_profiles import SCAN_DEPTHS
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ def profile_options(profile: dict[str, Any]) -> dict[str, Any]:
         nets = [t.strip() for t in targets.split(',') if t.strip()]
         if nets:
             out['networks'] = nets
-    if profile.get('depth') in ('quick', 'normal', 'full'):
+    if profile.get('depth') in SCAN_DEPTHS:
         out['scan_depth'] = profile['depth']
     toggles = profile.get('toggles') or {}
     for name in TOGGLE_OPTIONS:

@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from .netsweep import tcp_sweep
+from .text import clean_text
 
 log = logging.getLogger(__name__)
 
@@ -436,7 +437,8 @@ class ModbusScanner:
                 idx += 2
                 if idx + obj_len > len(resp):
                     break
-                val = resp[idx:idx + obj_len].decode('ascii', errors='replace')
+                # The device's own text, without control characters (ESC is ASCII).
+                val = clean_text(resp[idx:idx + obj_len].decode('ascii', errors='replace'))
                 key = obj_names.get(obj_id)
                 if key:
                     info[key] = val

@@ -403,8 +403,8 @@ def test_snmp_drain_ends_while_a_flood_continues():
 def test_trickling_service_probe_is_cut_off(monkeypatch):
     """One byte every 0.1 s, never the end of the reply: a probe used to
     wait for ever, one byte inside each timeout at a time."""
-    from hvac_scanner import services
-    monkeypatch.setattr(services, '_PROBE_TIME_LIMIT_S', 0.6)
+    from hvac_scanner import netsweep, services
+    monkeypatch.setattr(netsweep, 'PROBE_TIME_LIMIT_S', 0.6)     # shared since 2.14
     srv = socket.socket()
     srv.bind(('127.0.0.1', 0))
     srv.listen(1)

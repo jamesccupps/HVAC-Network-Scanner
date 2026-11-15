@@ -27,6 +27,7 @@ import threading
 from datetime import datetime
 
 from . import __version__, limits
+from .device_profiles import SCAN_DEPTHS
 from .engine import ScanEngine, ScanOptions
 
 
@@ -119,7 +120,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override BACnet Who-Is broadcast target (e.g. "
                         "10.0.0.255 or 255.255.255.255). Needed when "
                         "scanning a narrower CIDR than the physical subnet.")
-    p.add_argument("--scan-depth", choices=["devices", "quick", "normal", "full"],
+    p.add_argument("--scan-depth", choices=list(SCAN_DEPTHS),
                    default=None,
                    help="Scan depth. 'devices' reads only each device's "
                         "identity (name, model, vendor, firmware): the fastest "
@@ -134,10 +135,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Minimum ms between BACnet packets to the same IP (0=off)")
     p.add_argument("--max-objects", type=_option('max_objects_per_device', "max objects"),
                    default=None, metavar="N",
-                   help="Hard ceiling on objects enumerated per BACnet device. "
-                        "Applied on top of the vendor-aware profile cap and "
-                        "only ever lowers it. Omit to use the profile cap "
-                        "(the default).")
+                   help="Ceiling on objects enumerated per BACnet device. It "
+                        "lowers the vendor-aware profile cap when below it, "
+                        "and above 20,000 it raises the limit every device "
+                        "has. Omit to use the profile cap (the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
     p.add_argument("--device-time-limit", type=_option('device_time_limit', "device time limit"),
@@ -613,26 +614,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 3
 
-    if args.json:
-        try:
-            result.write_json(args.json)
-            if not args.quiet:
-                print(f"Wrote JSON: {args.json}", file=sys.stderr)
-        except OSError as e:
-            print(f"ERROR: could not write {args.json}: {e}", file=sys.stderr)
-            return 3
-
-    if args.csv:
-        try:
-            result.write_csv(args.csv)
-            if not args.quiet:
-                print(f"Wrote CSV:  {args.csv}", file=sys.stderr)
-        except OSError as e:
-            print(f"ERROR: could not write {args.csv}: {e}", file=sys.stderr)
-            return 3
-
-    for path, writer, label in ((args.html, result.write_html, "HTML report"),
-                                (args.points_csv, result.write_points_csv, "point list")):
+    # Every export is tried, and any failure, not only a disk error, is
+    # reported by name and ends in exit 3: one export that a device's data
+    # broke used to end the run in a traceback, after a scan of an hour,
+    # with the exports after it not written.
+    failed = False
+    for path, writer, label in ((args.json, result.write_json, "JSON"),
+                                (args.csv, result.write_csv, "CSV"),
+                                (args.html, result.write_html, "HTML report"),
+                                (args.points_csv, result.write_points_csv, "point list"),
+                                (args.export_classification,
+                                 result.write_classification_report, "classification report")):
         if not path:
             continue
         try:
@@ -641,18 +633,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Wrote {label}: {path}", file=sys.stderr)
         except OSError as e:
             print(f"ERROR: could not write {path}: {e}", file=sys.stderr)
-            return 3
-
-    if args.export_classification:
-        try:
-            result.write_classification_report(args.export_classification)
-            if not args.quiet:
-                print(f"Wrote classification report: {args.export_classification}",
-                      file=sys.stderr)
-        except OSError as e:
-            print(f"ERROR: could not write {args.export_classification}: {e}",
-                  file=sys.stderr)
-            return 3
+            failed = True
+        except Exception as e:
+            logging.exception("%s export failed", label)
+            print(f"ERROR: the {label} could not be made ({type(e).__name__}: {e}); "
+                  f"{path} was not written", file=sys.stderr)
+            failed = True
+    if failed:
+        return 3
 
     changed = False
     if args.baseline or args.save_baseline:

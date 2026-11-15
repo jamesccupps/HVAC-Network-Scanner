@@ -367,10 +367,13 @@ Exit codes:
   Modbus device it opened Trends instead of Modbus Registers, and after it the
   Devices tab listed nothing until the filter was cleared. Each tab now keeps
   its own filter, with a **Clear** button (or Esc) beside it.
-- **One bad value no longer hides a device's trend logs**: a value cut short
-  by a device used to drop all of its trend logs, schedules, alarm routing and
-  network ports from the scan. Now only the object it belongs to is left out,
-  and the scan log says so.
+- **One device can no longer spoil the results**: a value cut short by a
+  device used to drop all of its trend logs, schedules, alarm routing and
+  network ports from the scan, and an oddly encoded alarm recipient could
+  stop the HTML report for the whole scan. Now only the object or field it
+  belongs to is affected, and the scan log says so.
+- **Sites saved at depth "devices" stay that gentle**: they used to run as a
+  normal deep scan from `--profile` and in the window.
 - **Public addresses need a yes**: a target that reaches public internet
   addresses (a mistyped first octet, say) brings up a question naming them;
   on the command line it needs `--allow-public`.
@@ -379,7 +382,9 @@ Exit codes:
   command line and in saved site profiles.
 - Smaller fixes: a field marked wrong is unmarked once it checks out; the
   settings file is readable by its owner only on Linux and macOS; a
-  downloaded update is checked again just before it installs.
+  downloaded update is checked again just before it installs; the OPC UA
+  probe has a time limit like the others; device names reach the terminal
+  without control characters; a range like `300.1.1.2-4` is refused.
 
 ### v2.13.1 (2026-11-10)
 
