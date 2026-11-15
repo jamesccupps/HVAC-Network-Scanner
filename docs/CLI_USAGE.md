@@ -30,10 +30,11 @@ is also on your PATH and is equivalent.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout SECONDS` | `5` | Per-operation timeout, more than 0: the longest wait. A BACnet device that has answered a few requests gets four times its slowest recent reply instead (at least 1 s), so a device that drops requests costs about a second per drop. BACnet-heavy devices may benefit from 8–10. |
+| `--timeout SECONDS` | `5` | Per-operation timeout, 0.1 to 300: the longest wait. A BACnet device that has answered a few requests gets four times its slowest recent reply instead (at least 1 s), so a device that drops requests costs about a second per drop. BACnet-heavy devices may benefit from 8–10. |
 | `--rate-limit MS` | `0` | Minimum ms between BACnet packets to the same IP. Set to `50` for small field controllers (UC400, FEC, BASRT). |
 | `--max-objects N` | unset | Ceiling on BACnet objects enumerated per device, applied on top of the vendor-aware profile cap. Whatever the profile says, no device is enumerated past 20,000 objects unless this is set higher. |
 | `--max-hosts N` | `65536` | Refuse to scan more than N addresses in total, across all targets. A guard against a mistyped prefix. |
+| `--allow-public` | off | Scan targets that include public internet addresses. Without it they are refused (exit 1), naming them: a mistyped first octet turns a site's private range into somebody else's network. Private, loopback, shared (100.64.0.0/10) and documentation ranges never need it. |
 | `--scan-depth LEVEL` | `normal` | `devices` reads only each device's identity (name, model, vendor, firmware): the fastest inventory, no points. `quick` samples ~5% of each device's points, `normal` honours the vendor-aware caps, `full` reads every object. |
 | `--device-time-limit SECONDS` | `180` | Most time one device's deep scan may take; past it the scan keeps what was read, marks the device partial (`cut_short` in the JSON) and moves on. `0` = no limit. |
 | `--broadcast IP` | auto | Override the computed Who-Is broadcast target. Rarely needed: the broadcast is derived from the target syntax automatically. |
@@ -143,7 +144,7 @@ ways round that:
 | Code | Meaning |
 |------|---------|
 | 0 | Scan completed (may be zero devices) |
-| 1 | Invalid arguments: a bad flag or value, a target that will not parse, more addresses than `--max-hosts`, a missing or damaged `--baseline` |
+| 1 | Invalid arguments: a bad flag or value, a target that will not parse, more addresses than `--max-hosts`, public addresses without `--allow-public`, a missing or damaged `--baseline` |
 | 2 | Interrupted via Ctrl-C / SIGINT (results are partial) |
 | 3 | Internal error (see log) |
 | 4 | Scan completed but differed from the baseline (`--fail-on-change` only) |

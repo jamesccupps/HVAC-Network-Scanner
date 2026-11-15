@@ -149,6 +149,24 @@ def parse_targets(raw: str | Iterable[str]) -> list[str]:
     return out
 
 
+def public_targets(raw: str | Iterable[str]) -> list[str]:
+    """The target specs in `raw` that include public internet addresses:
+    globally routable, so not private, loopback, link-local, shared (CGNAT)
+    space or the documentation ranges. A mistyped first octet turns a site's
+    10.20.0.0/24 into somebody else's network on the internet; the window and
+    the command line ask before scanning one. Specs that don't parse are left
+    to the usual checks."""
+    out = []
+    for token in split_targets(raw):
+        try:
+            hosts = _parse_token(token)
+        except InvalidTargetSyntaxError:
+            continue
+        if any(ipaddress.IPv4Address(h).is_global for h in hosts):
+            out.append(token)
+    return out
+
+
 def iter_parse_targets(raw: str | Iterable[str]) -> Iterator[str]:
     """Yield target IPs one at a time, without building the full list first.
 

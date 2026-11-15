@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import signal
 import sys
 import threading
 from datetime import datetime
 
-from . import __version__
+from . import __version__, limits
 from .engine import ScanEngine, ScanOptions
 
 
@@ -45,8 +46,10 @@ def _number(kind, low=None, high=None, name="value"):
     def parse(text: str):
         try:
             value = kind(text)
-        except ValueError:
+        except (ValueError, OverflowError):
             raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+        if isinstance(value, float) and not math.isfinite(value):
+            raise argparse.ArgumentTypeError(f"{name} must be a number, not {text}")
         if (low is not None and value < low) or (high is not None and value > high):
             bounds = (f"at least {low}" if high is None else
                       f"between {low} and {high}" if low is not None else f"at most {high}")
@@ -63,11 +66,19 @@ def _ipv4(text: str) -> str:
         raise argparse.ArgumentTypeError(f"{text!r} is not an IPv4 address") from None
 
 
+def _option(name: str, label: str):
+    """An argparse type for a scan option with shared bounds (limits.py), so
+    the command line, the window and saved profiles accept the same values."""
+    def parse(text: str):
+        try:
+            return limits.parse(name, text, label)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(str(e)) from None
+    return parse
+
+
 def _positive_timeout(text: str) -> float:
-    value = _number(float, name="timeout")(text)
-    if value <= 0:
-        raise argparse.ArgumentTypeError(f"timeout must be more than 0, not {text}")
-    return value
+    return _option('timeout', "timeout")(text)
 
 
 # Defaults for the options that take a value. The parser's own default for
@@ -118,10 +129,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         "supervisory controllers).")
     p.add_argument("--timeout", type=_positive_timeout, default=None,
                    help="Per-operation timeout in seconds (default: 5)")
-    p.add_argument("--rate-limit", type=_number(int, 0, name="rate limit"),
+    p.add_argument("--rate-limit", type=_option('rate_limit_ms', "rate limit"),
                    default=None, metavar="MS",
                    help="Minimum ms between BACnet packets to the same IP (0=off)")
-    p.add_argument("--max-objects", type=_number(int, 1, name="max objects"),
+    p.add_argument("--max-objects", type=_option('max_objects_per_device', "max objects"),
                    default=None, metavar="N",
                    help="Hard ceiling on objects enumerated per BACnet device. "
                         "Applied on top of the vendor-aware profile cap and "
@@ -129,13 +140,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(the default).")
     p.add_argument("--no-rpm", action="store_true",
                    help="Disable ReadPropertyMultiple (force one read per property)")
-    p.add_argument("--device-time-limit", type=_number(float, 0, name="device time limit"),
+    p.add_argument("--device-time-limit", type=_option('device_time_limit', "device time limit"),
                    default=None, metavar="SECONDS",
                    help="Most time one device's deep scan may take before the "
                         "scan keeps what it has read and moves on (default: "
                         "180; 0 = no limit). A controller that drops requests "
                         "costs a timeout for each one.")
-    p.add_argument("--bacnet-workers", type=_number(int, 1, 64, name="BACnet workers"),
+    p.add_argument("--bacnet-workers", type=_option('bacnet_workers', "BACnet workers"),
                    default=None, metavar="N",
                    help="BACnet devices deep-scanned at once (default: 4). Each "
                         "worker owns one IP address, so no device sees more "
@@ -155,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Large-network probing
     d = p.add_argument_group("large-network probing")
-    d.add_argument("--whois-chunk", type=_number(int, 0, name="Who-Is chunk"),
+    d.add_argument("--whois-chunk", type=_option('whois_chunk_size', "Who-Is chunk"),
                    default=None, metavar="SIZE",
                    help="Split Who-Is by instance range in steps of SIZE "
                         "(default: 0 = single broadcast). Gentler on big "
@@ -198,6 +209,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    default=None, metavar="N",
                    help="Refuse to scan more than N addresses in total "
                         "(default: 65536). A guard against a mistyped prefix.")
+    d.add_argument("--allow-public", action="store_true",
+                   help="Scan targets that include public internet addresses. "
+                        "Without it they are refused: a mistyped first octet "
+                        "turns a private range into somebody else's network. "
+                        "Private, loopback and documentation ranges never need it.")
     d.add_argument("--mstp-probe", action="store_true",
                    help="For MS/TP networks behind a router on another subnet, "
                         "ask each MS/TP address in turn, two at a time (a few "
@@ -506,6 +522,18 @@ def main(argv: list[str] | None = None) -> int:
               f"--max-hosts ({max_hosts:,}). Check the prefixes, or raise "
               f"--max-hosts if that many is intended.", file=sys.stderr)
         return 1
+    # Public internet addresses only on purpose: a mistyped first octet turns
+    # a site's private range into somebody else's network.
+    if not args.allow_public:
+        from .netrange import public_targets
+        public = public_targets(networks)
+        if public:
+            listed = ", ".join(public[:5]) + (f" and {len(public) - 5} more"
+                                              if len(public) > 5 else "")
+            print(f"ERROR: {listed} include{'s' if len(public) == 1 else ''} public "
+                  f"internet addresses. Scan only networks you own or are authorized "
+                  f"to assess; add --allow-public to scan them anyway.", file=sys.stderr)
+            return 1
 
     # Read the baseline before scanning, so a missing or damaged one is
     # reported before the network is touched rather than after an hour.

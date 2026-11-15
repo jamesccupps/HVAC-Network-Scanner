@@ -383,7 +383,8 @@ def test_filter_hides_and_restores_rows(gui_app):
     gui_app.filter_var.set('vav-7')
     gui_app._apply_filter()
     assert len(gui_app.device_tree.get_children()) == 1
-    assert len(gui_app.points_tree.get_children()) == 3
+    # Each table keeps its own filter (2.14): the points are all still listed.
+    assert len(gui_app.points_tree.get_children()) == 5
     gui_app.filter_var.set('')
     gui_app._apply_filter()
     assert len(gui_app.device_tree.get_children()) == 2

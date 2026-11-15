@@ -28,6 +28,7 @@ hvac_scanner/
 ├── cli.py            Headless command-line entry point
 ├── gui.py            Tk GUI, thin wrapper over ScanEngine
 ├── settings.py       Remembered GUI settings (JSON in the user's config dir)
+├── limits.py         Bounds for the number settings, shared by the CLI, GUI and profiles
 ├── text.py           Device text made safe for logs and spreadsheets
 ├── updater.py        In-app updates: signed manifest check, download, exe swap
 ├── ed25519.py        Pure-Python Ed25519 (RFC 8032) for the update manifest

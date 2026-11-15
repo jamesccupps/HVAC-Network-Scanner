@@ -5,8 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Fixes from an audit of 2.13.1 (2026-11-14), and the advisory watcher changes
+made since 2.13.1.
+
 ### Added
 
+- **A question before scanning public addresses.** Nothing checked whether a
+  target was private: a mistyped first octet sent BACnet, Modbus and SNMP
+  probes to somebody else's network on the internet. A target that includes
+  globally routable addresses now brings up a question in the window, naming
+  them (asked once per set of targets while it is open), and is refused on the
+  command line unless `--allow-public` is given. Private, loopback, shared
+  (100.64.0.0/10) and documentation ranges are unaffected.
 - **Desigo PX and TALON TC in the advisory list.** The CISA watcher now maps
   Desigo PX controllers (PXC00/50/100/200-E.D, PXC00/64/128-U, PXM20-E and
   the rest of the types CISA lists) and TALON TC Compact and Modular panels,
@@ -17,8 +27,54 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The list reaches installed copies through the signed daily download; no new
   release is needed.
 
+### Changed
+
+- **One set of bounds for the number settings** (`hvac_scanner/limits.py`):
+  timeout 0.1–300 s, rate limit 0–60,000 ms, Who-Is chunk 0–4,194,304,
+  parallel devices 1–64, device time limit 0–86,400 s, max objects
+  1–1,000,000. The command line, the window's Advanced fields and saved site
+  profiles each had their own minimums and no maximums: `--timeout nan`,
+  `inf` and `1e999` were accepted and failed inside the socket layer with a
+  traceback, and a profile could ask for 100,000 parallel devices. They are
+  now refused with the reason (a profile's out-of-range field is left out, as
+  one that doesn't parse always was). `--timeout` now needs at least 0.1.
+- **Each results tab keeps its own filter.** One filter box served all five
+  tables, so text typed on one tab (or put there by Show points) could leave
+  another empty. The box now shows the filter of the tab on screen, with a
+  **Clear** button beside it while it holds text; Esc in the box clears it.
+- **The settings file is written for its owner only** on Linux and macOS
+  (0600, in a 0700 folder when the folder is new): it holds SNMP community
+  strings and site profiles. Windows is unchanged.
+
 ### Fixed
 
+- **One malformed value dropped a device's trend logs, schedules, alarm
+  routing and network ports, silently.** A Date, Time or Object Identifier
+  cut short by the end of the packet raised an error the metadata decoders
+  didn't catch, and it ended the filing of all of that device's metadata. The
+  value decoder now checks the octets that arrived, not the length the tag
+  declared; the decoders catch the error too; and each object is filed on its
+  own, so a bad one costs only itself, with a line in the scan log. The
+  decoders and reply parsers are fuzzed in the tests.
+- **Show points on a Modbus device opened the Trends tab.** It selected tab 2
+  by number, which has been Trends since 2.8; Modbus Registers is selected by
+  its widget now. Double-clicking a Modbus device did the same.
+- **After Show points, the Devices tab listed nothing** until the filter was
+  cleared by hand (see "Each results tab keeps its own filter").
+- **A field marked wrong stayed red** until a key was pressed in it, through
+  a paste or a saved site loaded and a scan that then ran fine. Fields are
+  unmarked whenever the settings are checked again.
+- **The unicast setting** read from a damaged settings file or profile
+  scanned as "auto" whatever it said; anything but auto, always or off is now
+  refused.
+- **A downloaded update is checked again just before it installs.** With
+  "install on close" it can wait in the temp folder for hours after its
+  download was verified; its size and SHA-256 are compared with the signed
+  manifest again before it runs.
+- Removed `export_results` from the window: unused, and without the error
+  handling the Export menu has.
+- A test keeps the version in `pyproject.toml` and `__version__` the same;
+  CI checks a release tag against `__version__` only.
 - **Older CISA version ranges.** Ranges written `>=V2.3_and_<V6.30.016` were
   read as "all versions"; they now give the version to update to.
 - **No review issues for products an advisory lists as not affected.** A

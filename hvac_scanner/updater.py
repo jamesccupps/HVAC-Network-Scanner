@@ -289,6 +289,23 @@ def current_exe() -> Path:
     return Path(sys.executable).resolve()
 
 
+def _check_staged(path: Path, asset: dict) -> None:
+    """The staged exe is still the file that was downloaded and checked. With
+    "install on close" it waits in the temp folder for hours, where another
+    program of the same user could replace it."""
+    digest, size = hashlib.sha256(), 0
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                size += len(chunk)
+                digest.update(chunk)
+    except OSError as e:
+        raise UpdateError(f"the downloaded update can't be read: {e}") from e
+    if size != asset.get("size") or digest.hexdigest() != asset.get("sha256"):
+        raise UpdateError("the downloaded update has changed since it was checked; "
+                          "it will be downloaded again")
+
+
 def apply(update: Update, path: Path, restart: bool = True) -> None:
     """Start installing the downloaded exe at `path`. The caller must exit
     straight away after: the new exe waits for this process to end. With
@@ -299,6 +316,7 @@ def apply(update: Update, path: Path, restart: bool = True) -> None:
         raise UpdateError(f"{target.parent} can't be written to. Move the scanner to a "
                           f"folder of your own, or download the new version from "
                           f"{RELEASES_URL}.")
+    _check_staged(Path(path), update.asset or {})
     log.info("starting the downloaded %s to swap it in", update.version)
     # Its working folder is the staging folder, never the program's.
     _spawn([path, "--finish-update", target, os.getpid(), *([] if restart else ["--no-restart"])],

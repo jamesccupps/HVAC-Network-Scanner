@@ -2,6 +2,7 @@
 and app updates install themselves when the window closes. Network-free:
 CISA's data comes from tests/data/csaf, sources are local files."""
 import base64
+import hashlib
 import json
 import queue
 import sys
@@ -381,7 +382,10 @@ def test_apply_without_restart_tells_the_new_exe(tmp_path, monkeypatch):
     monkeypatch.setattr(updater, "current_exe", lambda: tmp_path / "app" / updater.EXE_NAME)
     (tmp_path / "app").mkdir()
     new = tmp_path / "staging" / updater.EXE_NAME
-    up = updater.Update("99.0.0", None, "exe", {}, "x")
+    new.parent.mkdir()
+    new.write_bytes(b"new exe")
+    asset = {"file": updater.EXE_NAME, "size": 7, "sha256": hashlib.sha256(b"new exe").hexdigest()}
+    up = updater.Update("99.0.0", None, "exe", asset, "x")
     updater.apply(up, new, restart=False)
     updater.apply(up, new)
     assert spawned[0][-1] == "--no-restart" and spawned[1][-1] != "--no-restart"

@@ -19,6 +19,7 @@ import base64
 import ipaddress
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -34,7 +35,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 from typing import Any, Optional
 
-from . import __version__
+from . import __version__, limits
 from . import settings as settings_mod
 from .engine import ScanEngine, ScanOptions
 from .report import (recipient_summary, trend_interval, trend_records, trend_state,
@@ -142,6 +143,12 @@ class HVACNetworkScannerGUI:
         self._dev_by_iid: dict[str, dict] = {}
         self._raw_dirty = False
         self._filter_after: Optional[str] = None
+        # Each table keeps its own filter: one box shared by all five left a
+        # tab empty for text typed (or put there by Show points) on another.
+        self._filters: dict[str, str] = {}             # tree -> its filter text
+        self._filter_pending: set[str] = set()         # trees to re-filter
+        self._filter_loading = False                   # box being set on a tab change
+        self._public_ok: set[tuple[str, ...]] = set()  # public targets already agreed to
         self._pump_id: Optional[str] = None
         self._live_counts = {k: 0 for k in ('bacnet', 'mstp', 'modbus', 'services', 'snmp',
                                             'p2', 'knx', 'lon', 'gateways')}
@@ -473,12 +480,17 @@ class HVACNetworkScannerGUI:
         filt = ttk.Frame(top_frame, style="Dark.TFrame")
         filt.pack(fill=tk.X, pady=(0, 4))
         self.filter_var = tk.StringVar()
+        # Shown only while the box holds text; packed before the box so it
+        # sits to its right.
+        self.filter_clear = ttk.Button(filt, text="Clear", style="Link.TButton",
+                                       command=lambda: self.filter_var.set(""))
         self.filter_entry = ttk.Entry(filt, textvariable=self.filter_var, width=40)
         self.filter_entry.pack(side=tk.RIGHT)
+        self.filter_entry.bind("<Escape>", self._on_filter_escape)
         ttk.Label(filt, text="Filter  (Ctrl+F)", style="DarkDim.TLabel").pack(side=tk.RIGHT, padx=(0, 8))
         self.filter_count = ttk.Label(filt, text="", style="DarkDim.TLabel")
         self.filter_count.pack(side=tk.LEFT)
-        self.filter_var.trace_add('write', lambda *_a: self._schedule_filter())
+        self.filter_var.trace_add('write', lambda *_a: self._on_filter_typed())
 
         self.notebook = ttk.Notebook(top_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -635,6 +647,7 @@ class HVACNetworkScannerGUI:
         tree._hvac_name = name                       # type: ignore[attr-defined]
         self._rows[name] = []
         self._shown[name] = 0
+        self._filters[name] = ""
         tree.bind("<Control-c>", lambda _e, t=tree: self._copy_rows(t))
         tree.bind("<Control-a>", lambda _e, t=tree: t.selection_set(t.get_children()))
         return tree
@@ -697,6 +710,7 @@ class HVACNetworkScannerGUI:
     def _build_points_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Dark.TFrame")
         self.notebook.add(tab, text="BACnet Points")
+        self._points_tab = tab
         self.points_tree = self._make_tree(tab, "points", [
             ("device", "Device", 170), ("type", "Object Type", 140),
             ("address", "Instance", 80), ("name", "Name", 300),
@@ -797,6 +811,7 @@ class HVACNetworkScannerGUI:
     def _build_registers_tab(self) -> None:
         tab = ttk.Frame(self.notebook, style="Dark.TFrame")
         self.notebook.add(tab, text="Modbus Registers")
+        self._registers_tab = tab
         self.reg_tree = self._make_tree(tab, "registers", [
             ("device", "Device", 180), ("reg_type", "Register Type", 130),
             ("address", "Address", 80), ("value_dec", "Value (Dec)", 100),
@@ -846,7 +861,7 @@ class HVACNetworkScannerGUI:
         self._rows[name].append(iid)
         if tags:
             self._row_tags[iid] = tuple(tags)
-        terms = self._filter_terms()
+        terms = self._filter_terms(name)
         if terms and not self._matches(values, terms):
             tree.detach(iid)
         else:
@@ -895,8 +910,8 @@ class HVACNetworkScannerGUI:
             clean = tree.heading(c, "text").rstrip(" ▲▼")
             tree.heading(c, text=clean + arrow if c == col else clean)
 
-    def _filter_terms(self) -> list[str]:
-        return self.filter_var.get().lower().split()
+    def _filter_terms(self, name: str) -> list[str]:
+        return self._filters.get(name, "").lower().split()
 
     @staticmethod
     def _matches(values, terms: list[str]) -> bool:
@@ -911,20 +926,59 @@ class HVACNetworkScannerGUI:
         return [self.device_tree, self.points_tree, self.meta_tree, self.reg_tree,
                 self.svc_tree, None][idx]
 
-    def _schedule_filter(self) -> None:
+    def _on_filter_typed(self) -> None:
+        """The box changed: it holds the filter of the table on screen."""
+        self._show_filter_clear()
+        if self._filter_loading:
+            return
+        tree = self._current_tree()
+        if tree is None:
+            return
+        name = tree._hvac_name                       # type: ignore[attr-defined]
+        self._filters[name] = self.filter_var.get()
+        self._schedule_filter(name)
+
+    def _on_filter_escape(self, _event=None):
+        if self.filter_var.get():
+            self.filter_var.set("")
+            return "break"                           # not also Stop
+        return None
+
+    def _show_filter_clear(self) -> None:
+        if self.filter_var.get():
+            if not self.filter_clear.winfo_ismapped():
+                self.filter_clear.pack(side=tk.RIGHT, before=self.filter_entry, padx=(4, 0))
+        else:
+            self.filter_clear.pack_forget()
+
+    def _schedule_filter(self, name: str) -> None:
+        self._filter_pending.add(name)
         if self._filter_after:
             self.root.after_cancel(self._filter_after)
         self._filter_after = self.root.after(180, self._apply_filter)
 
     def _apply_filter(self) -> None:
+        """Apply the filters that changed, and the box's text to the table on
+        screen (what a caller that set the box directly expects)."""
+        if self._filter_after:
+            self.root.after_cancel(self._filter_after)
         self._filter_after = None
+        current = self._current_tree()
+        if current is not None:
+            name = current._hvac_name                # type: ignore[attr-defined]
+            if self._filters.get(name, "") != self.filter_var.get():
+                self._filters[name] = self.filter_var.get()
+                self._filter_pending.add(name)
+        pending, self._filter_pending = self._filter_pending, set()
         for tree in (self.device_tree, self.points_tree, self.meta_tree, self.reg_tree,
                      self.svc_tree):
-            self._apply_filter_to(tree)
+            if tree._hvac_name in pending:           # type: ignore[attr-defined]
+                self._apply_filter_to(tree)
+        self._update_filter_count()
 
     def _apply_filter_to(self, tree: ttk.Treeview) -> None:
         name = tree._hvac_name                       # type: ignore[attr-defined]
-        terms = self._filter_terms()
+        terms = self._filter_terms(name)
         shown = 0
         for iid in self._rows[name]:
             if not terms or self._matches(tree.item(iid, 'values'), terms):
@@ -947,6 +1001,16 @@ class HVACNetworkScannerGUI:
         self.filter_count.configure(text=text)
 
     def _on_tab_changed(self, _event=None) -> None:
+        # The box shows the filter of the table now on screen; the raw view
+        # has none.
+        tree = self._current_tree()
+        self._filter_loading = True
+        try:
+            self.filter_var.set(self._filters.get(tree._hvac_name, "")  # type: ignore[attr-defined]
+                                if tree is not None else "")
+        finally:
+            self._filter_loading = False
+        self.filter_entry.configure(state="normal" if tree is not None else "disabled")
         try:
             if self.notebook.select() == str(self._raw_tab) and self._raw_dirty:
                 self._fill_raw()
@@ -1144,6 +1208,8 @@ class HVACNetworkScannerGUI:
             return
         if not self._confirm_size(opts.networks):
             return
+        if not self._confirm_public(opts.networks):
+            return
 
         self.scan_running = True
         self.result = None
@@ -1192,6 +1258,30 @@ class HVACNetworkScannerGUI:
             f"The targets cover {total:,} addresses. Scan all of them?{note}",
             parent=self.root)
 
+    def _confirm_public(self, networks: list[str]) -> bool:
+        """Ask before scanning public internet addresses, naming them: a
+        mistyped first octet turns a site's private range into somebody
+        else's network. Asked once per set of targets while the window is
+        open."""
+        from .netrange import public_targets
+        public = public_targets(networks)
+        if not public or tuple(public) in self._public_ok:
+            return True
+        shown = "\n".join(f"    {p}" for p in public[:8])
+        if len(public) > 8:
+            shown += f"\n    and {len(public) - 8} more"
+        ok = messagebox.askyesno(
+            "Public addresses",
+            f"These targets include public internet addresses:\n\n{shown}\n\n"
+            f"Scan only networks you own or are authorized to assess. Scan them?",
+            icon="warning", default="no", parent=self.root)
+        if ok:
+            self._public_ok.add(tuple(public))
+        else:
+            self.log_message("  Scan not started: the targets include public addresses.")
+            self._set_status("Not started: public addresses", Colors.YELLOW)
+        return ok
+
     def stop_scan(self) -> None:
         if not self.scan_running:
             return
@@ -1200,9 +1290,12 @@ class HVACNetworkScannerGUI:
         self._set_status("Stopping…", Colors.YELLOW)
         self.log_message("Scan stop requested — finishing the current step…")
 
-    def _read_number(self, entry, label: str, default, cast, minimum=None):
+    def _read_number(self, entry, label: str, default, cast=None, minimum=None,
+                     option: Optional[str] = None):
         """Read a numeric entry field: `default` when blank, ValueError (with
-        a sentence for the user) when it is not a usable number.
+        a sentence for the user) when it is not a usable number. With
+        `option`, the bounds are the ones the command line and saved profiles
+        use (limits.py).
 
         A typo used to fall back to the default with only a log line, and the
         defaults are the least gentle settings (no rate limit, four devices at
@@ -1211,10 +1304,14 @@ class HVACNetworkScannerGUI:
         raw = (entry.get() or "").strip()
         if not raw:
             return default
+        if option is not None:
+            return limits.parse(option, raw, label)
         try:
             value = cast(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError(f"{label} {raw!r} is not a number") from None
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{label} must be a number, not {raw}")
         if minimum is not None and value < minimum:
             raise ValueError(f"{label} must be at least {minimum}, not {raw}")
         return value
@@ -1224,6 +1321,10 @@ class HVACNetworkScannerGUI:
         field is unusable. Nothing is sent until every field checks out."""
         from .netrange import parse_targets, InvalidTargetSyntaxError
 
+        # Every check runs again now, so a field marked wrong earlier is
+        # unmarked first: text pasted or loaded from a saved site (no key
+        # press) used to leave it red through a scan that then ran fine.
+        self._clear_field_errors()
         networks = [n.strip() for n in self.network_entry.get().split(",") if n.strip()]
         if not networks:
             return self._reject("Enter at least one target network.", self.network_entry)
@@ -1252,19 +1353,27 @@ class HVACNetworkScannerGUI:
             return self._reject(str(e))
 
         numbers = {}
-        for key, entry, label, default, cast, minimum in (
-                ('max_objects', self.adv_vars['max_objects'], "Max objects", None, int, 1),
-                ('timeout', self.timeout_entry, "Timeout", 5.0, float, 0.1),
-                ('whois_chunk', self.whois_chunk_entry, "Who-Is chunk", 0, int, 0),
-                ('rate_limit', self.rate_limit_entry, "Rate limit", 0, int, 0),
-                ('workers', self.workers_entry, "Parallel devices", 4, int, 1),
-                ('device_limit', self.device_limit_entry, "Device time limit", 180.0, float, 0)):
+        for key, entry, option, label, default in (
+                ('max_objects', self.adv_vars['max_objects'], 'max_objects_per_device',
+                 "Max objects", None),
+                ('timeout', self.timeout_entry, 'timeout', "Timeout", 5.0),
+                ('whois_chunk', self.whois_chunk_entry, 'whois_chunk_size', "Who-Is chunk", 0),
+                ('rate_limit', self.rate_limit_entry, 'rate_limit_ms', "Rate limit", 0),
+                ('workers', self.workers_entry, 'bacnet_workers', "Parallel devices", 4),
+                ('device_limit', self.device_limit_entry, 'device_time_limit',
+                 "Device time limit", 180.0)):
             try:
-                numbers[key] = self._read_number(entry, label, default, cast, minimum)
+                numbers[key] = self._read_number(entry, label, default, option=option)
             except ValueError as e:
                 if key != 'max_objects':
                     self._toggle_advanced(True)
                 return self._reject(str(e), entry if hasattr(entry, 'configure') else None)
+        # A read-only list in the window, but a damaged settings file or
+        # profile can still put anything here; it used to scan as "auto".
+        unicast = self.adv_vars['unicast'].get().strip() or "auto"
+        if unicast not in ("auto", "always", "off"):
+            self._toggle_advanced(True)
+            return self._reject(f"Unicast discovery {unicast!r} is not auto, always or off")
         communities = [c.strip() for c in self.adv_vars['communities'].get().split(",")
                        if c.strip()] or ["public"]
         return ScanOptions(
@@ -1286,7 +1395,7 @@ class HVACNetworkScannerGUI:
             scan_depth=self.scan_depth_var.get(),
             bacnet_workers=numbers['workers'],
             device_time_limit=numbers['device_limit'],
-            unicast_discovery=self.adv_vars['unicast'].get() or "auto",
+            unicast_discovery=unicast,
             bbmd=bbmd,
             bacnet_broadcast=broadcast,
             max_objects_per_device=numbers['max_objects'],
@@ -1295,6 +1404,11 @@ class HVACNetworkScannerGUI:
             read_metadata=self.read_metadata.get(),
             mstp_mac_probe=self.mstp_mac_probe.get(),
         )
+
+    def _clear_field_errors(self) -> None:
+        for w in (self.network_entry, self.timeout_entry, self.rate_limit_entry,
+                  self.workers_entry, self.whois_chunk_entry, self.device_limit_entry):
+            w.configure(style="TEntry")
 
     def _reject(self, reason: str, widget=None) -> None:
         self.log_message(f"  [!] {reason}")
@@ -1883,11 +1997,14 @@ class HVACNetworkScannerGUI:
         dev = self._selected_device()
         if not dev:
             return
+        # Tabs by widget, not by number: the Trends tab added in 2.8 moved
+        # Modbus Registers from 2 to 3, and Show points went to the wrong one.
+        # The filter goes on the opened table only (each keeps its own).
         if dev.get('protocol') == 'Modbus TCP':
-            self.notebook.select(2)
+            self.notebook.select(self._registers_tab)
             self.filter_var.set(dev.get('ip', ''))
         else:
-            self.notebook.select(1)
+            self.notebook.select(self._points_tab)
             self.filter_var.set(self._device_label(dev))
         self._apply_filter()
 
@@ -2163,28 +2280,6 @@ class HVACNetworkScannerGUI:
         if kind == 'html':
             webbrowser.open(Path(path).resolve().as_uri())
 
-    def export_results(self) -> None:
-        """Pick the format from the file name (kept for older callers)."""
-        if not self.result or not self.result.devices:
-            messagebox.showinfo("Export", "No data to export")
-            return
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("JSON files", "*.json"),
-                       ("Classification report", "*.txt"), ("All files", "*.*")],
-            initialfile=f"hvac_scan_{datetime.now():%Y%m%d_%H%M%S}",
-        )
-        if not filepath:
-            return
-        lower = filepath.lower()
-        if lower.endswith('.json'):
-            self.result.write_json(filepath)
-        elif lower.endswith('.txt'):
-            self.result.write_classification_report(filepath)
-        else:
-            self.result.write_csv(filepath)
-        self.log_message(f"Exported to {filepath}")
-
     # -- settings ---------------------------------------------------------
 
     _PROTOCOL_VARS = settings_mod.TOGGLE_OPTIONS
@@ -2213,6 +2308,7 @@ class HVACNetworkScannerGUI:
     def _apply_settings(self, data: dict[str, Any]) -> None:
         if not data:
             return
+        self._clear_field_errors()                   # new values, not yet checked
         if isinstance(data.get('targets'), str) and data['targets'].strip():
             self.network_entry.delete(0, tk.END)
             self.network_entry.insert(0, data['targets'])
