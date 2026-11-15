@@ -27,6 +27,8 @@ import time
 from contextlib import closing
 from typing import Any, Optional
 
+from .netsweep import time_limit
+
 log = logging.getLogger(__name__)
 
 OPCUA_PORT = 4840
@@ -300,7 +302,11 @@ def probe(ip: str, port: int = OPCUA_PORT, timeout: float = 3.0) -> dict[str, An
     url = f"opc.tcp://{ip}:{port}"
     timeout_ms = int(timeout * 1000)
     try:
-        with closing(socket.create_connection((ip, port), timeout=timeout)) as sock:
+        # The whole exchange has the probes' overall limit: each read has
+        # `timeout`, and a server dribbling a 1 MB message a byte at a time
+        # just inside it held the scan (Stop included) for hours.
+        with closing(socket.create_connection((ip, port), timeout=timeout)) as sock, \
+                time_limit(sock):
             sock.settimeout(timeout)
             sock.sendall(build_hello(url))
             head = _recv_exact(sock, 8)

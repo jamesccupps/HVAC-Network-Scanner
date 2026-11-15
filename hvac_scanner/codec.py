@@ -1099,7 +1099,7 @@ def decode_property_references(raw: bytes) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     try:
         items = decode_tagged(raw)
-    except (BACnetParseError, IndexError, struct.error):
+    except (BACnetParseError, IndexError, struct.error, ValueError):
         return refs
     for item in items:
         if not isinstance(item, Ctx) or not isinstance(item.value, bytes):
@@ -1155,7 +1155,7 @@ def decode_recipient_list(raw: bytes) -> list[dict[str, Any]]:
     """
     try:
         items = decode_tagged(raw)
-    except (BACnetParseError, IndexError, struct.error):
+    except (BACnetParseError, IndexError, struct.error, ValueError):
         return []
     out = []
     for i in range(0, len(items) - 6, 7):
@@ -1166,12 +1166,15 @@ def decode_recipient_list(raw: bytes) -> list[dict[str, Any]]:
             obj = decode_object_id(who.value)
             recipient = {'device': obj[1]} if obj else {}
         elif who.tag == 1 and isinstance(who.value, list) and len(who.value) >= 2:
+            # Kept only as the types they should be: a network number sent
+            # with a context tag came through as a Ctx object, which no
+            # export could write, and the HTML report failed for the scan.
             net, mac = who.value[0], who.value[1]
             try:
-                mac_text = format_bacnet_mac(bytes.fromhex(str(mac)))
+                mac_text = format_bacnet_mac(bytes.fromhex(mac)) if isinstance(mac, str) else None
             except ValueError:
-                mac_text = str(mac)
-            recipient = {'network': net, 'address': mac_text}
+                mac_text = None
+            recipient = {'network': net if type(net) is int else None, 'address': mac_text}
         else:
             recipient = {}
         day_bits = decode_bits(days)
@@ -1199,7 +1202,7 @@ def decode_routing_table(raw: bytes) -> list[dict[str, Any]]:
     [1] next-hop MAC, [2] status, [3] performance index (optional)."""
     try:
         items = decode_tagged(raw)
-    except (BACnetParseError, IndexError, struct.error):
+    except (BACnetParseError, IndexError, struct.error, ValueError):
         return []
     out: list[dict[str, Any]] = []
     for item in items:
@@ -1228,7 +1231,7 @@ def decode_weekly_schedule(raw: bytes) -> list[list[tuple[str, Any]]]:
     days: list[list[tuple[str, Any]]] = []
     try:
         items = decode_tagged(raw)
-    except (BACnetParseError, IndexError, struct.error):
+    except (BACnetParseError, IndexError, struct.error, ValueError):
         return days
     for item in items:
         if isinstance(item, Ctx) and item.tag == 0 and isinstance(item.value, list):
@@ -1249,6 +1252,10 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
         return data[vstart:vend].hex(), vend
 
     value_bytes = data[vstart:vend]
+    # A packet that ends early leaves fewer octets than the tag declares: the
+    # fixed-size types below check what arrived, not what was promised, so a
+    # cut-off Date comes back as hex instead of failing the whole value.
+    whole = len(value_bytes) == length
 
     # Unsigned, Signed and Enumerated values are at most 8 octets here (the
     # standard allows wider, nothing real sends them). A wider one stays hex:
@@ -1266,17 +1273,17 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
     if tag_num == 3:  # Signed
         return int.from_bytes(value_bytes, 'big', signed=True), vend
     if tag_num == 4:  # Real
-        if length == 4:
+        if length == 4 and whole:
             return struct.unpack('!f', value_bytes)[0], vend
         return None, vend
     if tag_num == 5:  # Double
-        if length == 8:
+        if length == 8 and whole:
             return struct.unpack('!d', value_bytes)[0], vend
         return None, vend
     if tag_num == 6:  # Octet String
         return value_bytes.hex(), vend
     if tag_num == 7:  # Character String
-        if length == 0:
+        if not value_bytes:
             return "", vend
         encoding = value_bytes[0]
         text = value_bytes[1:]
@@ -1294,7 +1301,7 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
     if tag_num == 9:  # Enumerated
         return int.from_bytes(value_bytes, 'big'), vend
     if tag_num == 10:  # Date
-        if length == 4:
+        if length == 4 and whole:
             # 255 in any field means "unspecified" (a schedule's "every
             # year"); printing it as year 2155 or month 255 was nonsense.
             y, m, d, _dow = value_bytes
@@ -1303,13 +1310,13 @@ def _parse_app_value(data: bytes, idx: int) -> tuple[Any, int]:
                                          (m, 2), (d, 2))), vend
         return value_bytes.hex(), vend
     if tag_num == 11:  # Time
-        if length == 4:
+        if length == 4 and whole:
             return ":".join("*" if v == 255 else f"{v:02d}"
                             for v in value_bytes[:3]) + (
                 "" if value_bytes[3] == 255 else f".{value_bytes[3]:02d}"), vend
         return value_bytes.hex(), vend
     if tag_num == 12:  # Object Identifier
-        if length == 4:
+        if length == 4 and whole:
             oid = struct.unpack('!I', value_bytes)[0]
             obj_type = (oid >> 22) & 0x3FF
             obj_inst = oid & 0x3FFFFF

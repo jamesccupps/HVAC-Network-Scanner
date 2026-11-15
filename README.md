@@ -353,12 +353,38 @@ Exit codes:
 
 - `0` — scan completed
 - `1` — bad arguments (including a value out of range, more addresses than
-  `--max-hosts`, or a `--baseline` file that is missing or damaged)
+  `--max-hosts`, public addresses without `--allow-public`, or a `--baseline`
+  file that is missing or damaged)
 - `2` — interrupted (Ctrl+C), so the results are partial
 - `3` — internal error
 - `4` — scan completed and differed from the baseline (`--fail-on-change`)
 
 ## What's new
+
+### v2.14.0
+
+- **Show points opens the right tab, and the device list stays put**: on a
+  Modbus device it opened Trends instead of Modbus Registers, and after it the
+  Devices tab listed nothing until the filter was cleared. Each tab now keeps
+  its own filter, with a **Clear** button (or Esc) beside it.
+- **One device can no longer spoil the results**: a value cut short by a
+  device used to drop all of its trend logs, schedules, alarm routing and
+  network ports from the scan, and an oddly encoded alarm recipient could
+  stop the HTML report for the whole scan. Now only the object or field it
+  belongs to is affected, and the scan log says so.
+- **Sites saved at depth "devices" stay that gentle**: they used to run as a
+  normal deep scan from `--profile` and in the window.
+- **Public addresses need a yes**: a target that reaches public internet
+  addresses (a mistyped first octet, say) brings up a question naming them;
+  on the command line it needs `--allow-public`.
+- **Number settings are checked the same way everywhere**: `nan`, `inf` and
+  values like 99999999999 are refused with the reason, in the window, on the
+  command line and in saved site profiles.
+- Smaller fixes: a field marked wrong is unmarked once it checks out; the
+  settings file is readable by its owner only on Linux and macOS; a
+  downloaded update is checked again just before it installs; the OPC UA
+  probe has a time limit like the others; device names reach the terminal
+  without control characters; a range like `300.1.1.2-4` is refused.
 
 ### v2.13.1 (2026-11-10)
 
@@ -627,6 +653,7 @@ hvac_scanner/
 ├── cli.py             # Headless command-line interface
 ├── gui.py             # Tk GUI (thin wrapper over ScanEngine)
 ├── settings.py        # Remembered GUI settings
+├── limits.py          # Bounds for the number settings (CLI, GUI and profiles)
 ├── text.py            # Device text made safe for logs and spreadsheets
 ├── updater.py         # In-app updates: signed manifest check, download, swap
 ├── ed25519.py         # Ed25519 signature check for the update manifest

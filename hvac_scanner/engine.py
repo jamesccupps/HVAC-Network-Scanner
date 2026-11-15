@@ -2055,84 +2055,89 @@ class ScanEngine:
         names = {(o['type'], o['instance']): o['name'] for o in dev.get('objects', [])}
         own = dev.get('instance')
         trends, schedules, ports, alarms = [], [], [], []
+        skipped = 0
         for obj_type, inst, raw in meta:
-            obj_type = str(obj_type)
-            name = _safe_str(raw.get('objectName', ''))
-            if obj_type == 'Network Port':
-                ntype = raw.get('networkType')
-                ports.append({
-                    'instance': inst, 'name': name,
-                    'type': (BACNET_NETWORK_TYPES.get(ntype, f"type {ntype}")
-                             if ntype is not None else ''),
-                    'network': raw.get('networkNumber'),
-                    'mac': _format_mac(raw.get('macAddress'), ntype),
-                    'max_master': raw.get('maxMaster'),
-                    'accepts_fd_registrations': raw.get('bbmdAcceptFDRegistrations'),
-                    # BACnet/SC: where this device's hub is, and whether it
-                    # is a hub itself (and on which URIs it accepts nodes).
-                    'sc_primary_hub': raw.get('scPrimaryHubUri', ''),
-                    'sc_failover_hub': raw.get('scFailoverHubUri', ''),
-                    'sc_hub_function': raw.get('scHubFunctionEnable'),
-                    'sc_accept_uris': raw.get('scHubFunctionAcceptUris') or [],
-                    # Networks reachable through other routers on this port.
-                    'routes': codec.decode_routing_table(raw.get('routingTable') or b''),
-                })
-            elif obj_type == 'Notification Class':
-                priority = raw.get('priority')
-                alarms.append({
-                    'instance': inst, 'name': name,
-                    'description': _safe_str(raw.get('description', '')),
-                    'number': raw.get('notificationClass', inst),
-                    'priority': (dict(zip(('to-offnormal', 'to-fault', 'to-normal'), priority))
-                                 if isinstance(priority, list) else {}),
-                    'ack_required': codec.decode_ack_required(raw.get('ackRequired')),
-                    # None when the list could not be read; [] is a class
-                    # that sends its alarms to no one.
-                    'recipients': (codec.decode_recipient_list(raw['recipientList'])
-                                   if isinstance(raw.get('recipientList'), bytes) else None),
-                })
-            elif obj_type.startswith('Trend Log'):
-                refs = codec.decode_property_references(
-                    raw.get('logDeviceObjectProperty') or b'')
-                interval = raw.get('logInterval')
-                ltype = raw.get('loggingType')
-                trends.append({
-                    'type': obj_type, 'instance': inst, 'name': name,
-                    'description': _safe_str(raw.get('description', '')),
-                    'logs': [_describe_reference(r, names, own) for r in refs],
-                    'interval_s': interval / 100 if interval else None,
-                    'logging_type': (BACNET_LOGGING_TYPES.get(ltype, str(ltype))
-                                     if ltype is not None else ''),
-                    'enabled': raw.get('enable'),
-                    'records': raw.get('recordCount'),
-                    'buffer_size': raw.get('bufferSize'),
-                    'stop_when_full': raw.get('stopWhenFull'),
-                    'status': ", ".join(_status_flags(raw.get('statusFlags'))),
-                })
-            elif obj_type in ('Schedule', 'Calendar'):
-                refs = codec.decode_property_references(
-                    raw.get('listOfObjectPropertyReferences') or b'')
-                binary = bool(refs) and all(
-                    r['object'][0].startswith('Binary') for r in refs)
-                entry = {
-                    'type': obj_type, 'instance': inst, 'name': name,
-                    'description': _safe_str(raw.get('description', '')),
-                    'present_value': _schedule_value(raw.get('presentValue'), binary),
-                    'status': ", ".join(_status_flags(raw.get('statusFlags'))),
-                }
-                if obj_type == 'Schedule':
-                    period = raw.get('effectivePeriod')
-                    weekly = codec.decode_weekly_schedule(raw.get('weeklySchedule') or b'')
-                    entry.update({
-                        'default': (_schedule_value(raw['scheduleDefault'], binary)
-                                    if 'scheduleDefault' in raw else ''),
-                        'effective': _date_range(period),
-                        'controls': [_describe_reference(r, names, own) for r in refs],
-                        'weekly': {day: ", ".join(f"{str(t)[:5]} {_schedule_value(v, binary)}"
-                                                  for t, v in changes)
-                                   for day, changes in zip(_WEEKDAYS, weekly) if changes},
+            try:
+                obj_type = str(obj_type)
+                name = _safe_str(raw.get('objectName', ''))
+                if obj_type == 'Network Port':
+                    ntype = raw.get('networkType')
+                    ports.append({
+                        'instance': inst, 'name': name,
+                        'type': (BACNET_NETWORK_TYPES.get(ntype, f"type {ntype}")
+                                 if ntype is not None else ''),
+                        'network': raw.get('networkNumber'),
+                        'mac': _format_mac(raw.get('macAddress'), ntype),
+                        'max_master': raw.get('maxMaster'),
+                        'accepts_fd_registrations': raw.get('bbmdAcceptFDRegistrations'),
+                        # BACnet/SC: where this device's hub is, and whether it
+                        # is a hub itself (and on which URIs it accepts nodes).
+                        'sc_primary_hub': raw.get('scPrimaryHubUri', ''),
+                        'sc_failover_hub': raw.get('scFailoverHubUri', ''),
+                        'sc_hub_function': raw.get('scHubFunctionEnable'),
+                        'sc_accept_uris': raw.get('scHubFunctionAcceptUris') or [],
+                        # Networks reachable through other routers on this port.
+                        'routes': codec.decode_routing_table(raw.get('routingTable') or b''),
                     })
-                schedules.append(entry)
+                elif obj_type == 'Notification Class':
+                    priority = raw.get('priority')
+                    alarms.append({
+                        'instance': inst, 'name': name,
+                        'description': _safe_str(raw.get('description', '')),
+                        'number': raw.get('notificationClass', inst),
+                        'priority': (dict(zip(('to-offnormal', 'to-fault', 'to-normal'), priority))
+                                     if isinstance(priority, list) else {}),
+                        'ack_required': codec.decode_ack_required(raw.get('ackRequired')),
+                        # None when the list could not be read; [] is a class
+                        # that sends its alarms to no one.
+                        'recipients': (codec.decode_recipient_list(raw['recipientList'])
+                                       if isinstance(raw.get('recipientList'), bytes) else None),
+                    })
+                elif obj_type.startswith('Trend Log'):
+                    refs = codec.decode_property_references(
+                        raw.get('logDeviceObjectProperty') or b'')
+                    interval = raw.get('logInterval')
+                    ltype = raw.get('loggingType')
+                    trends.append({
+                        'type': obj_type, 'instance': inst, 'name': name,
+                        'description': _safe_str(raw.get('description', '')),
+                        'logs': [_describe_reference(r, names, own) for r in refs],
+                        'interval_s': interval / 100 if interval else None,
+                        'logging_type': (BACNET_LOGGING_TYPES.get(ltype, str(ltype))
+                                         if ltype is not None else ''),
+                        'enabled': raw.get('enable'),
+                        'records': raw.get('recordCount'),
+                        'buffer_size': raw.get('bufferSize'),
+                        'stop_when_full': raw.get('stopWhenFull'),
+                        'status': ", ".join(_status_flags(raw.get('statusFlags'))),
+                    })
+                elif obj_type in ('Schedule', 'Calendar'):
+                    refs = codec.decode_property_references(
+                        raw.get('listOfObjectPropertyReferences') or b'')
+                    binary = bool(refs) and all(
+                        r['object'][0].startswith('Binary') for r in refs)
+                    entry = {
+                        'type': obj_type, 'instance': inst, 'name': name,
+                        'description': _safe_str(raw.get('description', '')),
+                        'present_value': _schedule_value(raw.get('presentValue'), binary),
+                        'status': ", ".join(_status_flags(raw.get('statusFlags'))),
+                    }
+                    if obj_type == 'Schedule':
+                        period = raw.get('effectivePeriod')
+                        weekly = codec.decode_weekly_schedule(raw.get('weeklySchedule') or b'')
+                        entry.update({
+                            'default': (_schedule_value(raw['scheduleDefault'], binary)
+                                        if 'scheduleDefault' in raw else ''),
+                            'effective': _date_range(period),
+                            'controls': [_describe_reference(r, names, own) for r in refs],
+                            'weekly': {day: ", ".join(f"{str(t)[:5]} {_schedule_value(v, binary)}"
+                                                      for t, v in changes)
+                                       for day, changes in zip(_WEEKDAYS, weekly) if changes},
+                        })
+                    schedules.append(entry)
+            except Exception as e:             # one bad value costs only its object
+                skipped += 1
+                log.debug("metadata %s %s on %s: %s", obj_type, inst, dev.get('ip'), e)
         if ports:
             dev['network_ports'] = ports
         if trends:
@@ -2160,6 +2165,9 @@ class ScanEngine:
                 for p in ports))
         if parts:
             self._log("    " + "; ".join(parts))
+        if skipped:
+            self._log(f"    Could not decode {skipped} trend log, schedule, alarm or port "
+                      f"object(s) of device {own}: left out, the rest are listed")
 
     # -- Modbus ---------------------------------------------------------
 
@@ -2629,6 +2637,29 @@ def _str(val: Any) -> str:
         return f"<{type(val).__name__} too large to show>"
 
 
+def _json_safe(v: Any, depth: int = 0) -> Any:
+    """`v` with whatever JSON can't hold turned into text, leaf by leaf, so
+    one odd value costs one field. The whole key used to become one string:
+    a device's notification classes as text, which the HTML report then
+    read character by character and failed on."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        try:
+            str(v)                                   # over 4,300 digits can't be written
+            return v
+        except ValueError:
+            return _str(v)
+    if v is None or isinstance(v, (str, float, bool)):
+        return v
+    if depth > 40:                                   # a cycle, or absurd nesting
+        return _str(v)
+    if isinstance(v, dict):
+        return {(k if k is None or isinstance(k, (str, int, float, bool)) else _str(k)):
+                _json_safe(x, depth + 1) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x, depth + 1) for x in v]
+    return _str(v)
+
+
 def _sanitize_for_json(dev: dict[str, Any]) -> dict[str, Any]:
     """Strip un-serializable private fields and stringify anything weird."""
     out: dict[str, Any] = {}
@@ -2644,7 +2675,7 @@ def _sanitize_for_json(dev: dict[str, Any]) -> dict[str, Any]:
             json.dumps(v)
             out[k] = v
         except (TypeError, ValueError):
-            out[k] = _str(v)
+            out[k] = _json_safe(v)
 
     fp = dev.get('_fingerprint', {})
     if fp:

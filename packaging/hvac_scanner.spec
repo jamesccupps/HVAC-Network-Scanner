@@ -76,6 +76,7 @@ a = Analysis(
         'hvac_scanner.gui',
         'hvac_scanner.icon',
         'hvac_scanner.knx',
+        'hvac_scanner.limits',
         'hvac_scanner.lonworks',
         'hvac_scanner.modbus',
         'hvac_scanner.moxa',

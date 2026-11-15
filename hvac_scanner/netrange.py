@@ -11,7 +11,7 @@ Supported syntaxes (any of these, comma-or-whitespace separated, mixed):
     10.0.0.0/26
     10.0.0.5                     # single host
     10.0.0.2-100                 # shorthand: last octet range
-    10.0.0.2-10.0.0.100          # full-IP range (same subnet enforced)
+    10.0.0.2-10.0.0.100          # full-IP range (at most 65,536 addresses)
     10.0.0.10-20, 10.0.1.0/24    # mixed list
 
 Returns a list of IP strings. The hosts() iterator of a CIDR excludes
@@ -101,6 +101,13 @@ def _parse_token(token: str) -> list[str]:
         lo, hi = int(lo_s), int(hi_s)
         if not (0 <= lo <= 255 and 0 <= hi <= 255):
             raise InvalidTargetSyntaxError(f"octet out of range in {token!r}")
+        # The first three octets too, as the other forms check theirs:
+        # 300.1.1.2-4 gave three "addresses" that the sweeps then handed to
+        # the resolver as host names.
+        try:
+            ipaddress.IPv4Address(f"{prefix}.{lo}")
+        except ValueError as e:
+            raise InvalidTargetSyntaxError(f"bad IP prefix in {token!r}: {e}") from e
         if hi < lo:
             raise InvalidTargetSyntaxError(
                 f"range end .{hi} is less than start .{lo} in {token!r}"
@@ -146,6 +153,24 @@ def parse_targets(raw: str | Iterable[str]) -> list[str]:
             if ip not in seen:
                 seen.add(ip)
                 out.append(ip)
+    return out
+
+
+def public_targets(raw: str | Iterable[str]) -> list[str]:
+    """The target specs in `raw` that include public internet addresses:
+    globally routable, so not private, loopback, link-local, shared (CGNAT)
+    space or the documentation ranges. A mistyped first octet turns a site's
+    10.20.0.0/24 into somebody else's network on the internet; the window and
+    the command line ask before scanning one. Specs that don't parse are left
+    to the usual checks."""
+    out = []
+    for token in split_targets(raw):
+        try:
+            hosts = _parse_token(token)
+        except InvalidTargetSyntaxError:
+            continue
+        if any(ipaddress.IPv4Address(h).is_global for h in hosts):
+            out.append(token)
     return out
 
 

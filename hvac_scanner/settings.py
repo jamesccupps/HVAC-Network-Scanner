@@ -23,6 +23,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import limits
+from .device_profiles import SCAN_DEPTHS
+
 log = logging.getLogger(__name__)
 
 
@@ -148,7 +151,7 @@ def profile_options(profile: dict[str, Any]) -> dict[str, Any]:
         nets = [t.strip() for t in targets.split(',') if t.strip()]
         if nets:
             out['networks'] = nets
-    if profile.get('depth') in ('quick', 'normal', 'full'):
+    if profile.get('depth') in SCAN_DEPTHS:
         out['scan_depth'] = profile['depth']
     toggles = profile.get('toggles') or {}
     for name in TOGGLE_OPTIONS:
@@ -161,17 +164,15 @@ def profile_options(profile: dict[str, Any]) -> dict[str, Any]:
         val = adv.get(key)
         return val.strip() if isinstance(val, str) else ''
 
-    for key, option, cast, minimum in (('timeout', 'timeout', float, 0.1),
-                                       ('rate_limit', 'rate_limit_ms', int, 0),
-                                       ('whois_chunk', 'whois_chunk_size', int, 0),
-                                       ('workers', 'bacnet_workers', int, 1),
-                                       ('max_objects', 'max_objects_per_device', int, 1)):
+    # The bounds the command line and the window use (limits.py); a value
+    # outside them is left out like any other that doesn't parse.
+    for key, option in (('timeout', 'timeout'), ('rate_limit', 'rate_limit_ms'),
+                        ('whois_chunk', 'whois_chunk_size'), ('workers', 'bacnet_workers'),
+                        ('max_objects', 'max_objects_per_device')):
         try:
-            val = cast(text(key))
+            out[option] = limits.parse(option, text(key), key)
         except ValueError:
             continue
-        if val >= minimum:
-            out[option] = val
     if text('unicast') in ('auto', 'always', 'off'):
         out['unicast_discovery'] = text('unicast')
     for key, option in (('bbmd', 'bbmd'), ('broadcast', 'bacnet_broadcast')):
@@ -189,9 +190,14 @@ def _save(path: "Path | None", data: dict[str, Any]) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner only on Linux and macOS (Windows ignores these modes): the file
+        # holds SNMP community strings and site profiles. A file saved by an
+        # older version is replaced by this one, mode and all, on the next save.
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-        with open(tmp, 'w', encoding='utf-8') as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_BINARY', 0),
+                     0o600)
+        with open(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, path)
     except OSError as e:

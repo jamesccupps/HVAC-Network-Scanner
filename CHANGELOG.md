@@ -5,8 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Fixes from an audit of 2.13.1 (2026-11-14), and the advisory watcher changes
+made since 2.13.1.
+
 ### Added
 
+- **A question before scanning public addresses.** Nothing checked whether a
+  target was private: a mistyped first octet sent BACnet, Modbus and SNMP
+  probes to somebody else's network on the internet. A target that includes
+  globally routable addresses now brings up a question in the window, naming
+  them (asked once per set of targets while it is open), and is refused on the
+  command line unless `--allow-public` is given. Private, loopback, shared
+  (100.64.0.0/10) and documentation ranges are unaffected.
 - **Desigo PX and TALON TC in the advisory list.** The CISA watcher now maps
   Desigo PX controllers (PXC00/50/100/200-E.D, PXC00/64/128-U, PXM20-E and
   the rest of the types CISA lists) and TALON TC Compact and Modular panels,
@@ -17,10 +27,85 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The list reaches installed copies through the signed daily download; no new
   release is needed.
 
+### Changed
+
+- **One set of bounds for the number settings** (`hvac_scanner/limits.py`):
+  timeout 0.1–300 s, rate limit 0–60,000 ms, Who-Is chunk 0–4,194,304,
+  parallel devices 1–64, device time limit 0–86,400 s, max objects
+  1–1,000,000. The command line, the window's Advanced fields and saved site
+  profiles each had their own minimums and no maximums: `--timeout nan`,
+  `inf` and `1e999` were accepted and failed inside the socket layer with a
+  traceback, and a profile could ask for 100,000 parallel devices. They are
+  now refused with the reason (a profile's out-of-range field is left out, as
+  one that doesn't parse always was). `--timeout` now needs at least 0.1.
+- **Each results tab keeps its own filter.** One filter box served all five
+  tables, so text typed on one tab (or put there by Show points) could leave
+  another empty. The box now shows the filter of the tab on screen, with a
+  **Clear** button beside it while it holds text; Esc in the box clears it.
+- **The settings file is written for its owner only** on Linux and macOS
+  (0600, in a 0700 folder when the folder is new): it holds SNMP community
+  strings and site profiles. Windows is unchanged.
+
 ### Fixed
 
+- **One device's alarm routing could stop the HTML report for the whole
+  scan.** A Notification Class recipient whose network number came with a
+  context tag kept that tag object, which JSON can't hold; the device's whole
+  `notification_classes` became one string, and the report failed on it (an
+  error box in the window, a traceback on the command line after the scan).
+  The decoder now keeps a recipient's network and address only as a number
+  and an address; the export turns anything else into text field by field,
+  not key by key; and the command line names a failed export, still writes
+  the others, and exits 3.
+- **A site saved at depth "devices" ran as a normal deep scan**, from the
+  command line (`--profile`) and in the window, which also forgot that depth
+  between runs: the places that restore a saved depth knew only quick,
+  normal and full. One list of depths serves all of them now.
+- **The OPC UA probe had no overall time limit.** A server sending one byte
+  just inside the read timeout could hold the scan, and Stop, for hours. It
+  has the other probes' 15-second limit now, and that limit covers the HTTPS
+  probe's TLS handshake too (it started after the request).
+- **Device text reached the terminal with control characters** in two
+  places: BACnet device properties and Modbus identification strings, seen
+  in `--print table` and the baseline comparison. They are cleaned where they
+  are read, like everything else a device says; so are the certificate names
+  from the HTTPS probe.
+- **A short range with an impossible prefix was accepted**: `300.1.1.2-4`
+  gave three "addresses", which the sweeps then handed to the resolver as
+  host names. Its first three octets are checked like the other forms'.
+- **One malformed value dropped a device's trend logs, schedules, alarm
+  routing and network ports, silently.** A Date, Time or Object Identifier
+  cut short by the end of the packet raised an error the metadata decoders
+  didn't catch, and it ended the filing of all of that device's metadata. The
+  value decoder now checks the octets that arrived, not the length the tag
+  declared; the decoders catch the error too; and each object is filed on its
+  own, so a bad one costs only itself, with a line in the scan log. The
+  decoders and reply parsers are fuzzed in the tests.
+- **Show points on a Modbus device opened the Trends tab.** It selected tab 2
+  by number, which has been Trends since 2.8; Modbus Registers is selected by
+  its widget now. Double-clicking a Modbus device did the same.
+- **After Show points, the Devices tab listed nothing** until the filter was
+  cleared by hand (see "Each results tab keeps its own filter").
+- **A field marked wrong stayed red** until a key was pressed in it, through
+  a paste or a saved site loaded and a scan that then ran fine. Fields are
+  unmarked whenever the settings are checked again.
+- **The unicast setting** read from a damaged settings file or profile
+  scanned as "auto" whatever it said; anything but auto, always or off is now
+  refused.
+- **A downloaded update is checked again just before it installs.** With
+  "install on close" it can wait in the temp folder for hours after its
+  download was verified; its size and SHA-256 are compared with the signed
+  manifest again before it runs.
+- Removed `export_results` from the window: unused, and without the error
+  handling the Export menu has.
+- A test keeps the version in `pyproject.toml` and `__version__` the same;
+  CI checks a release tag against `__version__` only.
 - **Older CISA version ranges.** Ranges written `>=V2.3_and_<V6.30.016` were
   read as "all versions"; they now give the version to update to.
+- **Review issues quote the feed's text.** Vendor and product names from
+  CISA's feed went into the issue table as they were: a `|` broke the table,
+  and an `@name` would have notified that account. They are in backticks now,
+  with `|` escaped.
 - **No review issues for products an advisory lists as not affected.** A
   vendor's "status of impact" advisory names many products only to say they
   aren't affected (ICSA-26-316-01 lists Desigo, Climatix and Building X that

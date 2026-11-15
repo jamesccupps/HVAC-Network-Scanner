@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 
 from . import codec
 from .codec import IAmDevice, _extract_invoke_id
+from .text import clean_text
 from .constants import (
     BACNET_OBJ_TYPES,
     BACNET_PORT,
@@ -1582,7 +1583,10 @@ def _stringify(val: Any) -> str:
         return f"{val:.3f}".rstrip('0').rstrip('.')
     if isinstance(val, tuple) and len(val) == 2:
         return f"{val[0]},{val[1]}"
-    return str(val)
+    # The device's own text (name, model, vendor, location...): without
+    # control characters, so a name carrying terminal escapes can't rewrite
+    # what `--print table` or a baseline comparison shows.
+    return clean_text(str(val))
 
 
 # Per-property type expectations. Used to filter out values that don't match

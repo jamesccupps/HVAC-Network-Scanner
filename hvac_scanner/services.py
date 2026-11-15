@@ -15,17 +15,16 @@ import re
 import socket
 import ssl
 import struct
-import threading
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing
 from typing import Any, Callable, Optional
 
 from . import __version__
 from .certs import parse_der_certificate
 from .constants import HTTP_FINGERPRINTS, HVAC_TCP_PORTS, PORT_TO_SERVICE
-from .netsweep import tcp_sweep
+from .netsweep import tcp_sweep, time_limit
 from .text import clean_text
 
 log = logging.getLogger(__name__)
@@ -46,33 +45,9 @@ _BSC_SUBPROTOCOLS = ("hub.bsc.bacnet.org", "dc.bsc.bacnet.org")
 # connection at a time.
 _IDENTIFY_WORKERS = 16
 
-# Longest any one probe may take once connected. Each read has the probe
-# timeout, but a peer sending one byte just inside it, again and again,
-# could otherwise hold a probe (and the scan, which Stop could not end) for
-# hours.
-_PROBE_TIME_LIMIT_S = 15.0
-
-
-@contextmanager
-def _time_limit(sock: socket.socket, seconds: Optional[float] = None):
-    """Shut `sock` down if the block has not finished within `seconds`
-    (default _PROBE_TIME_LIMIT_S), which ends any read in progress on it."""
-    seconds = _PROBE_TIME_LIMIT_S if seconds is None else seconds
-    def expire() -> None:
-        try:
-            # The plain socket's shutdown, even for a TLS socket: the TLS
-            # one also drops its TLS state, which another thread may be
-            # using at this moment.
-            socket.socket.shutdown(sock, socket.SHUT_RDWR)
-        except OSError:
-            pass
-    timer = threading.Timer(seconds, expire)
-    timer.daemon = True
-    timer.start()
-    try:
-        yield
-    finally:
-        timer.cancel()
+# Longest any one probe may take once connected: netsweep.time_limit, with
+# netsweep.PROBE_TIME_LIMIT_S (shared with the OPC UA probe).
+_time_limit = time_limit
 
 
 def _tls_context() -> ssl.SSLContext:
@@ -264,7 +239,8 @@ class HVACServiceScanner:
                 info[k] = clean_text(v)
             elif k == 'fox' and isinstance(v, dict):
                 info[k] = {clean_text(fk): clean_text(fv) for fk, fv in v.items()}
-            elif k == 'opcua' and isinstance(v, dict):
+            elif k in ('opcua', 'tls') and isinstance(v, dict):
+                # 'tls': the certificate's names, as the device's own text.
                 info[k] = _clean_nested(v)
 
         # Regex-match fingerprints over combined text
@@ -290,10 +266,10 @@ class HVACServiceScanner:
                                                    context=_tls_context())
             else:
                 conn = http.client.HTTPConnection(ip, port, timeout=self.timeout)
-            conn.request("GET", "/", headers={"User-Agent": f"HVAC-Scanner/{__version__}"})
-            limit = (_time_limit(conn.sock) if getattr(conn, 'sock', None) is not None
-                     else nullcontext())
-            with limit:
+            # The limit covers the request too: for HTTPS the TLS handshake
+            # happens inside it, on the socket the connection makes.
+            with _time_limit(lambda: getattr(conn, 'sock', None)):
+                conn.request("GET", "/", headers={"User-Agent": f"HVAC-Scanner/{__version__}"})
                 self._read_http(conn, ip, port, use_ssl, info, cert_out := [])
             cert = cert_out[0] if cert_out else None
         except ssl.SSLError as e:

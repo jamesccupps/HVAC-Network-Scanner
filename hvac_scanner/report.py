@@ -144,8 +144,8 @@ def recipient_summary(r: dict[str, Any]) -> str:
     """'device 1100, Mon–Fri 07:00–18:00, to-offnormal + to-fault' for one
     alarm recipient; the parts that are 'always' are left out."""
     who = (f"device {r['device']}" if 'device' in r
-           else (f"{r.get('address', '?')}" + (f" (network {r['network']})" if r.get('network')
-                                               else "")))
+           else (f"{r.get('address') or '?'}" + (f" (network {r['network']})" if r.get('network')
+                                                 else "")))
     parts = [who]
     days = r.get('days') or []
     if days and len(days) < 7:
