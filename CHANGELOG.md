@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.14.0] — 2026-11-15
+
 Fixes from an audit of 2.13.1 (2026-11-14), and the advisory watcher changes
 made since 2.13.1.
 

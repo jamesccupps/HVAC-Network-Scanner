@@ -361,7 +361,7 @@ Exit codes:
 
 ## What's new
 
-### v2.14.0
+### v2.14.0 (2026-11-15)
 
 - **Show points opens the right tab, and the device list stays put**: on a
   Modbus device it opened Trends instead of Modbus Registers, and after it the
