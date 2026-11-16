@@ -53,3 +53,16 @@ updater checks only the manifest. Before signing, VirusTotal had the unsigned
 2.13.0 exe at 4/71 (Bkav, SecureAge, SentinelOne Static ML, Skyhigh: generic
 and ML heuristics, the usual pattern for a one-file PyInstaller exe); Microsoft
 and the other major engines were clean.
+
+## VirusTotal
+
+On a release tag (not a `-signtest` one), ci.yml's `virustotal` job uploads
+the verified exe to VirusTotal with `packaging/virustotal.py` and the
+`VT_API_KEY` repository secret, writes the result to the job summary and the
+`virustotal-report` artifact, and goes red only if Microsoft (Defender) flags
+the file: don't publish until that is cleared. Other engines' hits are
+reported, not fatal: send each to its vendor as a false positive. No key, or
+VirusTotal not answering, is a warning. Only release builds are uploaded
+(VirusTotal shares uploads with the security vendors). To scan a published
+release again, after a false-positive report say, run the `VirusTotal`
+workflow by hand with its tag.
