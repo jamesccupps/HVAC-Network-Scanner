@@ -232,6 +232,10 @@ class ScanResult:
     # Devices that answered the Who-Is from outside the targets, by /24.
     # They are not scanned, but they show where the rest of a site is.
     outside_targets: dict[str, int] = field(default_factory=dict)
+    # Set when BACnet devices were reached from another subnet and MS/TP
+    # devices behind routers there may be missing: {'bbmd': the BBMD to
+    # register with, or None; 'networks': network numbers known but silent}.
+    remote_mstp: Optional[dict[str, Any]] = None
     # Seconds each pass took (and the BACnet deep scan and MS/TP within it).
     seconds: dict[str, float] = field(default_factory=dict)
 
@@ -254,6 +258,7 @@ class ScanResult:
                          'bacnet_port': self.bacnet_port,
                          'local_address': self.local_address,
                          'outside_targets': dict(self.outside_targets),
+                         'remote_mstp': self.remote_mstp,
                          'seconds': {k: round(v, 1) for k, v in self.seconds.items()}},
             'counts': self.counts,
             'devices': [_sanitize_for_json(d) for d in self.devices],
@@ -1531,7 +1536,36 @@ class ScanEngine:
                 routes.setdefault(net, {'ip': router['ip'], 'type': None})
         todo = {n: r for n, r in sorted(routes.items())
                 if n not in heard and n not in ip_nets}
-        if not todo or self._stopped():
+        if self._stopped():
+            return
+        bbmd = _foreign_device_bbmd(self.result.devices)
+        via = (f"register with the BBMD at {bbmd} (BBMD in Advanced settings, or "
+               f"--bbmd {bbmd})" if bbmd else
+               "register with a BBMD on that subnet (BBMD in Advanced settings, or --bbmd)")
+        if not routes and unknown and not self.opts.bbmd:
+            # Subnets where nothing answered a broadcast: the scanner is not on
+            # them and no BBMD relays their broadcasts here. A router there
+            # announces its networks by broadcast, few answer a direct
+            # question, and the devices' Network Ports were not read (a
+            # devices-only scan reads none), so nothing says what is behind
+            # them. Until 2.14.1 this was silent: a scan from another subnet
+            # just had no MS/TP devices.
+            by_broadcast = {_net24(d['ip']) for d in self.result.devices
+                            if d.get('protocol') == 'BACnet/IP'
+                            and d.get('discovered_via') != 'unicast'}
+            dark = sorted({_net24(d['ip']) for d in remote} - by_broadcast,
+                          key=lambda n: _ip_key(n.split('/')[0]))
+            if dark:
+                self._log("\nMS/TP behind routers on other subnets")
+                self._log(f"  BACnet devices on {', '.join(dark)} answered only when "
+                          f"asked directly. Routers there announce their networks, and "
+                          f"MS/TP devices their I-Am, by broadcast on that subnet, which "
+                          f"does not reach this computer, so any MS/TP devices behind "
+                          f"them are not in this scan. To include them, {via}, or scan "
+                          f"from that subnet.")
+                self.result.remote_mstp = {'bbmd': bbmd, 'subnets': dark, 'networks': []}
+            return
+        if not todo:
             return
 
         self._log("\nMS/TP behind routers on other subnets")
@@ -1580,9 +1614,6 @@ class ScanEngine:
                 self._log(f"    No further devices on network {net}.")
             found.extend(devs)
         if not self.opts.mstp_mac_probe:
-            bbmds = [d['ip'] for d in remote if d.get('bbmd')]
-            via = (f"register with the BBMD at {bbmds[0]} (--bbmd {bbmds[0]})" if bbmds
-                   else "register with a BBMD on that subnet (--bbmd)")
             how = (f"turn on the MS/TP address probe (--mstp-probe; a few minutes "
                    f"per network) or {via}")
             if silent:
@@ -1590,6 +1621,10 @@ class ScanEngine:
                           f"answer a routed Who-Is: their devices broadcast I-Am on "
                           f"the router's subnet, which this scanner is not on. To "
                           f"list them, {how}.")
+                self.result.remote_mstp = {
+                    'bbmd': bbmd, 'networks': sorted(silent),
+                    'subnets': sorted({_net24(todo[n]['ip']) for n in silent},
+                                      key=lambda s: _ip_key(s.split('/')[0]))}
             if answered:
                 self._log(f"  Devices on network(s) {', '.join(str(n) for n in sorted(answered))} "
                           f"that only broadcast their I-Am cannot answer from here; "
@@ -2536,6 +2571,38 @@ def _ip_key(ip: str) -> tuple:
         return tuple(int(p) for p in ip.split('.'))
     except ValueError:
         return (999, ip)
+
+
+def _net24(ip: str) -> str:
+    try:
+        return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+    except ValueError:
+        return str(ip)
+
+
+def _foreign_device_bbmd(devices: list[dict[str, Any]]) -> Optional[str]:
+    """The BBMD to suggest registering with as a foreign device, or None.
+
+    One that answered Read-Foreign-Device-Table (it keeps a table, so it takes
+    foreign devices) beats one that did not; then the one whose broadcast
+    table names the most other BBMDs found in this scan, since a registration
+    there reaches their subnets too; then the lowest address. Until 2.14.1
+    the hint named the first BBMD by address, which on one site had answered
+    no FDT read, while a BBMD on the other subnet took foreign devices and
+    reached both.
+    """
+    tables = {d['ip']: d['bbmd'] for d in devices
+              if isinstance(d.get('bbmd'), dict) and d.get('ip')}
+    if not tables:
+        return None
+
+    def rank(ip: str) -> tuple:
+        table = tables[ip]
+        peers = {str(e.get('address', '')).rsplit(':', 1)[0]
+                 for e in table.get('bdt') or [] if isinstance(e, dict)}
+        peers.discard(ip)
+        return (not isinstance(table.get('fdt'), list), -len(peers & set(tables)), _ip_key(ip))
+    return min(tables, key=rank)
 
 
 def _safe_str(val: Any) -> str:

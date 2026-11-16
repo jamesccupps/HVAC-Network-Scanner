@@ -58,6 +58,14 @@ PROBE_SITE = "SCAN"
 ROLE_PANEL = "field panel"
 ROLE_SUPERVISOR = "supervisor listener"
 
+# How long to wait for the node to end the connection after the probe frame.
+# A field panel resets it within a few hundred milliseconds, but a Desigo CC or
+# Insight listener closes it after about one or two seconds (968 to 1983 ms on
+# one site's three servers). Until 2.14.1 the wait was the connect timeout, at
+# most 2 s, so whichever server closed just past it was dropped as "not P2",
+# a different one each scan.
+CLOSE_WAIT_S = 6.0
+
 
 def _tlv(text: str) -> bytes:
     raw = text.encode('ascii')
@@ -87,8 +95,13 @@ def build_probe(seq: int = 1, now: Optional[float] = None) -> bytes:
     return struct.pack('>III', 12 + len(payload), msg_type, seq) + payload
 
 
-def probe(ip: str, port: int = P2_PORT, timeout: float = 2.0) -> Optional[dict[str, Any]]:
-    """Probe one address. Returns a device dict for a P2 node, else None."""
+def probe(ip: str, port: int = P2_PORT, timeout: float = 2.0,
+          close_wait: float = CLOSE_WAIT_S) -> Optional[dict[str, Any]]:
+    """Probe one address. Returns a device dict for a P2 node, else None.
+
+    `timeout` bounds the connect; `close_wait` is how long the node then has
+    to end the connection (see CLOSE_WAIT_S).
+    """
     try:
         sock = socket.create_connection((ip, port), timeout=timeout)
     except OSError:
@@ -96,7 +109,7 @@ def probe(ip: str, port: int = P2_PORT, timeout: float = 2.0) -> Optional[dict[s
     started = time.monotonic()
     outcome = "silent"
     try:
-        sock.settimeout(timeout)
+        sock.settimeout(max(timeout, close_wait))
         try:
             sock.sendall(build_probe())
             data = sock.recv(256)

@@ -842,6 +842,25 @@ def render_html(scan: dict[str, Any], now: Optional[datetime] = None) -> str:
                      f"scanned: " + ", ".join(f"{_e(n)} ({c})" for n, c in nets[:8])
                      + (f" and {len(nets) - 8} more" if len(nets) > 8 else "")
                      + ". Add those subnets to the targets to include them.")
+    remote = cov.get('remote_mstp')
+    if isinstance(remote, dict):
+        where = ", ".join(_e(s) for s in remote.get('subnets') or []) or "another subnet"
+        bbmd = remote.get('bbmd')
+        how = (f"register with the BBMD at {_e(bbmd)} (BBMD in Advanced settings, or "
+               f"--bbmd {_e(bbmd)})" if bbmd else
+               "register with a BBMD on that subnet (BBMD in Advanced settings, or --bbmd)")
+        nets = remote.get('networks') or []
+        if nets:
+            lines.append(f"MS/TP network(s) {_e(', '.join(str(n) for n in nets))} behind "
+                         f"routers on {where} did not answer: their devices broadcast their "
+                         f"I-Am on that subnet, which the scanner was not on. To list them, "
+                         f"{how}, or turn on the MS/TP address probe.")
+        else:
+            lines.append(f"BACnet devices on {where} answered only when asked directly: the "
+                         f"scanner was on another subnet, where routers' network "
+                         f"announcements and MS/TP devices' I-Am broadcasts do not arrive. Any "
+                         f"MS/TP devices behind routers there are not in this report. To "
+                         f"include them, {how}, or scan from that subnet.")
     if lines:
         coverage_html = f'<div class="coverage">{"<br>".join(lines)}</div>'
 

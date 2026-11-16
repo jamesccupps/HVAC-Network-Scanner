@@ -282,9 +282,14 @@ def fingerprint_device(dev: dict[str, Any],
             info['description'] = 'Older Desigo PXC or TX-I/O module (Nucleus RTOS, no web UI)'
             info['default_creds'] = 'FTP: admin / admin | Telnet: (varies)'
         else:
-            info['model'] = 'Siemens Desigo PXC'
-            info['device_type'] = 'Field Controller'
-            info['description'] = 'Desigo PXC series controller'
+            # Nothing above matched. With a reported modelName that name wins
+            # below; without one this could be a DXR2, a PXC or a server, so
+            # don't name one. Until 2.14.1 it was "Desigo PXC", which matched
+            # the PXC default password: a DXR2 whose modelName read was lost
+            # got both.
+            info['model'] = 'Siemens Controller'
+            info['device_type'] = 'Controller'
+            info['description'] = 'Siemens BACnet controller; it did not report its model'
             if has_http:
                 info['web_url'] = f"https://{ip}"
 

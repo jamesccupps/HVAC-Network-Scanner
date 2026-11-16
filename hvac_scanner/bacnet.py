@@ -137,6 +137,8 @@ class BACnetClient:
         # ip -> [confirmed requests sent, of those never answered]. A device
         # that drops requests costs a timeout for each; the engine reports it.
         self._request_counts: dict[str, list[int]] = {}
+        # Per thread: whether its last confirmed request got no reply at all.
+        self._local = threading.local()
         # ip -> recent reply times (seconds), for the adaptive timeout.
         self._reply_times: dict[str, deque] = {}
         # ip -> seconds spent waiting on requests that were never answered.
@@ -241,6 +243,37 @@ class BACnetClient:
         if slowest is None:
             return self.timeout
         return min(self.timeout, max(_ADAPT_FLOOR, _ADAPT_FACTOR * slowest))
+
+    def last_request_unanswered(self) -> bool:
+        """Whether this thread's last confirmed request got no reply at all,
+        as opposed to a value, an error or a reject."""
+        return getattr(self._local, 'unanswered', False)
+
+    def _read_each(self, ip: str, obj_type: int | str, instance: int, names: list[str],
+                   dnet: Optional[int] = None,
+                   dadr: "str | int | bytes | None" = None) -> dict[str, Any]:
+        """One ReadProperty per name: {name: value} for those that came back.
+
+        A read the device left unanswered (not one it refused) is asked once
+        more, provided the device answered something: a busy controller drops
+        a request now and then, and losing modelName misnamed a DXR2 as a
+        "Desigo PXC" with the PXC default password (2.14.1). A device that
+        answers nothing is not asked twice.
+        """
+        out: dict[str, Any] = {}
+        missed: list[str] = []
+        for name in names:
+            val = self.read_property(ip, obj_type, instance, name, dnet=dnet, dadr=dadr)
+            if val is not None:
+                out[name] = val
+            elif self.last_request_unanswered():
+                missed.append(name)
+        if out:
+            for name in missed:
+                val = self.read_property(ip, obj_type, instance, name, dnet=dnet, dadr=dadr)
+                if val is not None:
+                    out[name] = val
+        return out
 
     def _count_unanswered(self, ip: str) -> None:
         with self._lock:
@@ -686,6 +719,7 @@ class BACnetClient:
         """
         assert self._sock is not None
         key = (ip, expected_invoke_id)
+        self._local.unanswered = True
         with self._lock:
             self._pending[key] = None
             counts = self._request_counts.setdefault(ip, [0, 0])
@@ -732,6 +766,7 @@ class BACnetClient:
             with self._lock:
                 self._pending.pop(key, None)
 
+        self._local.unanswered = False
         with self._lock:
             self._reply_times.setdefault(ip, deque(maxlen=_ADAPT_WINDOW)).append(
                 time.monotonic() - sent_at)
@@ -921,12 +956,8 @@ class BACnetClient:
         info = self.read_property_multiple(ip, 'Device', instance, names,
                                            dnet=dnet, dadr=dadr)
         if not info:
-            info = {}
-            for name in names:
-                val = self.read_property(ip, 'Device', instance, name,
-                                         dnet=dnet, dadr=dadr)
-                if val is not None:
-                    info[PROP_IDS[name]] = val
+            info = {PROP_IDS[name]: val for name, val in self._read_each(
+                ip, 'Device', instance, names, dnet=dnet, dadr=dadr).items()}
         vendor_id = info.get(PROP_IDS['vendorIdentifier'])
         seg = info.get(PROP_IDS['segmentationSupported'])
         return _iam_to_dict(IAmDevice(
@@ -1029,12 +1060,9 @@ class BACnetClient:
                 log.debug("RPM device read failed on %s: %s, falling back", ip, e)
 
         # Fallback: one ReadProperty per property
-        for name in prop_names:
-            val = self.read_property(ip, 'Device', instance, name,
-                                     dnet=dnet, dadr=dadr)
-            if val is not None:
-                key = name.replace('-', '_').replace(' ', '_')
-                props[key] = _stringify(val)
+        for name, val in self._read_each(ip, 'Device', instance, prop_names,
+                                         dnet=dnet, dadr=dadr).items():
+            props[name.replace('-', '_').replace(' ', '_')] = _stringify(val)
 
         return props
 
