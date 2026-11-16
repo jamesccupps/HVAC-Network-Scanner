@@ -1,0 +1,62 @@
+name: VirusTotal
+
+# Scan a published release's executable with VirusTotal, by hand: after a
+# false-positive report to a vendor, say, or for a release from before the
+# release build scanned itself (ci.yml's virustotal job). The file is the one
+# people download, checked against the release's own SHA-256 first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to scan, like v2.14.0"
+        required: true
+      rescan:
+        description: "Ask VirusTotal for a fresh analysis (not its last report)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan a published release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the release's executable
+        # The tag goes through the environment, never into the script text.
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::not a release tag: $TAG"; exit 1 ;;
+          esac
+          base="https://github.com/$REPO/releases/download/$TAG"
+          mkdir dist
+          curl -fsSL --retry 3 -o dist/HVACNetworkScanner.exe "$base/HVACNetworkScanner.exe"
+          curl -fsSL --retry 3 -o dist/HVACNetworkScanner.exe.sha256 "$base/HVACNetworkScanner.exe.sha256"
+          (cd dist && sha256sum -c HVACNetworkScanner.exe.sha256)
+
+      - name: Scan HVACNetworkScanner.exe
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          RESCAN: ${{ inputs.rescan }}
+        run: |
+          python3 packaging/virustotal.py dist/HVACNetworkScanner.exe --report virustotal.json \
+            --summary "$GITHUB_STEP_SUMMARY" $([ "$RESCAN" = "true" ] && echo --rescan)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: virustotal-report
+          path: virustotal.json
+          if-no-files-found: warn
+          retention-days: 30

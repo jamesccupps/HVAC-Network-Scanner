@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Release builds are checked by VirusTotal before publishing.** On a
+  release tag, CI uploads the signed, tested executable to VirusTotal
+  (`packaging/virustotal.py`, standard library, with the `VT_API_KEY`
+  repository secret) and puts the result in the job summary and a
+  `virustotal-report` artifact. The job goes red only if Microsoft Defender
+  flags the file; other engines' hits (the machine-learning false positives a
+  one-file PyInstaller exe draws) are listed to report to their vendors. A
+  `VirusTotal` workflow, run by hand with a tag, scans a published release
+  again.
+
 ## [2.14.0] — 2026-11-15
 
 Fixes from an audit of 2.13.1 (2026-11-14), and the advisory watcher changes

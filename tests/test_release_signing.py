@@ -78,3 +78,17 @@ def test_the_signed_file_is_tested_then_hashed_then_attested():
     assert "needs: verify" in attest
     assert "name: HVACNetworkScanner-windows-exe" in attest
     assert "subject-path: dist/HVACNetworkScanner.exe" in attest
+
+
+def test_virustotal_scans_the_release_file_with_its_key_only():
+    """The verified artifact, on release tags only (not -signtest), with the
+    VirusTotal key and nothing else: no identity, no other secret, nothing
+    installed (packaging/virustotal.py is standard library)."""
+    job = JOBS["virustotal"]
+    assert "needs: verify" in job and "name: HVACNetworkScanner-windows-exe" in job
+    assert "startsWith(github.ref, 'refs/tags/v')" in job and "-signtest" in job
+    assert re.findall(r"secrets\.\w+", job) == ["secrets.VT_API_KEY"]
+    assert _with(r"secrets\.VT_API_KEY") == ["virustotal"]
+    assert "id-token" not in job and "environment:" not in job
+    assert re.findall(r"\bpip\b|setup-python|requirements|Start-Process", job) == []
+    assert "python3 packaging/virustotal.py dist/HVACNetworkScanner.exe" in job
