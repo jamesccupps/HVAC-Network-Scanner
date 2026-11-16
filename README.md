@@ -361,7 +361,7 @@ Exit codes:
 
 ## What's new
 
-### v2.14.1
+### v2.14.1 (2026-11-16)
 
 - **Every Desigo CC and Insight server shows in the P2 results**: one that
   took just over 2 s to refuse the probe was left out, a different one each
