@@ -361,6 +361,18 @@ Exit codes:
 
 ## What's new
 
+### v2.14.1
+
+- **Every Desigo CC and Insight server shows in the P2 results**: one that
+  took just over 2 s to refuse the probe was left out, a different one each
+  scan.
+- **A scan from another subnet says when MS/TP devices are out of sight**:
+  their routers' broadcasts don't cross subnets, so they were simply missing.
+  The scan log and the report now say so and name the BBMD to register with.
+- **A dropped read is asked again**: a controller that missed one request no
+  longer loses its model name (a DXR2 was called a PXC, with the PXC default
+  password) or its segmentation.
+
 ### v2.14.0 (2026-11-15)
 
 - **Show points opens the right tab, and the device list stays put**: on a

@@ -983,8 +983,12 @@ class P2Node(_Listener):
     response (not that the scanner ever sends one).
     """
 
-    def __init__(self, ip: str, bln: str, node_name: str, supervisor: bool = False):
+    def __init__(self, ip: str, bln: str, node_name: str, supervisor: bool = False,
+                 close_after: float = 0.05):
+        # close_after: how long a refused frame waits before the reset or
+        # close. Real Desigo CC / Insight listeners take one to two seconds.
         self.bln, self.node_name, self.supervisor = bln, node_name, supervisor
+        self.close_after = close_after
         self.attempts: list[str] = []          # BLN names presented, for tests
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1003,7 +1007,7 @@ class P2Node(_Listener):
             presented = slots[0].decode('ascii', 'replace') if slots else ''
             self.attempts.append(presented)
             if presented != self.bln:
-                time.sleep(0.05)
+                time.sleep(self.close_after)
                 if not self.supervisor:          # panel: RST
                     conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
                                     struct.pack('ii', 1, 0))

@@ -5,6 +5,40 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Fixes from comparing two scans of one site: one from its controls subnet, one
+routed in from another network.
+
+### Fixed
+
+- **A Desigo CC or Insight server could be missing from the P2 results, a
+  different one each scan.** Their P2 listeners close the probe's connection
+  after about one or two seconds (968 to 1,983 ms on one site's three
+  servers), and the probe waited at most 2 s, so a server that closed just
+  past that was taken for "open, but not P2". The probe now gives the node
+  6 s to end the connection; the connect timeout is unchanged, and a field
+  panel still resets within a few hundred milliseconds.
+- **A scan from another subnet found no MS/TP devices and said nothing.**
+  Routers announce their networks, and MS/TP devices their I-Am, by broadcast
+  on their own subnet, which no router passes on, so from another subnet the
+  devices behind them stay out of sight unless the scanner registers with a
+  BBMD. When BACnet devices on a subnet answered only direct questions and
+  nothing said where their routers were, the scan log and the HTML report now
+  say so and name the BBMD to register with. The JSON `coverage` block records
+  it as `remote_mstp` (`bbmd`, `subnets`, and `networks` for router networks
+  that stayed silent).
+- **The BBMD the scanner suggests is one that takes foreign devices.** The
+  hint named the first BBMD by address, which on one site had answered no
+  Read-Foreign-Device-Table. It now prefers a BBMD that keeps a foreign-device
+  table, then the one whose broadcast table reaches the most other BBMDs found.
+- **A dropped read no longer misnames a device.** When a controller left a
+  device-property read unanswered (after its batched read was also lost), the
+  property stayed blank: one DXR2 lost its model name and was called "Siemens
+  Desigo PXC", with the PXC default password, and another lost its
+  segmentation. A read the device leaves unanswered is now asked once more,
+  provided the device answered something (a property it refuses, or a device
+  that answers nothing, is not asked twice). And a Siemens device that reports
+  no model is now "Siemens Controller", without a guessed password.
+
 ### Added
 
 - **Release builds are checked by VirusTotal before publishing.** On a
