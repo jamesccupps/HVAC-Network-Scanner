@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "hvac-network-scanner"
 version = "2.14.1"
 description = "Multi-protocol HVAC / building automation network scanner (BACnet/IP, MSTP, Modbus TCP, Niagara Fox, OPC UA, SNMP, and more)"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "James Cupps"}]
 requires-python = ">=3.10"
 keywords = ["bacnet", "modbus", "hvac", "building-automation", "niagara", "siemens", "trane", "network-scanner"]
@@ -17,7 +18,6 @@ classifiers = [
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: System Administrators",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

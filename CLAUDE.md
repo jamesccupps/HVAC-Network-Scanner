@@ -25,6 +25,14 @@ and the scanner's own updater. To keep both working:
 - If a file name must change, update `bucket/hvac-network-scanner.json` in
   jamesccupps/scoop-bucket in the same change.
 
+A release tag (not a `-signtest` one) also publishes the package to PyPI as
+`hvac-network-scanner` (`.github/workflows/pypi.yml`: Trusted Publishing from
+the `pypi` environment, no token stored; the build tools are hash-pinned in
+`packaging/requirements-pypi.txt`). It refuses a tag that isn't the version in
+`pyproject.toml`. PyPI never takes the same version twice, so a bad upload is
+fixed with a new version. Dispatching it by hand with a tag publishes that
+release.
+
 ## Code signing
 
 From 2.13.1 the exe is Authenticode-signed as James Cupps: Azure Artifact

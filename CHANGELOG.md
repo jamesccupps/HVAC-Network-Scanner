@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Releases go to PyPI as `hvac-network-scanner` (`pipx install hvac-network-scanner`
+  or `pip install hvac-network-scanner`), published by `.github/workflows/pypi.yml`
+  through Trusted Publishing. `pyproject.toml` now gives the license as an SPDX
+  expression (`MIT`), the form setuptools requires from February 2027.
+
 ## [2.14.1] — 2026-11-16
 
 Fixes from comparing two scans of one site: one from its controls subnet, one

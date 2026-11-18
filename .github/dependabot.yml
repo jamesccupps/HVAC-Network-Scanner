@@ -3,9 +3,10 @@
 # Dependabot keeps them current: it understands the `# v7.0.1` comment
 # convention and updates the SHA and the comment together.
 #
-# The scanner itself has no dependencies. The pip entry covers only the
-# executable's build tooling, pinned by version and hash in
-# packaging/requirements-build.txt, which would otherwise go stale too.
+# The scanner itself has no dependencies. The pip entry covers only build
+# tooling, pinned by version and hash, which would otherwise go stale too: the
+# executable's (packaging/requirements-build.txt) and the PyPI package's
+# (packaging/requirements-pypi.txt, from requirements-pypi.in).
 version: 2
 updates:
   - package-ecosystem: "github-actions"
