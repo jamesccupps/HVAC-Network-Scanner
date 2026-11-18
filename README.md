@@ -93,15 +93,22 @@ so future users can benefit from verified classification.
 
 ## Install
 
+From [PyPI](https://pypi.org/project/hvac-network-scanner/), with
+[pipx](https://pipx.pypa.io/) (or `pip install hvac-network-scanner`):
+
+```bash
+pipx install hvac-network-scanner
+hvac-scanner-gui                 # the GUI
+hvac-scanner --help              # the command line
+```
+
+`pipx upgrade hvac-network-scanner` updates it. Or from a clone, or straight
+from the source tree without installing:
+
 ```bash
 git clone https://github.com/jamesccupps/HVAC-Network-Scanner.git
 cd HVAC-Network-Scanner
-pip install -e .
-```
-
-Or run straight from the source tree without installing:
-
-```bash
+pip install -e .                 # or, without installing:
 python -m hvac_scanner           # launches the GUI
 python -m hvac_scanner.cli --help
 ```
