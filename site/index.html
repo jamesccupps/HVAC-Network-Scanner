@@ -213,9 +213,10 @@ scoop install jamesccupps/hvac-network-scanner</pre></div>
       </div>
       <div class="card" id="python">
         <h3>Any OS, with Python 3.10 or newer</h3>
-        <p>The standard library is all it needs. Install it, then start the window or the command line:</p>
-        <div class="cmd"><button class="copy" type="button">Copy</button><pre>pip install git+https://github.com/jamesccupps/HVAC-Network-Scanner.git
+        <p>The standard library is all it needs. Install it from <a href="https://pypi.org/project/hvac-network-scanner/">PyPI</a> with <a href="https://pipx.pypa.io/">pipx</a> (or <code>pip install hvac-network-scanner</code>), then start the window or the command line:</p>
+        <div class="cmd"><button class="copy" type="button">Copy</button><pre>pipx install hvac-network-scanner
 hvac-scanner-gui</pre></div>
+        <p style="margin-top:10px"><code>pipx upgrade hvac-network-scanner</code> updates it; the window says when a new release is out.</p>
         <p style="margin-top:10px">A scan from the command line, with the survey report and the point list:</p>
         <div class="cmd"><button class="copy" type="button">Copy</button><pre>hvac-scanner 10.0.0.0/24 --html survey.html --points-csv points.csv</pre></div>
         <p style="margin-top:10px">Try it without a building: <code>git clone</code> the repository, run <code>python tools/sim_site.py</code>, and scan <code>127.0.0.2-30</code>.</p>

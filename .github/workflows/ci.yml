@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       # Pinned by commit SHA, not tag: tags can be moved. Dependabot updates
@@ -53,6 +53,12 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q hvac_scanner tools packaging
 
+      - name: Lint (Linux, py3.13)
+        # Unused and undefined names, which compileall and the tests miss in
+        # code no test reaches. Rules in pyproject.toml [tool.ruff].
+        if: runner.os == 'Linux' && matrix.python-version == '3.13'
+        run: python -m ruff check --output-format=github .
+
       - name: Install a display and Tk (Linux)
         # The GUI tests build the real window. Without a display they skipped
         # on every Linux leg; Tk plus a virtual framebuffer is all they need.
@@ -61,9 +67,12 @@ jobs:
 
       - name: Run pytest (Linux, under a virtual framebuffer)
         # -rs lists every skipped test with its reason, so a leg that quietly
-        # covers less than it looks like is visible in the log.
+        # covers less than it looks like is visible in the log. The py3.13 leg
+        # also prints coverage by module, lowest first.
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests/ -q -rs --tb=short
+        run: >-
+          xvfb-run -a python -m pytest tests/ -q -rs --tb=short
+          ${{ matrix.python-version == '3.13' && '--cov=hvac_scanner --cov-report=term:skip-covered' || '' }}
 
       - name: Run pytest
         if: runner.os != 'Linux'
@@ -192,10 +201,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # The version packaging/authenticode.ps1 imports
+      # The version packaging/authenticode.ps1 imports, pinned by its package's
+      # SHA-256 and retried: Install-Module pinned a version only, and a corrupt
+      # download once stopped a release here.
       - name: Install the ArtifactSigning module
         shell: pwsh
-        run: Install-Module -Name ArtifactSigning -RequiredVersion 0.1.8 -Repository PSGallery -Scope CurrentUser -Force
+        run: ./packaging/install_artifactsigning.ps1
 
       - name: Sign HVACNetworkScanner.exe
         shell: pwsh

@@ -144,8 +144,9 @@ def probe(ip: str, port: int = P2_PORT, timeout: float = 2.0,
     return {
         'ip': ip, 'port': port, 'protocol': 'APOGEE P2',
         'vendor': 'Siemens',
-        'product': ('APOGEE field panel (P2)' if role == ROLE_PANEL
-                    else 'P2 supervisor (Desigo CC / Insight)'),
+        # "Likely": one signal, how the connection ended (audit 2026-11-14).
+        'product': ('Likely APOGEE field panel (P2)' if role == ROLE_PANEL
+                    else 'Likely P2 supervisor (Desigo CC / Insight)'),
         'p2_role': role,
         'p2_evidence': evidence,
     }

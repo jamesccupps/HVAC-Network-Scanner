@@ -1,9 +1,7 @@
 """2.10: the in-app updater (signed manifest, verified download, swap) and
 the signing tool. Network-free: every source is a local folder."""
 import base64
-import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 

@@ -702,7 +702,7 @@ def test_p2_devices_are_fingerprinted_and_reported():
     dev = {'protocol': 'APOGEE P2', 'ip': '10.0.0.5', 'port': 5033,
            'p2_role': 'field panel', 'p2_evidence': 'reset'}
     fp = fingerprint_device(dev, [])
-    assert fp['model'] == 'Siemens APOGEE field panel (P2)'
+    assert fp['model'] == 'Likely Siemens APOGEE field panel (P2)'
     assert 'BACnet/IP' in fp['description']
     titles = [f.title for f in build_findings({'devices': [dev]})]
     assert 'Siemens APOGEE P2 nodes' in titles

@@ -152,6 +152,8 @@ For code or doc changes:
 
 1. Fork, branch, commit with a descriptive message.
 2. Run the full test suite: `python -m pytest`. **All tests must pass.**
+   Then `python -m ruff check .`, which CI runs too (unused and undefined
+   names; the rules are in `pyproject.toml`).
 3. If you're adding new functionality, add tests for it. The suite
    currently covers codec behavior, per-object-type property
    filtering, MSTP routing, target filtering and deduplication,
@@ -172,7 +174,9 @@ For code or doc changes:
   a design goal.
 - Python 3.10+ features are fine. Don't worry about 3.9 compatibility.
 - Match the existing code style (descriptive variable names, comments
-  explaining *why* not *what*, f-strings over `.format()`).
+  explaining *why* not *what*, f-strings over `.format()`). The code isn't
+  auto-formatted, so don't run a formatter over whole files: keep a change
+  to the lines it needs.
 - Logging goes through `log = logging.getLogger(__name__)` — don't
   sprinkle `print()` calls. User-facing progress goes through the
   scan callback, not stdout.

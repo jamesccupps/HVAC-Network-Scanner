@@ -183,8 +183,7 @@ class MockBACnetDevice:
             return
         if len(data) >= 12 and data[10:12] == b'\x10\x08':
             oid = struct.pack('!I', (8 << 22) | self.instance)
-            apdu_code = {50: 0, 128: 1, 206: 2, 480: 3, 1024: 4}.get(self.max_apdu, 5)
-            iam = (bytes([0x10, 0x00, 0xC4]) + oid
+            iam =(bytes([0x10, 0x00, 0xC4]) + oid
                    + bytes([0x22, (self.max_apdu >> 8) & 0xFF, self.max_apdu & 0xFF])
                    + bytes([0x91, 0x03])
                    + bytes([0x21, self.vendor_id]))

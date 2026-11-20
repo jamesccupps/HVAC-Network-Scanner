@@ -5,7 +5,8 @@
 #
 # CI's authenticode job runs it on HVACNetworkScanner.exe. It needs an Azure sign-in that may use the
 # certificate profile (azure/login, from GitHub's OIDC token: no password or key anywhere) and the
-# ArtifactSigning module at the version below, the one azure/artifact-signing-action v2.0.0 uses.
+# ArtifactSigning module at the version below, the one azure/artifact-signing-action v2.0.0 uses
+# (CI installs it with packaging/install_artifactsigning.ps1, pinned by hash).
 #
 #   pwsh packaging/authenticode.ps1 -File <file>, <file>...
 param([Parameter(Mandatory)][string[]]$File)

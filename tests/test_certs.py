@@ -14,7 +14,6 @@ skipped where it is not, so the certificates under test are real rather than
 hand-assembled bytes that only prove the parser agrees with itself.
 """
 
-import base64
 import datetime
 import shutil
 import ssl
@@ -252,7 +251,6 @@ class TestServiceProbeIntegration:
         """Serve HTTPS with a known certificate and confirm the probe reports
         it, including the expiry warning for a short-lived one."""
         import http.server
-        import socket
         import ssl as _ssl
         import threading
 

@@ -368,222 +368,27 @@ Exit codes:
 
 ## What's new
 
-### v2.14.1 (2026-11-16)
+### v2.15.0
 
-- **Every Desigo CC and Insight server shows in the P2 results**: one that
-  took just over 2 s to refuse the probe was left out, a different one each
-  scan.
-- **A scan from another subnet says when MS/TP devices are out of sight**:
-  their routers' broadcasts don't cross subnets, so they were simply missing.
-  The scan log and the report now say so and name the BBMD to register with.
-- **A dropped read is asked again**: a controller that missed one request no
-  longer loses its model name (a DXR2 was called a PXC, with the PXC default
-  password) or its segmentation.
+- **On PyPI**: `pipx install hvac-network-scanner` installs it on any OS with
+  Python 3.10 or newer, and every release goes there too. A copy installed
+  that way is told `pipx upgrade hvac-network-scanner` (or the pip command)
+  when a new release is out, and offered the command to copy, instead of
+  being sent to the executable downloads.
+- **BBMD tables that disagree are a finding**: more than one BBMD on a
+  subnet (a peer they share gets each broadcast more than once), a peer that
+  doesn't list the BBMD back, and a listed peer inside the scanned range
+  that didn't answer as a BBMD.
+- **The window fits a small screen**: at its minimum size the status and
+  the update button stay in the header, and the end of the Protocols row
+  and the progress bar move to a second line instead of being cut off.
+- Smaller changes: APOGEE P2 nodes are labelled "likely", since how one
+  connection ends is the only evidence; `python -m hvac_scanner.report` says
+  what is wrong with a malformed scan file instead of a traceback; CI also
+  tests Python 3.14, runs `ruff check`, and installs the signing module
+  pinned by its hash.
 
-### v2.14.0 (2026-11-15)
-
-- **Show points opens the right tab, and the device list stays put**: on a
-  Modbus device it opened Trends instead of Modbus Registers, and after it the
-  Devices tab listed nothing until the filter was cleared. Each tab now keeps
-  its own filter, with a **Clear** button (or Esc) beside it.
-- **One device can no longer spoil the results**: a value cut short by a
-  device used to drop all of its trend logs, schedules, alarm routing and
-  network ports from the scan, and an oddly encoded alarm recipient could
-  stop the HTML report for the whole scan. Now only the object or field it
-  belongs to is affected, and the scan log says so.
-- **Sites saved at depth "devices" stay that gentle**: they used to run as a
-  normal deep scan from `--profile` and in the window.
-- **Public addresses need a yes**: a target that reaches public internet
-  addresses (a mistyped first octet, say) brings up a question naming them;
-  on the command line it needs `--allow-public`.
-- **Number settings are checked the same way everywhere**: `nan`, `inf` and
-  values like 99999999999 are refused with the reason, in the window, on the
-  command line and in saved site profiles.
-- Smaller fixes: a field marked wrong is unmarked once it checks out; the
-  settings file is readable by its owner only on Linux and macOS; a
-  downloaded update is checked again just before it installs; the OPC UA
-  probe has a time limit like the others; device names reach the terminal
-  without control characters; a range like `300.1.1.2-4` is refused.
-
-### v2.13.1 (2026-11-10)
-
-- **Code-signed**: `HVACNetworkScanner.exe` is signed by James Cupps, so
-  Windows names the publisher. Nothing else changes.
-
-### v2.13.0 (2026-11-08)
-
-- **The advisory list keeps itself current**: a daily job rebuilds it from
-  CISA's data and publishes it signed, and the scanner downloads it with its
-  daily check, so new advisories reach the report without a new release. The
-  list now holds every CISA advisory for the products it covers (53 entries),
-  and Desigo CC is checked per release.
-- **Updates install themselves**: a new release downloads in the background
-  and installs when you close the scanner, or at once with **Restart to update
-  to …**. Turn **Install updates automatically** off in Advanced to be asked.
-
-### v2.12.0 (2026-11-06)
-
-- **Firmware covered by published advisories**: the report compares the
-  firmware each controller reports with CISA ICS advisories (Trane Tracer SC+,
-  Siemens APOGEE PXC, Desigo PXC and DXR2, Desigo CC) and lists the devices
-  to update, with the version to update to, and those to check by hand.
-  Versions are compared only; nothing is sent to test for the flaws.
-
-### v2.11.0 (2026-11-06)
-
-More of what a building network holds, and faster on unreliable controllers.
-Full list in [CHANGELOG.md](CHANGELOG.md).
-
-- **LonWorks/IP (IP-852)**: routers and nodes on UDP 1628 report their node
-  type, name, Neuron IDs, configuration server and whether authentication
-  is on.
-- **Serial gateways**: Moxa NPort, MGate and OnCell devices, often where P1,
-  N2, MS/TP and Modbus RTU buses reach the network, found with Moxa's
-  identify request only.
-- **OPC UA identity**: the server's own name and product, and whether it
-  allows unsecured endpoints or anonymous sessions (4840 and KEPServerEX's
-  49320). Niagara platform ports are probed too.
-- **Adaptive timeout**: a controller that drops requests now costs about a
-  second per drop, not the full timeout. On one site a quick scan went from
-  3 min 39 s to 2 min 32 s and four lossy controllers from minutes to under
-  half a minute each.
-- **Accurate vendor names**: Alerton is Honeywell's; Vertiv and Copeland are
-  no longer listed as Emerson.
-
-### v2.10.0 (2026-11-06)
-
-Tested on a real site over four rounds. Full list in
-[CHANGELOG.md](CHANGELOG.md).
-
-- **Updates from inside the app**: the executable checks once a day and
-  installs a new release with one click, after checking it against a signed
-  manifest; if anything fails the previous exe is put back. Copies older
-  than 2.10 update by hand once.
-- **Devices only** depth for a fast inventory, and a **per-device time
-  limit** (180 s by default) so one bad controller cannot hold a scan up.
-- **A log that says where the time went**: the clock on every section, how
-  long each device took and how many requests it left unanswered, and a
-  time summary at the end. The report lists controllers that drop requests.
-- **Finds the whole site**: every silent address on another subnet is
-  probed (and asked twice), whatever answered through a BBMD; lost packets
-  no longer drop a controller to slow single reads; devices answering from
-  outside the targets are named by subnet; the export records the BACnet
-  port and the address the scan ran from.
-- **Devices named for what they are** (DXR2 models, PXC Modular/Compact,
-  Desigo PXC4/5/7, Insight, Tracer Ensemble, drives, gateways); the same
-  fault on many identical controllers is one report row; the dark theme's
-  scrollbars are visible.
-
-### v2.9.1 (2026-11-06)
-
-Fixes from an external review: robustness against broken or hostile
-devices, gentler traffic, and exports that say what they are. Full list in
-[CHANGELOG.md](CHANGELOG.md).
-
-- **A broken or hostile device can no longer end a scan**: oversized
-  integers, object counts in the billions, I-Am floods, Modbus servers that
-  never finish a reply, and service banners that trickle in for hours are
-  all bounded.
-- **Gentler**: the scanner never shares UDP 47808 with BACnet software
-  already running on the PC, sizes ReadPropertyMultiple to what each device
-  can send back, opens at most two connections to a host at a time, and
-  stops probing a Modbus unit a gateway says is absent.
-- **Exports say what was scanned**: passes that were off, failed or stopped
-  are recorded, and the report shows "Not scanned" instead of "None".
-  Spreadsheet formulas in device names are neutralized; the classification
-  report no longer holds addresses or names; a site's own SNMP community is
-  not exported.
-- Chunked Who-Is covers the whole instance range; the diff tells apart
-  devices that share an instance number (and reports them); the release
-  executable comes with a build attestation.
-
-### v2.9.0 (2026-11-04)
-
-- **Alarm routing**: every notification class's recipients, when they
-  receive alarms and at what priority, with findings for classes routed to
-  no one and recipients that did not answer the scan.
-- **Router tables**: the networks a router knows through other routers,
-  also used to reach MS/TP networks behind a chain of routers.
-- A codec fix for six- and seven-octet context values (B/IP MAC addresses
-  inside constructed values).
-
-### v2.8.0 (2026-10-29)
-
-The rest of the BACnet roadmap, and saved sites. Full list in
-[CHANGELOG.md](CHANGELOG.md).
-
-- **MS/TP behind routers on other subnets, without a BBMD**: networks are
-  found from the routers' Network Port objects and asked with a routed
-  Who-Is; `--mstp-probe` asks each MS/TP address to find the devices that
-  only ever broadcast.
-- **BBMD tables**: which subnets each BBMD links, and who is registered as a
-  foreign device to hear the site's broadcasts.
-- **Trend logs and schedules** as metadata — what is trended, how often,
-  whether it is still recording; weekly programs and what they control —
-  in a new tab and in the survey report.
-- **BACnet/SC detection**, with a high-severity finding for a hub that
-  accepts connections without a client certificate.
-- **Saved site profiles** in the GUI, runnable from the CLI with
-  `--profile`.
-- **KNXnet/IP detection**, a fuller **Niagara Fox** identity (and AX end
-  of life flagged), Modbus **Report Server ID**, and BACnet/SC hubs found
-  through the devices that name them — from checking the scanner against
-  nmap, zgrab2, Redpoint, bacnet-stack and BACpypes3.
-
-### v2.7.0 (2026-10-29)
-
-A review-and-polish release. Highlights; the full list is in
-[CHANGELOG.md](CHANGELOG.md).
-
-**Correctness**
-
-- **Engineering units were wrong for most point types.** A humidity sensor
-  showed "W", a CO2 sensor "kPa-alt", an energy meter "kPa"; duct static,
-  psi, gpm and kW had no label at all. The table is now the full
-  BACnetEngineeringUnits enumeration. Object types 32-62 (Integer Value,
-  Large Analog Value, Network Port, ...) were missing or off by one.
-- **Devices relayed by a BBMD were put at the BBMD's address**, so the deep
-  scan asked the wrong host. They are now attributed to their own address.
-- **Modbus no longer reports phantom devices.** A gateway's "no device at
-  this unit" exception counted as a device, and a meter that answers every
-  unit ID was listed nine times.
-- MS/TP devices found by the global Who-Is are labeled and counted as MS/TP.
-  Binary points read active/inactive. Older HTTPS gear (TLS 1.0/1.1) now
-  yields its banner and certificate.
-
-**Speed** — about twice as fast end to end on the bundled simulated site (28 s
-to 15 s). Sweeps of real subnets, where every empty address costs a
-timeout, gain more:
-
-- BACnet devices are deep-scanned in parallel (4 at a time by default),
-  without any one controller or MS/TP trunk seeing more than one request.
-- The Modbus and service sweeps use an asyncio connect sweep, port-major so
-  each host sees one connection attempt at a time; SNMP sends to every host
-  from one socket and waits once.
-
-**New**
-
-- **Unicast discovery** finds controllers on other subnets and VLANs, where
-  a Who-Is broadcast never arrives.
-- **A rebuilt GUI**: live summary and progress, a filter across every tab, a
-  device details panel, point-list export, remembered settings, keyboard
-  shortcuts, and an icon.
-- **Point status**: points in alarm, fault, overridden or out of service
-  are flagged, and multi-state values read as their state text.
-- **An HTML survey report**: findings ranked by severity (default
-  credentials on a reachable login, cleartext logins, SNMP defaults,
-  certificates, flagged points), the inventory and open services, in one
-  file for the building owner.
-- A point-list CSV export, multiple SNMP communities, `--version`, and a
-  hint when nothing answers (usually Windows Firewall, or a VLAN boundary).
-- `tools/sim_site.py`, a simulated site to try the scanner on, which the
-  end-to-end tests also run against.
-
-- **Siemens APOGEE P2 detection**: firmware 2.x panels and P2 supervisors
-  are found on TCP/5033 and identified, without a handshake and without
-  registering on them, so an APOGEE building no longer looks empty.
-
-Up next is in [ROADMAP.md](ROADMAP.md).
+Earlier versions are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Troubleshooting
 

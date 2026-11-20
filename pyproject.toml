@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hvac-network-scanner"
-version = "2.14.1"
+version = "2.15.0"
 description = "Multi-protocol HVAC / building automation network scanner (BACnet/IP, MSTP, Modbus TCP, Niagara Fox, OPC UA, SNMP, and more)"
 readme = "README.md"
 license = "MIT"
@@ -24,13 +24,14 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Networking :: Monitoring",
     "Topic :: System :: Hardware",
 ]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.6"]
 # Build-only. Never imported at runtime, so the package stays
 # zero-dependency for anyone who installs it with pip. CI builds the release
 # executable from packaging/requirements-build.txt instead (hash-pinned).
@@ -55,6 +56,19 @@ exclude = ["tests*"]
 # The advisory list built into the package (advisories.py).
 [tool.setuptools.package-data]
 hvac_scanner = ["advisories.json"]
+
+# CI runs `ruff check` on one leg: syntax errors and pyflakes' checks (unused
+# and undefined names, redefinitions), which compileall and the tests miss in
+# code no test reaches. The code isn't auto-formatted; see CONTRIBUTING.md.
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.coverage.report]
+sort = "Cover"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

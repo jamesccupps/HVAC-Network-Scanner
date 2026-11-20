@@ -1657,7 +1657,7 @@ class ScanEngine:
         if cap <= 0 or total_count <= 0:
             return []
         if cap >= total_count:
-            return range(1, total_count + 1)
+            return list(range(1, total_count + 1))
         step = total_count / cap
         chosen = sorted({min(total_count, int(i * step) + 1) for i in range(cap)})
         self._log(f"    Sampling {len(chosen)} of {total_count} objects by "
@@ -2312,8 +2312,8 @@ class ScanEngine:
             if self._stopped():
                 break
             if dev['p2_role'] == 'field panel' and dev['ip'] not in bacnet_ips:
-                self._log(f"    {dev['ip']} speaks P2 and not BACnet/IP: an APOGEE "
-                          f"panel on firmware 2.x (3.x adds BACnet/IP).")
+                self._log(f"    {dev['ip']} answers like P2 and not BACnet/IP: likely an "
+                          f"APOGEE panel on firmware 2.x (3.x adds BACnet/IP).")
             self.result.devices.append(dev)
             self.result.counts['p2'] += 1
             self._emit_device(dev)

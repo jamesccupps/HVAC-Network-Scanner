@@ -323,6 +323,27 @@ class HVACNetworkScannerGUI:
 
     # -- layout -----------------------------------------------------------
 
+    @staticmethod
+    def _wrap_when_narrow(line: ttk.Frame, head: ttk.Frame, tail: ttk.Frame) -> None:
+        """Lay `tail` beside `head` in `line`, or under it while the line is
+        narrower than the two need. Until 2.15 the end of the Protocols row
+        (Depth to Compare) and the progress bar were cut off on a narrow
+        window, at its minimum size or on a small laptop screen."""
+        line.columnconfigure(1, weight=1)
+        head.grid(row=0, column=0, sticky='w')
+        tail.grid(row=0, column=1, sticky='ew')
+        wrapped = [False]
+
+        def reflow(_event=None) -> None:
+            wrap = line.winfo_width() < head.winfo_reqwidth() + tail.winfo_reqwidth()
+            if wrap != wrapped[0]:
+                wrapped[0] = wrap
+                if wrap:
+                    tail.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+                else:
+                    tail.grid(row=0, column=1, columnspan=1, sticky='ew', pady=0)
+        line.bind('<Configure>', reflow, add='+')
+
     def _build_ui(self) -> None:
         C = Colors
         # Header
@@ -331,9 +352,9 @@ class HVACNetworkScannerGUI:
         if self._icons:
             tk.Label(hdr, image=self._icons[1], bg=C.BG_DARK).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Label(hdr, text="HVAC Network Scanner", style="Title.TLabel").pack(side=tk.LEFT)
-        ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · BACnet/SC · Modbus TCP · "
-                            f"services · SNMP · APOGEE P2 · KNX · LonWorks · gateways",
-                  style="Version.TLabel").pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
+        subtitle = ttk.Label(hdr, text=f"v{__version__}   BACnet/IP · MS/TP · BACnet/SC · "
+                                       f"Modbus TCP · services · SNMP · APOGEE P2 · KNX · "
+                                       f"LonWorks · gateways", style="Version.TLabel")
         ttk.Button(hdr, text="About", style="Ghost.TButton",
                    command=self._show_about).pack(side=tk.RIGHT)
         # "Check for updates" until a newer release is known, then
@@ -348,6 +369,10 @@ class HVACNetworkScannerGUI:
         self.status_var = tk.StringVar(value="Ready")
         self.status_label = ttk.Label(hdr, textvariable=self.status_var, style="Status.TLabel")
         self.status_label.pack(side=tk.RIGHT, padx=(0, 16))
+        # Packed last, so on a narrow window it is the subtitle that is cut,
+        # not the status and the update button (until 2.15 they were pushed
+        # off the edge at the minimum size).
+        subtitle.pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
 
         # Controls card
         cfg = ttk.Frame(self.root, style="Card.TFrame")
@@ -388,8 +413,11 @@ class HVACNetworkScannerGUI:
                                 lambda _e: self._load_profile(self.profile_var.get()))
         ttk.Label(hint, text="Site", style="Info.TLabel").pack(side=tk.RIGHT, padx=(0, 6))
 
-        row2 = ttk.Frame(cfg, style="Card.TFrame")
-        row2.pack(fill=tk.X, padx=14, pady=(8, 10))
+        row2_line = ttk.Frame(cfg, style="Card.TFrame")
+        row2_line.pack(fill=tk.X, padx=14, pady=(8, 10))
+        row2 = ttk.Frame(row2_line, style="Card.TFrame")          # Protocols and the boxes
+        row2_tail = ttk.Frame(row2_line, style="Card.TFrame")     # Depth to Compare
+        self._wrap_when_narrow(row2_line, row2, row2_tail)
 
         self.scan_bacnet    = tk.BooleanVar(value=True)
         self.scan_mstp      = tk.BooleanVar(value=True)
@@ -424,19 +452,19 @@ class HVACNetworkScannerGUI:
         self.scan_bacnet.trace_add('write', _update_mstp_enabled)
         _update_mstp_enabled()
 
-        ttk.Label(row2, text="Depth", style="Header.TLabel").pack(side=tk.LEFT, padx=(18, 6))
+        ttk.Label(row2_tail, text="Depth", style="Header.TLabel").pack(side=tk.LEFT, padx=(8, 6))
         self.scan_depth_var = tk.StringVar(value="normal")
-        ttk.Combobox(row2, textvariable=self.scan_depth_var, width=8, state="readonly",
+        ttk.Combobox(row2_tail, textvariable=self.scan_depth_var, width=8, state="readonly",
                      values=list(SCAN_DEPTHS)).pack(side=tk.LEFT)
 
-        self.adv_btn = ttk.Button(row2, text="Advanced ▾", style="Link.TButton",
+        self.adv_btn = ttk.Button(row2_tail, text="Advanced ▾", style="Link.TButton",
                                   command=self._toggle_advanced)
         self.adv_btn.pack(side=tk.LEFT, padx=(14, 0))
 
-        self.compare_btn = ttk.Button(row2, text="Compare…", style="Ghost.TButton",
+        self.compare_btn = ttk.Button(row2_tail, text="Compare…", style="Ghost.TButton",
                                       command=self.compare_to_baseline, state='disabled')
         self.compare_btn.pack(side=tk.RIGHT, padx=(6, 0))
-        self.export_btn = ttk.Menubutton(row2, text="Export", style="Ghost.TMenubutton",
+        self.export_btn = ttk.Menubutton(row2_tail, text="Export", style="Ghost.TMenubutton",
                                          state='disabled')
         export_menu = self._menu(self.export_btn)
         export_menu.add_command(label="Survey report (HTML)…", command=lambda: self._export('html'))
@@ -453,8 +481,11 @@ class HVACNetworkScannerGUI:
         self._build_advanced(cfg)
 
         # Summary chips + progress
-        summary = ttk.Frame(self.root, style="Dark.TFrame")
-        summary.pack(fill=tk.X, padx=18, pady=(0, 4))
+        summary_line = ttk.Frame(self.root, style="Dark.TFrame")
+        summary_line.pack(fill=tk.X, padx=18, pady=(0, 4))
+        summary = ttk.Frame(summary_line, style="Dark.TFrame")          # the chips
+        progress_box = ttk.Frame(summary_line, style="Dark.TFrame")
+        self._wrap_when_narrow(summary_line, summary, progress_box)
         self.chips: dict[str, tk.Label] = {}
         for key, label in (('bacnet', 'BACnet'), ('mstp', 'MS/TP'), ('modbus', 'Modbus'),
                            ('services', 'Services'), ('snmp', 'SNMP'), ('p2', 'APOGEE'),
@@ -465,9 +496,9 @@ class HVACNetworkScannerGUI:
                             font=self._f(9, "bold"))
             chip.pack(side=tk.LEFT, padx=(0, 6))
             self.chips[key] = chip
-        self.progress_label = ttk.Label(summary, text="", style="DarkDim.TLabel")
+        self.progress_label = ttk.Label(progress_box, text="", style="DarkDim.TLabel")
         self.progress_label.pack(side=tk.RIGHT)
-        self.progress = ttk.Progressbar(summary, mode="determinate", length=260,
+        self.progress = ttk.Progressbar(progress_box, mode="determinate", length=260,
                                         style="Horizontal.TProgressbar")
         self.progress.pack(side=tk.RIGHT, padx=(0, 10))
 
@@ -2141,12 +2172,23 @@ class HVACNetworkScannerGUI:
                 self._update_event('update-ready', (self._ready_path, False))
             return
         if not up.can_install:
-            # Run from source or pip: nothing to swap; the release page has it.
+            # Installed from PyPI: the command that updates it, offered on the
+            # clipboard. Run from a clone: the releases page.
+            command = updater.upgrade_command()
+            if command:
+                if messagebox.askyesno(
+                        "Update available",
+                        f"Version {up.version} is available. Update this copy with\n\n"
+                        f"    {command}\n\nthen start it again. Copy the command?",
+                        parent=self.root):
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(command)
+                return
             if messagebox.askyesno(
                     "Update available",
-                    f"Version {up.version} is available. This copy runs from Python, "
-                    f"so update it with git or pip, or download the executable.\n\n"
-                    f"Open the releases page?", parent=self.root):
+                    f"Version {up.version} is available. This copy runs from a "
+                    f"source checkout, so update it with git pull, or download the "
+                    f"executable.\n\nOpen the releases page?", parent=self.root):
                 webbrowser.open(updater.RELEASES_URL)
             return
         if self.scan_running:
@@ -2210,7 +2252,7 @@ class HVACNetworkScannerGUI:
                 self.update_btn.configure(text=f"Update to {up.version}", state='normal',
                                           style="Warn.TButton")
                 self.log_message(f"Version {up.version} is available "
-                                 f"({'Update to install it' if up.can_install else updater.RELEASES_URL}).")
+                                 f"({updater.how_to_update(up)}).")
         elif kind == 'update-progress':
             done, total = payload
             self._show_progress(f"Downloading {self._update.version}", done, total)
