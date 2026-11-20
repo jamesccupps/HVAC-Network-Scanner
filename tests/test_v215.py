@@ -43,7 +43,8 @@ def installed(monkeypatch):
 
 @pytest.mark.parametrize("prefix,command", [
     ("/home/u/.local/share/pipx/venvs/hvac-network-scanner", "pipx upgrade hvac-network-scanner"),
-    (r"C:\Users\u\pipx\venvs\hvac-network-scanner", "pipx upgrade hvac-network-scanner"),
+    # Forward slashes, so the path parses on Linux too (CI runs both).
+    ("C:/Users/u/pipx/venvs/hvac-network-scanner", "pipx upgrade hvac-network-scanner"),
     ("/home/u/venv", "pip install --upgrade hvac-network-scanner"),
 ])
 def test_a_pypi_install_is_told_its_upgrade_command(installed, prefix, command):
@@ -148,19 +149,21 @@ def test_the_end_of_a_row_moves_under_it_when_the_window_is_narrow(tk_root):
     import tkinter as tk
     from tkinter import ttk
     from hvac_scanner.gui import HVACNetworkScannerGUI
+    # Small sizes: Tk keeps a window within the screen, and CI's virtual
+    # screens are small (a 1600-pixel window came out narrower there).
     top = tk.Toplevel(tk_root)
     try:
-        top.geometry("1600x120+-3000+-3000")
+        top.geometry("600x120+-3000+-3000")
         line = ttk.Frame(top)
         line.pack(fill=tk.X)
-        head, tail = ttk.Frame(line, width=600, height=20), ttk.Frame(line, width=500, height=20)
+        head, tail = ttk.Frame(line, width=250, height=20), ttk.Frame(line, width=150, height=20)
         HVACNetworkScannerGUI._wrap_when_narrow(line, head, tail)
         top.update()
         assert tail.grid_info()['row'] == 0
-        top.geometry("900x120")
+        top.geometry("300x120")
         top.update()
         assert tail.grid_info()['row'] == 1
-        top.geometry("1600x120")
+        top.geometry("600x120")
         top.update()
         assert tail.grid_info()['row'] == 0
     finally:
