@@ -48,8 +48,10 @@ tags only, and the `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
 is stored. One signature a release.
 
 ci.yml on a tag: `windows-exe` builds (PyPI tooling, no secrets) →
-`authenticode` signs (only pinned actions, Microsoft's ArtifactSigning module
-and `packaging/authenticode.ps1`; no PyPI, never the program) → `verify` tests
+`authenticode` signs (only pinned actions, Microsoft's ArtifactSigning module,
+installed by `packaging/install_artifactsigning.ps1` pinned by its package's
+SHA-256 and checked as Microsoft-signed, and `packaging/authenticode.ps1`; no
+PyPI, never the program) → `verify` tests
 the signed file (`packaging/check_signatures.ps1`, smoke tests, the update
 test), hashes it and uploads the artifact → `attest` (Sigstore) attests it.
 `tests/test_release_signing.py` holds those rules. A dispatched run builds and

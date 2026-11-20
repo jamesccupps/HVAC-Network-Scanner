@@ -6,7 +6,6 @@ we have an expectation about what type the value should be, and anything that
 doesn't match gets dropped.
 """
 
-import pytest
 
 from hvac_scanner.bacnet import _validate_point_property
 

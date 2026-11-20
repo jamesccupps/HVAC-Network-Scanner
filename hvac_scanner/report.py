@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import ipaddress
 import json
 import logging
 import sys
@@ -181,6 +182,87 @@ def _addresses(ips) -> str:
     """A list of addresses, short: the first three and how many more."""
     ips = sorted({str(i) for i in ips}, key=_ip_key)
     return ", ".join(ips[:3]) + (f" and {len(ips) - 3} more" if len(ips) > 3 else "")
+
+
+def _net24(ip: str) -> str:
+    try:
+        return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+    except ValueError:
+        return ""
+
+
+def _in_targets(ip: str, targets: list) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    from .netrange import InvalidTargetSyntaxError, parse_targets
+    for t in targets:
+        if not isinstance(t, str):
+            continue
+        try:
+            if addr in ipaddress.ip_network(t.strip(), strict=False):
+                return True
+            continue
+        except ValueError:
+            pass
+        try:
+            if ip in parse_targets(t):
+                return True
+        except (InvalidTargetSyntaxError, ValueError):
+            continue
+    return False
+
+
+def bbmd_problems(bbmds: list[dict[str, Any]], targets: list) -> list[list[str]]:
+    """[BBMD, problem] rows for broadcast tables that disagree (2.15).
+
+    Three checks, each from the tables the scan read: more than one BBMD on a
+    subnet, which forwards every broadcast more than once; a peer whose own
+    table doesn't list this BBMD back, so the far subnet's broadcasts don't
+    come this way (and some BBMDs drop what an unlisted peer forwards); and a
+    peer inside the scanned range that never answered as a BBMD. A peer
+    outside the targets can't be judged from here.
+    """
+    tables: dict[str, list[str]] = {}
+    for d in bbmds:
+        ip = d.get('ip')
+        if not ip:
+            continue
+        peers = [str(e.get('address', '')).rsplit(':', 1)[0]
+                 for e in (d['bbmd'].get('bdt') or []) if isinstance(e, dict)]
+        tables[ip] = [p for p in dict.fromkeys(peers) if p and p != ip]
+    rows: list[list[str]] = []
+    by_subnet: dict[str, list[str]] = {}
+    for ip in tables:
+        if _net24(ip):
+            by_subnet.setdefault(_net24(ip), []).append(ip)
+    for net, ips in sorted(by_subnet.items(), key=lambda kv: _ip_key(kv[0].split('/')[0])):
+        if len(ips) > 1:
+            ips = sorted(ips, key=_ip_key)
+            listed: dict[str, list[str]] = {}
+            for ip in ips:
+                for peer in tables[ip]:
+                    listed.setdefault(peer, []).append(ip)
+            shared = [f"{peer} gets each of them {len(by)} times (listed by "
+                      f"{', '.join(by)})" for peer, by in sorted(
+                          listed.items(), key=lambda kv: _ip_key(kv[0])) if len(by) > 1]
+            rows.append([", ".join(ips),
+                         f"{len(ips)} BBMDs on {net}. A subnet should have one per BACnet "
+                         f"network: each forwards the subnet's broadcasts to its own peers"
+                         + (f", so {'; '.join(shared)}." if shared else ".")])
+    for ip in sorted(tables, key=_ip_key):
+        for peer in tables[ip]:
+            if peer in tables:
+                if ip not in tables[peer]:
+                    rows.append([ip, f"Lists {peer} as a peer, but {peer}'s table doesn't list "
+                                     f"{ip}: broadcasts on {peer}'s subnet don't come back "
+                                     f"this way, and {peer} may drop what {ip} forwards."])
+            elif _in_targets(peer, targets):
+                rows.append([ip, f"Lists {peer} as a peer, which is in the scanned range but "
+                                 f"didn't answer as a BBMD: a stale entry, or a BBMD that is "
+                                 f"down or unreachable."])
+    return rows
 
 
 def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list[Finding]:
@@ -567,6 +649,14 @@ def build_findings(scan: dict[str, Any], now: Optional[datetime] = None) -> list
         peers = [p for p in peers if p and p != d.get('ip')]
         if peers:
             rows.append([d.get('ip'), ", ".join(peers)])
+    problems = bbmd_problems(bbmds, scan.get('targets') or [])
+    if problems:
+        out.append(Finding(
+            "low", "BBMD tables that duplicate or drop broadcasts",
+            "BACnet broadcasts cross subnets only as the BBMDs' broadcast tables say, "
+            "and the tables have to agree. These don't look right; check them in each "
+            "BBMD's configuration. Subnets are taken as /24s.",
+            ["BBMD", "Problem"], problems))
     if rows:
         out.append(Finding(
             "info", "BBMDs linking subnets into one BACnet network",
@@ -993,6 +1083,48 @@ def write_html(scan: dict[str, Any], path: str) -> None:
         f.write(render_html(scan))
 
 
+def scan_shape_problem(scan: Any) -> Optional[str]:
+    """Why `scan` isn't something the renderer can take, or None.
+
+    Checks the shapes the report relies on. A malformed file used to end in a
+    traceback deep in the renderer (audit 2026-11-14, finding 6); the tool's
+    own exports always pass.
+    """
+    def number(v) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if not isinstance(scan, dict) or 'devices' not in scan:
+        return "no 'devices' list"
+    if not isinstance(scan['devices'], list):
+        return "'devices' is not a list"
+    if any(not isinstance(d, dict) for d in scan['devices']):
+        return "'devices' holds something other than objects"
+    if 'elapsed_seconds' in scan and not number(scan['elapsed_seconds']):
+        return "'elapsed_seconds' is not a number"
+    targets = scan.get('targets')
+    if targets is not None and not (isinstance(targets, list)
+                                    and all(isinstance(t, str) for t in targets)):
+        return "'targets' is not a list of strings"
+    counts = scan.get('counts')
+    if counts is not None and not (isinstance(counts, dict)
+                                   and all(number(v) for v in counts.values())):
+        return "'counts' is not a set of numbers"
+    cov = scan.get('coverage')
+    if cov is not None:
+        if not isinstance(cov, dict):
+            return "'coverage' is not an object"
+        outside = cov.get('outside_targets')
+        if outside is not None and not (isinstance(outside, dict)
+                                        and all(number(v) for v in outside.values())):
+            return "'coverage.outside_targets' is not a set of numbers"
+        for key in ('passes', 'options', 'seconds'):
+            if cov.get(key) is not None and not isinstance(cov[key], dict):
+                return f"'coverage.{key}' is not an object"
+        if cov.get('remote_mstp') is not None and not isinstance(cov['remote_mstp'], dict):
+            return "'coverage.remote_mstp' is not an object"
+    return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="python -m hvac_scanner.report",
@@ -1006,13 +1138,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (OSError, ValueError) as e:
         print(f"ERROR: could not read {args.scan}: {e}", file=sys.stderr)
         return 1
-    if not isinstance(scan, dict) or 'devices' not in scan:
-        print(f"ERROR: {args.scan} is not a scan export", file=sys.stderr)
+    problem = scan_shape_problem(scan)
+    if problem:
+        print(f"ERROR: {args.scan} is not a scan export: {problem}", file=sys.stderr)
         return 1
     # Path.with_suffix, not rsplit('.'): a folder with a dot in its name
     # (C:\Users\j.smith\scans\site) used to become C:\Users\j.html.
     out = args.output or str(Path(args.scan).with_suffix(".html"))
-    write_html(scan, out)
+    try:
+        write_html(scan, out)
+    except OSError as e:
+        print(f"ERROR: could not write {out}: {e}", file=sys.stderr)
+        return 1
+    except (TypeError, ValueError, AttributeError, KeyError) as e:
+        # A field of an unexpected type deeper than the checks above.
+        print(f"ERROR: could not build a report from {args.scan}: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
     print(f"Wrote {out}")
     return 0
 

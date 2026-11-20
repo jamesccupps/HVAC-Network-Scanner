@@ -351,16 +351,21 @@ def fingerprint_device(dev: dict[str, Any],
 
     # --- Siemens APOGEE P2 --------------------------------------------
     elif protocol == 'APOGEE P2':
+        # One signal each (how TCP/5033 ends after one identify frame), so
+        # "likely": any listener there that resets, or closes, would match.
         if dev.get('p2_role') == 'field panel':
-            info['model'] = 'Siemens APOGEE field panel (P2)'
+            info['model'] = 'Likely Siemens APOGEE field panel (P2)'
             info['device_type'] = 'Field Panel'
-            info['description'] = ('APOGEE panel speaking P2 over Ethernet (firmware 2.x '
-                                   'PXC/MBC/MEC class); not reachable over BACnet/IP until '
+            info['description'] = ('Likely an APOGEE panel speaking P2 over Ethernet (firmware '
+                                   '2.x PXC/MBC/MEC class): TCP/5033 reset the probe the way '
+                                   'their access gate does. Not reachable over BACnet/IP until '
                                    'upgraded to firmware 3.x')
         else:
-            info['model'] = 'Siemens P2 supervisor (Desigo CC / Insight)'
+            info['model'] = 'Likely Siemens P2 supervisor (Desigo CC / Insight)'
             info['device_type'] = 'Management Station'
-            info['description'] = 'Management station accepting P2 connections from APOGEE panels'
+            info['description'] = ('Likely a management station accepting P2 connections from '
+                                   'APOGEE panels: TCP/5033 closed on the probe the way their '
+                                   'listener does')
 
     # --- KNXnet/IP -------------------------------------------------------
     elif protocol == 'KNXnet/IP':

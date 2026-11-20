@@ -57,6 +57,20 @@ def test_signing_jobs_run_no_pypi_code_and_never_the_program(job):
     assert ran == []
 
 
+def test_the_signing_module_is_pinned_by_hash():
+    """Install-Module pins a version, not the bytes; the job installs the
+    module through a script that checks the package's SHA-256 (2.15)."""
+    job = JOBS["authenticode"]
+    assert "Install-Module" not in job
+    assert "./packaging/install_artifactsigning.ps1" in job
+    root = CI.parent.parent.parent / "packaging"
+    script = (root / "install_artifactsigning.ps1").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^\$Sha256 = '[0-9a-f]{64}'$", script)
+    version = re.search(r"(?m)^\$Version = '([\d.]+)'$", script).group(1)
+    imports = (root / "authenticode.ps1").read_text(encoding="utf-8")
+    assert f"Import-Module ArtifactSigning -RequiredVersion {version}" in imports
+
+
 def test_the_build_job_has_no_secrets_and_no_identity():
     assert "secrets." not in JOBS["windows-exe"]
     assert "id-token" not in JOBS["windows-exe"]

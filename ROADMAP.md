@@ -5,11 +5,11 @@ section. Nothing here is a promise of a date. If something you need is
 missing, open an issue — that is how items get onto this list and how they
 move up it.
 
-Shipped work moves to [CHANGELOG.md](CHANGELOG.md) — most recently the
-fixes from an external review (2.9.1), the alarm routing inventory and
-router tables (2.9.0), and before that MS/TP
-behind remote routers, BBMD tables, trend log and schedule inventory,
-BACnet/SC detection and saved site profiles (2.8.0).
+Shipped work moves to [CHANGELOG.md](CHANGELOG.md): most recently PyPI
+releases and checks of the BBMD tables (2.15.0), two rounds of fixes from
+external reviews (2.14), code-signed builds (2.13.1), the self-updating
+advisory list (2.13.0), LonWorks/IP detection and OPC UA identity (2.11.0)
+and the in-app updater (2.10.0).
 
 ## Next
 
@@ -77,11 +77,10 @@ From the 2026-11-06 review's feature ideas:
 
 ## Later / under consideration
 
-- JCI N2 and LonWorks/IP detection (detection only, same constraints as
-  APOGEE).
+- JCI N2 detection (detection only, same constraints as APOGEE).
 - Modbus RTU-over-TCP gateways that only answer specific unit IDs.
-- Signed Windows builds, if a code-signing certificate becomes available.
-- A packaged Linux build (AppImage) of the GUI.
+- A packaged Linux build (AppImage) of the GUI. Until then, `pipx install
+  hvac-network-scanner` runs it anywhere with Python 3.10 or newer.
 
 ## Not planned
 

@@ -11,7 +11,6 @@ request sent to device B, producing column-swapped values in the Points tab.
 import struct
 from unittest.mock import MagicMock
 
-import pytest
 
 from hvac_scanner import bacnet, codec
 

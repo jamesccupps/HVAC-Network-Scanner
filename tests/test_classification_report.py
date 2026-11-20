@@ -3,7 +3,6 @@
 import os
 import tempfile
 
-import pytest
 
 from hvac_scanner.engine import ScanResult
 

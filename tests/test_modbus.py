@@ -47,8 +47,6 @@ import socket
 import struct
 import threading
 
-from hvac_scanner.modbus import ModbusScanner
-
 
 class _SegmentedSocket:
     """Socket stub that hands back a frame in caller-controlled fragments."""

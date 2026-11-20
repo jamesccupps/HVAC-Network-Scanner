@@ -95,6 +95,46 @@ def install_kind() -> str:
     return "exe" if getattr(sys, "frozen", False) else "source"
 
 
+def upgrade_command() -> Optional[str]:
+    """For a copy installed from PyPI, the command that updates it:
+    ``pipx upgrade hvac-network-scanner`` in a pipx environment, else the pip
+    one. None for the executable (it updates itself) and for a run from a
+    clone, including ``pip install -e`` (git pull updates those).
+
+    Until 2.15 every copy run from Python was pointed at the releases page,
+    whose downloads are the executable, not what a pipx install needs.
+    """
+    if install_kind() == "exe":
+        return None
+    try:
+        from importlib import metadata
+        dist = metadata.distribution(APP_KEY)
+        try:
+            direct = json.loads(dist.read_text("direct_url.json") or "null")
+        except ValueError:
+            direct = None
+        if isinstance(direct, dict) and (direct.get("dir_info") or {}).get("editable"):
+            return None
+        # The installed package must be this one, not a copy beside a clone.
+        installed = Path(str(dist.locate_file("hvac_scanner"))).resolve()
+        if installed != Path(__file__).resolve().parent:
+            return None
+    except Exception:              # not installed, or metadata we can't read
+        return None
+    prefix = Path(sys.prefix)
+    if prefix.parent.name.lower() == "venvs" and "pipx" in str(prefix).lower():
+        return f"pipx upgrade {APP_KEY}"
+    return f"pip install --upgrade {APP_KEY}"
+
+
+def how_to_update(update: "Update") -> str:
+    """What the window says next to "Version X is available"."""
+    if update.can_install:
+        return "Update to install it"
+    command = upgrade_command()
+    return f"run: {command}" if command else RELEASES_URL
+
+
 # -- manifest ------------------------------------------------------------------
 
 def _check_asset(asset, name):

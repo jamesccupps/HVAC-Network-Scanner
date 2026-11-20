@@ -14,7 +14,6 @@ that located the bug.
 import struct
 from unittest.mock import MagicMock
 
-import pytest
 
 from hvac_scanner import bacnet, codec
 

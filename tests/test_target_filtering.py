@@ -8,7 +8,6 @@ Who-Is broadcast reached every device on the physical subnet.
 """
 from __future__ import annotations
 
-import pytest
 
 from hvac_scanner.engine import ScanEngine, ScanOptions
 

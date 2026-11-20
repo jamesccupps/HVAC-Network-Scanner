@@ -5,12 +5,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+PyPI releases, a check of the BBMD tables from one site's scans, and the
+remaining small items from the 2026-11-14 audit.
+
 ### Added
 
 - Releases go to PyPI as `hvac-network-scanner` (`pipx install hvac-network-scanner`
   or `pip install hvac-network-scanner`), published by `.github/workflows/pypi.yml`
   through Trusted Publishing. `pyproject.toml` now gives the license as an SPDX
   expression (`MIT`), the form setuptools requires from February 2027.
+- **A copy installed from PyPI is told how to update.** Every copy run from
+  Python was pointed at the releases page, whose downloads are the executable.
+  One installed from PyPI now logs `run: pipx upgrade hvac-network-scanner`
+  (`pip install --upgrade hvac-network-scanner` outside pipx), and its update
+  button offers to copy the command. A clone, `pip install -e` included, is
+  still pointed at the releases page and `git pull` (`updater.upgrade_command`).
+- **BBMD tables that disagree are a finding** ("BBMD tables that duplicate or
+  drop broadcasts", low). The scanner already read every BBMD's broadcast
+  table; the report now says when more than one BBMD sits on a subnet (taken
+  as a /24), naming any peer they share, which gets each of the subnet's
+  broadcasts more than once; when a peer's table doesn't list the BBMD back;
+  and when a listed peer inside the scanned range didn't answer as a BBMD. One
+  site's scans showed the first two.
+
+### Changed
+
+- **APOGEE P2 nodes are labelled "likely"** ("Likely Siemens APOGEE field
+  panel (P2)", "Likely Siemens P2 supervisor (Desigo CC / Insight)"): how the
+  connection on TCP/5033 ends after one identify frame is the only evidence,
+  and any listener there that resets or closes would match.
+- **The window fits a small screen.** At its minimum size (1100 × 680) the
+  header's status and update button were pushed off the edge, "Advanced" was
+  cut short and Export, Compare and the progress bar were out of sight. The
+  header now gives up the protocol list first, and on a narrow window the end
+  of the Protocols row (Depth to Compare) and the progress bar move to a line
+  of their own.
+- **`python -m hvac_scanner.report` rejects a malformed scan file with the
+  reason** (`devices` not a list of objects, numbers that are text, and so
+  on) instead of a traceback from inside the renderer.
+- **CI** tests Python 3.14 as well (and the package says so); runs `ruff
+  check` (syntax errors and pyflakes' checks, configured in `pyproject.toml`)
+  on one leg, with eleven leftovers in the tests removed; and prints test
+  coverage by module on one leg. The signing job installs the ArtifactSigning
+  module with `packaging/install_artifactsigning.ps1`: pinned by the package's
+  SHA-256, its module files checked as Microsoft-signed, three tries.
+  `Install-Module` pinned a version only, and a corrupt download stopped the
+  2.14.1 tag build until the job was run again.
+- Docs: the project page's Python install line uses PyPI; README's "What's
+  new" keeps the latest version and links here; ROADMAP's intro and "Later"
+  list caught up with what shipped.
 
 ## [2.14.1] — 2026-11-16
 
