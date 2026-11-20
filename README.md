@@ -368,7 +368,7 @@ Exit codes:
 
 ## What's new
 
-### v2.15.0
+### v2.15.0 (2026-11-20)
 
 - **On PyPI**: `pipx install hvac-network-scanner` installs it on any OS with
   Python 3.10 or newer, and every release goes there too. A copy installed

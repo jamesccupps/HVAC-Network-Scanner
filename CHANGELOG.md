@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.15.0] — 2026-11-20
+
 PyPI releases, a check of the BBMD tables from one site's scans, and the
 remaining small items from the 2026-11-14 audit.
 
