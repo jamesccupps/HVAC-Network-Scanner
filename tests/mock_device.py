@@ -13,6 +13,7 @@ assert on exchange cost rather than only on correctness.
 import socket
 import struct
 import threading
+import time
 
 from hvac_scanner import codec
 from hvac_scanner.constants import BACNET_OBJ_TYPES
@@ -30,13 +31,17 @@ def _cs(text):
 class MockBACnetDevice:
     def __init__(self, instance=1234, n_objects=200, vendor_id=2,
                  model='Tracer SC+', max_apdu=1476, rpm_mode='full',
-                 host='127.0.0.1', patch_port=True, drop_rpm=(), drop_rp=()):
+                 host='127.0.0.1', patch_port=True, drop_rpm=(), drop_rp=(),
+                 delay=0.0):
         self.instance = instance
         # ReadPropertyMultiple requests to ignore, by their number (1 = the
         # first): a lossy link or a controller busy for a moment.
         self.drop_rpm = set(drop_rpm)
         # Property ids whose first plain ReadProperty is ignored the same way.
         self.drop_rp = set(drop_rp)
+        # Seconds to wait before answering each confirmed request: a slow
+        # controller, for the per-device time limit.
+        self.delay = delay
         self.rp_props: list[int] = []  # property id of every ReadProperty, in order
         self.rpm_requests = 0
         self.vendor_id = vendor_id
@@ -195,6 +200,8 @@ class MockBACnetDevice:
             return
         self.largest_request_apdu = max(self.largest_request_apdu, len(data) - 6)
         svc = data[9]
+        if self.delay:
+            time.sleep(self.delay)
 
         if svc == 0x0C:
             self.single_reads += 1

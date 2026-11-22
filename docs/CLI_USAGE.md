@@ -53,7 +53,9 @@ is also on your PATH and is equivalent.
 
 ### Protocol toggles
 
-All protocols are enabled by default. Any flag turns the corresponding protocol off.
+All protocols are enabled by default on the command line. Any flag turns the corresponding protocol off.
+
+The window starts with **Services off** (TVs, printers and PCs answer its HTTP and TLS probes, and on an office network that floods the results), so the same targets give a different result there unless you tick it. Add `--no-services` for the window's default set.
 
 | Flag | Effect |
 |------|--------|
@@ -143,11 +145,12 @@ ways round that:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Scan completed (may be zero devices) |
+| 0 | Scan completed, every pass that was asked for ran (may be zero devices) |
 | 1 | Invalid arguments: a bad flag or value, a target that will not parse, more addresses than `--max-hosts`, public addresses without `--allow-public`, a missing or damaged `--baseline` |
 | 2 | Interrupted via Ctrl-C / SIGINT (results are partial) |
 | 3 | Internal error (see log) |
 | 4 | Scan completed but differed from the baseline (`--fail-on-change` only) |
+| 5 | Scan finished but a pass was skipped or failed (a BBMD that didn't answer, say), so the results are partial. Comes before 4: a baseline comparison leaves out the devices of that protocol ("not compared") instead of calling them gone. A warning on stderr names the pass, `-q` included. |
 
 ## Examples
 

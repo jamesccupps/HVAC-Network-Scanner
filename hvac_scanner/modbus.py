@@ -41,6 +41,9 @@ _GATEWAY_NO_DEVICE = {0x0A, 0x0B}
 # Hosts probed concurrently once the port sweep has found them. Each host still
 # sees one request at a time.
 _HOST_WORKERS = 16
+# Unit IDs a host may leave unanswered, having sent no Modbus frame at all,
+# before it is taken for something other than Modbus (see scan_host).
+_SILENT_UNITS_BEFORE_GIVING_UP = 3
 
 
 class _ModbusSession:
@@ -64,6 +67,8 @@ class _ModbusSession:
         # unit ID (exception 0x0A or 0x0B). Either way the unit is empty.
         self.timed_out = False
         self.no_device = False
+        # Whether the host has sent a single Modbus frame on this session.
+        self.answered = False
 
     def close(self) -> None:
         if self.sock is not None:
@@ -107,6 +112,7 @@ class _ModbusSession:
                     if got == self.txn or not self._stale_possible:
                         self.no_device = (len(resp) >= 9 and bool(resp[7] & 0x80)
                                           and resp[8] in _GATEWAY_NO_DEVICE)
+                        self.answered = True
                         return resp
                     log.debug("%s:%d stale Modbus reply (txn %d)", self.ip, self.port, got)
             except socket.timeout:
@@ -195,10 +201,24 @@ class ModbusScanner:
                   unit_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
         """Probe one host at multiple unit IDs over one connection."""
         unit_ids = unit_ids or self.COMMON_UNIT_IDS
+        # The IDs a device on TCP itself answers (1, and 255 or 247 for
+        # TCP-only devices) go first. If the host has not sent one Modbus
+        # frame by the time those three went unanswered, it is not Modbus
+        # (something else listening on 502) and the rest are skipped: a
+        # gateway answers an empty unit with exception 0x0A/0x0B, which
+        # counts as an answer. Until 2.16 such a host cost all nine IDs, 18 s
+        # at the 2 s timeout, on every scan of one site (audit 2026-11-21).
+        first = [u for u in (1, 255, 247) if u in unit_ids]
+        order = first + [u for u in unit_ids if u not in first]
         results: list[dict[str, Any]] = []
 
         with _ModbusSession(ip, port, self.timeout) as session:
-            for uid in unit_ids:
+            silent = 0
+            for uid in order:
+                if silent >= _SILENT_UNITS_BEFORE_GIVING_UP and not session.answered:
+                    log.debug("%s:%d sent no Modbus frame to %d unit IDs; not Modbus",
+                              ip, port, silent)
+                    break
                 # Try Device Identification (FC 0x2B, MEI 0x0E) first, then
                 # Report Server ID (FC 0x11), which older devices answer
                 # instead, then a one-register read. Each step happens only
@@ -212,10 +232,13 @@ class ModbusScanner:
                     info = step(session, uid)
                     if info is not None or session.timed_out or session.no_device:
                         break
+                if session.timed_out:
+                    silent += 1
                 if info:
                     info.update({'ip': ip, 'port': port, 'unit_id': uid})
                     results.append(info)
 
+        results.sort(key=lambda r: unit_ids.index(r['unit_id']))
         results = self._collapse_any_unit(results, unit_ids)
         for info in results:
             note = " (answers any unit ID)" if info.get('answers_any_unit') else ""

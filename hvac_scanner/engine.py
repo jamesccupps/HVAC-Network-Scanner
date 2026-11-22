@@ -52,7 +52,6 @@ from .knx import KNXScanner
 from .lonworks import LonWorksScanner
 from .moxa import MoxaScanner
 from .p2 import P2Scanner
-from .report import trend_stopped_full
 from .services import HVACServiceScanner
 from .snmp import SNMPScanner
 from .text import clean_log_line, clean_text, spreadsheet_cell
@@ -208,7 +207,9 @@ OBJECT_CEILING = 20_000
 
 @dataclass
 class ScanResult:
-    started_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Local time with its UTC offset. Set again when the scan starts: it was
+    # the time the engine was built, without an offset (audit 2026-11-21).
+    started_at: str = field(default_factory=lambda: _now_iso())
     elapsed: float = 0.0
     devices: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=lambda: {
@@ -247,6 +248,13 @@ class ScanResult:
         return not self.stopped and all(
             s in ('scanned', 'off') for s in self.passes.values())
 
+    def gaps(self) -> list[str]:
+        """"BACnet skipped: ..." for each pass that was asked for and did not
+        run to the end."""
+        from .diff import pass_gap
+        return [pass_gap(k, str(v)) for k, v in self.passes.items()
+                if v not in ('scanned', 'off')]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             'scan_time': self.started_at,
@@ -261,7 +269,7 @@ class ScanResult:
                          'remote_mstp': self.remote_mstp,
                          'seconds': {k: round(v, 1) for k, v in self.seconds.items()}},
             'counts': self.counts,
-            'devices': [_sanitize_for_json(d) for d in self.devices],
+            'devices': [_sanitize_for_json(d) for d in _in_address_order(self.devices)],
         }
 
     def write_json(self, path: str) -> None:
@@ -285,7 +293,7 @@ class ScanResult:
                 'TLS Certificate',
                 'Flagged Points',
             ])
-            for dev in self.devices:
+            for dev in _in_address_order(self.devices):
                 fp = dev.get('_fingerprint', {})
                 props = dev.get('properties', {}) or {}
                 # Device-reported model_name is the ground truth; fall back to
@@ -340,7 +348,7 @@ class ScanResult:
                 'Object Type', 'Instance', 'Name', 'Present Value', 'Units',
                 'Description', 'Status',
             ])
-            for dev in self.devices:
+            for dev in _in_address_order(self.devices):
                 props = dev.get('properties', {}) or {}
                 head = [dev.get('ip', ''), dev.get('instance', ''),
                         props.get('object_name', ''),
@@ -406,7 +414,7 @@ class ScanResult:
 
             # Per-device detail
             n = 0
-            for dev in self.devices:
+            for dev in _in_address_order(self.devices):
                 if not dev.get('protocol', '').startswith('BACnet'):
                     continue
                 n += 1
@@ -546,6 +554,7 @@ class ScanEngine:
     def run(self) -> ScanResult:
         start = time.time()
         self._t0 = time.monotonic()
+        self.result.started_at = _now_iso()
         self.result.targets = list(self.opts.networks)
 
         if not self.opts.networks:
@@ -2017,9 +2026,15 @@ class ScanEngine:
             log.debug("batched point read %s failed: %s", ip, e)
             read_back = [(t, i, {}) for t, i, _ in wanted]
 
+        # At the time limit or Stop, every point that was read is kept and
+        # only what never came back is left out. Until 2.16 this loop ended at
+        # its first item once the limit had passed, so a device that spent its
+        # whole time reading points was filed with none (four controllers on
+        # one site, three minutes each).
+        cut = self._device_stopped()
         for obj_type, obj_inst, raw in read_back:
-            if self._device_stopped():
-                break
+            if cut and not raw:
+                continue
             obj_type_str = str(obj_type)
             point = {'type': obj_type_str, 'instance': int(obj_inst),
                      'name': '', 'present_value': '', 'units': '', 'description': '',
@@ -2057,7 +2072,9 @@ class ScanEngine:
             objects.append(point)
         self._add_points(len(objects))
 
-        props['object_list'] = objects
+        # The points are in dev['objects'] only. Until 2.16 they were also in
+        # properties['object_list'], which nothing read: each point twice in
+        # the JSON export (28 MB instead of 15 MB for one site's scan).
         dev['properties'] = props
         dev['objects'] = objects
         flagged = {f: sum(1 for o in objects if f in o.get('status', ''))
@@ -2184,6 +2201,9 @@ class ScanEngine:
         parts = []
         if trends:
             off = sum(1 for t in trends if t['enabled'] is False)
+            # Imported here: the package importing report.py made
+            # `python -m hvac_scanner.report` warn on every run.
+            from .report import trend_stopped_full
             full = sum(1 for t in trends if trend_stopped_full(t))
             extra = ", ".join(x for x in (f"{off} disabled" if off else "",
                                           f"{full} full and stopped" if full else "") if x)
@@ -2566,6 +2586,26 @@ def _contains(network: str, ip: str) -> bool:
         return False
 
 
+def _now_iso() -> str:
+    """Local time to the second, with its UTC offset: 2026-11-21T14:05:49-05:00."""
+    return datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def _in_address_order(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Devices by address, then protocol, port and instance or unit ID.
+
+    Exports followed the order devices answered, so two scans of one site
+    gave files that differed line by line (audit 2026-11-21). A router comes
+    before the MS/TP devices behind it, as in the window.
+    """
+    def key(d: dict[str, Any]) -> tuple:
+        inst = d.get('instance', d.get('unit_id'))
+        port = d.get('port')
+        return (_ip_key(str(d.get('ip', ''))), str(d.get('protocol', '')),
+                port if isinstance(port, int) else 0, inst if isinstance(inst, int) else -1)
+    return sorted(devices, key=key)
+
+
 def _ip_key(ip: str) -> tuple:
     try:
         return tuple(int(p) for p in ip.split('.'))
@@ -2669,6 +2709,10 @@ def write_json_atomic(path: str, data: Any) -> None:
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=_str)
         os.replace(tmp, path)
+    except OSError as e:
+        # Name the file that was asked for, not the temporary one beside it
+        # ("No such file or directory: '...x.json.tmp-28604'").
+        raise type(e)(e.errno, e.strerror, path) from None
     finally:
         try:
             os.remove(tmp)

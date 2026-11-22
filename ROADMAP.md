@@ -72,8 +72,38 @@ From the 2026-11-06 review's feature ideas:
   instances already are).
 - **A findings-only CSV/JSON** for ticketing systems.
 - **GUI**: a visible keyboard focus, keyboard access to the right-click
-  actions, rescaling when the window moves between monitors, and faster
-  filtering and sorting of very large point lists.
+  actions, and rescaling when the window moves between monitors.
+
+From the 2026-11-21 review:
+
+- **Controller clocks**: each device's local date, time and UTC offset, and
+  a finding for clocks more than a few minutes off (schedules run at the
+  wrong time).
+- **Why a point is in fault**: `reliability` beside the fault flag (no
+  sensor, open loop, over range), and each device's `systemStatus`.
+- **Who holds an override**: for overridden commandable points, the
+  priority that holds the value (8 is an operator).
+- **Open a saved scan** in the window, and `hvac-scanner --compare a.json
+  b.json` to compare two files without scanning.
+- **A report that is easy to move around in**: a contents line with counts,
+  and long tables that fold.
+- **Rescan only what was cut short**: the devices that hit the time limit,
+  again with a longer limit, merged into the same result.
+
+### Speed
+
+Most of a scan is fixed waits, not work (one site's devices-only scan: 98 s,
+of which 6.6 s reading).
+
+- **The independent passes side by side**: BACnet, Modbus, P2, KNX,
+  LonWorks, gateways, Services and SNMP use different ports and send each
+  device one probe; together they would take a third off that scan. It
+  changes how much the scanner sends at once, so it comes with a check of
+  the rate limit and the "gentle" preset.
+- **Closed ports known at once on Windows**, which retries a refused
+  connection for 2 s (each closed port costs the sweep's whole timeout).
+- **Shorter discovery waits** where devices answer directly, set from the
+  last-answer times the scan log carries since 2.16.
 
 ## Later / under consideration
 

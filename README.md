@@ -358,35 +358,37 @@ See [docs/CLI_USAGE.md](docs/CLI_USAGE.md) for the full flag reference and a Win
 
 Exit codes:
 
-- `0` — scan completed
+- `0` — scan completed, every pass that was asked for ran
 - `1` — bad arguments (including a value out of range, more addresses than
   `--max-hosts`, public addresses without `--allow-public`, or a `--baseline`
   file that is missing or damaged)
 - `2` — interrupted (Ctrl+C), so the results are partial
 - `3` — internal error
 - `4` — scan completed and differed from the baseline (`--fail-on-change`)
+- `5` — a pass was skipped or failed, so the results are partial (comes
+  before `4`; a comparison leaves that protocol's devices out rather than
+  calling them gone)
 
 ## What's new
 
-### v2.15.0 (2026-11-20)
+### v2.16.0
 
-- **On PyPI**: `pipx install hvac-network-scanner` installs it on any OS with
-  Python 3.10 or newer, and every release goes there too. A copy installed
-  that way is told `pipx upgrade hvac-network-scanner` (or the pip command)
-  when a new release is out, and offered the command to copy, instead of
-  being sent to the executable downloads.
-- **BBMD tables that disagree are a finding**: more than one BBMD on a
-  subnet (a peer they share gets each broadcast more than once), a peer that
-  doesn't list the BBMD back, and a listed peer inside the scanned range
-  that didn't answer as a BBMD.
-- **The window fits a small screen**: at its minimum size the status and
-  the update button stay in the header, and the end of the Protocols row
-  and the progress bar move to a second line instead of being cut off.
-- Smaller changes: APOGEE P2 nodes are labelled "likely", since how one
-  connection ends is the only evidence; `python -m hvac_scanner.report` says
-  what is wrong with a malformed scan file instead of a traceback; CI also
-  tests Python 3.14, runs `ruff check`, and installs the signing module
-  pinned by its hash.
+- **Points survive the time limit and Stop**: a device that hit its
+  per-device time limit, or was in flight when Stop was pressed, was filed
+  with no points although they had been read. Every point that came back is
+  now kept.
+- **A pass that didn't run is said so**: a skipped BACnet pass (a BBMD that
+  didn't answer, say) no longer makes a baseline comparison list every
+  BACnet device as gone. Those devices are "not compared", the run exits
+  `5`, and the window says what was missed instead of "Scan complete".
+- **Large point lists sort at once**: 0.2 s for 42,000 points, where each
+  sort used to freeze the window for 6 to 14 s.
+- **Faster and smaller**: a host that listens on port 502 without speaking
+  Modbus costs 6 s instead of 18 s; the JSON export is about half the size
+  (each point was in it twice); exports are in address order.
+- Smaller fixes: the Advanced panel fits a small window, a saved window
+  position off every screen isn't restored, the report's tables scroll on a
+  phone, and the scan log says when each discovery wait got its last answer.
 
 Earlier versions are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -499,7 +501,7 @@ packaging/             # PyInstaller spec, hash-pinned build tooling, icon, entr
 
 site/                  # The project page (GitHub Pages, .github/workflows/pages.yml)
 
-tests/                 # 882 tests
+tests/                 # pytest suite (python -m pytest)
 ├── test_e2e_site.py   # The whole engine against the simulated site
 ├── test_v27.py        # v2.7 fixes: units, BBMD origin, concurrency, Modbus, GUI
 ├── test_codec.py      # BACnet packet encode/decode + parser regressions

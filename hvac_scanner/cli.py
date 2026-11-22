@@ -14,6 +14,7 @@ Exit codes:
     2 - scan interrupted
     3 - internal error
     4 - scan completed and differed from the baseline (--fail-on-change)
+    5 - a pass was skipped or failed: the results are partial (before 4)
 """
 
 from __future__ import annotations
@@ -386,12 +387,6 @@ def _handle_baseline(args, result, baseline=None) -> bool:
     """
     from . import diff as diffmod
 
-    if not result.complete:
-        gaps = ", ".join(f"{k} {v}" for k, v in result.passes.items()
-                         if v not in ('scanned', 'off'))
-        print(f"Warning: this scan is partial ({'stopped' if result.stopped else gaps}); "
-              f"devices it did not reach may show as gone.", file=sys.stderr)
-
     changed = False
     if baseline is not None:
         d = diffmod.diff_scans(baseline, result.to_dict())
@@ -642,6 +637,13 @@ def main(argv: list[str] | None = None) -> int:
     if failed:
         return 3
 
+    # Said on every partial scan, -q included: until 2.16 only a run with a
+    # baseline heard about a pass that didn't run, and it still exited 0.
+    if not result.complete:
+        why = "stopped" if result.stopped else "; ".join(result.gaps())
+        print(f"Warning: this scan is partial ({why}). Devices it did not reach are "
+              f"not in the results; a comparison leaves them out.", file=sys.stderr)
+
     changed = False
     if args.baseline or args.save_baseline:
         try:
@@ -662,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if stop_event.is_set() or result.stopped:
         return 2
+    if not result.complete:
+        return 5                     # a pass skipped or failed; ahead of 4
     if changed and args.fail_on_change:
         return 4
     return 0

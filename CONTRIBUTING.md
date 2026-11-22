@@ -24,8 +24,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Target Python is **3.10+**. CI runs 3.10, 3.11, 3.12 and 3.13 on both Ubuntu
-and Windows.
+Target Python is **3.10+**. CI runs 3.10 to 3.14 on both Ubuntu and Windows.
 
 Running tests:
 
