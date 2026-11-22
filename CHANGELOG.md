@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.16.0] — 2026-11-21
+
 Fixes from a hands-on review of 2.15.0 (2026-11-21), checked against one
 site's scan logs, and the first of its speed-ups.
 

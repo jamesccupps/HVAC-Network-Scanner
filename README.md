@@ -371,7 +371,7 @@ Exit codes:
 
 ## What's new
 
-### v2.16.0
+### v2.16.0 (2026-11-21)
 
 - **Points survive the time limit and Stop**: a device that hit its
   per-device time limit, or was in flight when Stop was pressed, was filed
