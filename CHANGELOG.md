@@ -5,6 +5,72 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Fixes from a hands-on review of 2.15.0 (2026-11-21), checked against one
+site's scan logs, and the first of its speed-ups.
+
+### Fixed
+
+- **The per-device time limit, and Stop, kept no points.** The loop that
+  turns read values into points ended at its first item once the limit had
+  passed, so a device that spent its whole time reading was filed with 0
+  points while the log said "kept what was read". On one site four
+  controllers each read their object list and dozens of point batches, then
+  hit the 3-minute limit and were listed empty. Every point that came back is
+  now kept; only what never did is left out.
+- **A pass that didn't run looked like devices gone.** With a BBMD that never
+  answered (so the BACnet pass was skipped), `--baseline` listed every BACnet
+  device as "not responding" and `--fail-on-change` exited 4, while the
+  window said "Scan complete" in green. Now:
+  - the comparison leaves the devices of a protocol whose pass didn't run
+    out, under **NOT COMPARED** with the reason ("BACnet skipped: …"), and
+    its JSON has `not_compared`;
+  - a partial scan exits **5** (before 4), and the warning that names the
+    pass is printed on every partial run, `-q` included;
+  - the window says "Finished — BACnet skipped, see the log" in yellow.
+- **Sorting the Points table froze the window at a real site's size.** With
+  42,000 points each sort took 6 to 14 s and clearing a filter 6 s: every row
+  was read back from the table. Rows are now sorted and filtered from a copy
+  kept in Python and put back in one call: 0.2 s to sort, 0.04 s to clear.
+- **The Advanced panel was cut off on a small window** (fields read
+  "Parall", the update boxes were off the edge). Its fields now go three,
+  two or one to a row, as the width allows, and its check boxes wrap.
+- **A saved window position off every screen** (a laptop opened without the
+  monitor it was closed on) is not restored; the size still is, shrunk to fit.
+- **The router-discovery wait could run to twice its length**: it waited the
+  whole timeout for each datagram rather than the time left.
+- **An export into a missing folder named the temporary file**
+  (`…x.json.tmp-28604`); it names the file asked for.
+- **`python -m hvac_scanner.report` warned on every run** that the module was
+  already imported.
+- The About box lists every protocol and the advisory list's date; a refused
+  target shows its reason in the header, not "Check the settings"; the Model
+  column fits "Likely Siemens APOGEE field panel (P2)".
+
+### Changed
+
+- **A host with port 502 open that isn't Modbus costs 6 s, not 18 s.** Unit
+  IDs 1, 255 and 247 are tried first, and a host that has not sent a single
+  Modbus frame by then is left: something else listens on 502. A gateway
+  answers an empty unit with exception 0x0A or 0x0B, which counts, so its
+  other units are still asked. One site's every scan spent 18 s on such a
+  host.
+- **The JSON export is about half the size.** Each BACnet device's points
+  were in it twice, in `objects` and in `properties.object_list`, which
+  nothing read; `properties.object_list` is gone (28 MB to 15 MB for one
+  site's scan). Read the points from `objects`.
+- **Exports are in address order** (then protocol, port and instance), not
+  the order devices answered, so two scans of one site compare line by line.
+- **`scan_time` carries its UTC offset** (`2026-11-21T14:05:49-05:00`) and is
+  when the scan started, not when the engine was built.
+- **The scan log says when each discovery wait got its last answer**
+  ("Who-Is: 6 answer(s), the last 0.4 s into the 5.0 s wait"), so the waits
+  can later be shortened from real sites' numbers.
+- **The HTML report's tables scroll on their own** on a narrow screen,
+  instead of the whole page sliding sideways.
+- Docs: exit code 5; the window starts with Services off and the command
+  line with it on; the test count and Python versions in README and
+  CONTRIBUTING; the review's feature and speed ideas are in ROADMAP.
+
 ## [2.15.0] — 2026-11-20
 
 PyPI releases, a check of the BBMD tables from one site's scans, and the

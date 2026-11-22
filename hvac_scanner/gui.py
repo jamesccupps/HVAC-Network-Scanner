@@ -104,6 +104,34 @@ _LOG_MAX_LINES = 20000
 _HEADING = re.compile(r"[A-Z][A-Z /]{6,}")      # BACNET/IP DISCOVERY, not "SNMP:  1"
 
 
+_GEOMETRY = re.compile(r"^(\d+)x(\d+)(?:([+-])(-?\d+)([+-])(-?\d+))?$")
+
+
+def _onscreen_geometry(geo: str, screen: "tuple[int, int, int, int]") -> Optional[str]:
+    """The saved window geometry to restore on `screen` (x, y, width, height
+    of the whole desktop), or None to keep the default.
+
+    The size is kept, shrunk to fit the desktop. The position is kept only if
+    the top-left corner is on the desktop with room to grab the window: a
+    laptop opened without the monitor it was closed on used to start with the
+    window on no screen at all (audit 2026-11-21).
+    """
+    m = _GEOMETRY.match(geo.strip())
+    if not m:
+        return None
+    sx, sy, sw, sh = screen
+    w, h = min(int(m.group(1)), sw), min(int(m.group(2)), sh)
+    if m.group(3) is None:
+        return f"{w}x{h}"
+    x = int(m.group(4)) * (-1 if m.group(3) == '-' else 1)
+    y = int(m.group(6)) * (-1 if m.group(5) == '-' else 1)
+    if m.group(3) == '-' or m.group(5) == '-':
+        return f"{w}x{h}"                 # measured from the right or bottom: rare, drop
+    if sx <= x <= sx + sw - 120 and sy <= y <= sy + sh - 60:
+        return f"{w}x{h}+{x}+{y}"
+    return f"{w}x{h}"
+
+
 def _pick_font(candidates: list[str], fallback: str) -> str:
     try:
         families = set(tkfont.families())
@@ -139,7 +167,11 @@ class HVACNetworkScannerGUI:
         self._sort_state: dict[str, tuple[str, bool]] = {}
         self._rows: dict[str, list[str]] = {}          # tree -> every row, in order
         self._shown: dict[str, int] = {}               # tree -> rows currently visible
-        self._row_tags: dict[str, tuple] = {}           # iid -> tags besides striping
+        # Keyed by (table, iid): Tk numbers each table's rows from I001, so a
+        # row ID alone names a row in every table.
+        self._row_tags: dict[tuple, tuple] = {}         # tags besides striping
+        self._values: dict[tuple, tuple] = {}           # its values, for sort/filter
+        self._striped: set[tuple] = set()               # rows tagged "alt" now
         self._flagged_points = 0
         self._dev_by_iid: dict[str, dict] = {}
         self._raw_dirty = False
@@ -577,19 +609,22 @@ class HVACNetworkScannerGUI:
         self.adv_vars: dict[str, tk.StringVar] = {
             k: tk.StringVar(value=v) for k, v in _ADVANCED_DEFAULTS.items()}
 
-        def field(row, col, label, key, width=8, tip="", combo=None):
-            ttk.Label(self.adv_frame, text=label, style="Info.TLabel").grid(
-                row=row, column=col * 3, sticky="e", padx=(14 if col else 0, 6), pady=4)
+        # Fields are laid out by _reflow_advanced: three to a row when the
+        # window is wide, fewer when it isn't (in their order here, row by
+        # row). At the minimum size the fixed three columns were cut off.
+        self._adv_fields: list[tuple[tk.Widget, tk.Widget, Optional[tk.Widget]]] = []
+        self._adv_layout: Optional[tuple] = None
+
+        def field(_row, _col, label, key, width=8, tip="", combo=None):
+            lab = ttk.Label(self.adv_frame, text=label, style="Info.TLabel")
             if combo:
                 w = ttk.Combobox(self.adv_frame, textvariable=self.adv_vars[key],
                                  values=combo, width=width, state="readonly")
             else:
                 w = ttk.Entry(self.adv_frame, textvariable=self.adv_vars[key], width=width,
                               font=self._f(10, mono=True))
-            w.grid(row=row, column=col * 3 + 1, sticky="w", pady=4)
-            if tip:
-                ttk.Label(self.adv_frame, text=tip, style="Dim.TLabel").grid(
-                    row=row, column=col * 3 + 2, sticky="w", padx=(6, 0))
+            hint = ttk.Label(self.adv_frame, text=tip, style="Dim.TLabel") if tip else None
+            self._adv_fields.append((lab, w, hint))
             return w
 
         self.timeout_entry = field(0, 0, "Timeout (s)", 'timeout', tip="per request")
@@ -607,27 +642,84 @@ class HVACNetworkScannerGUI:
         field(2, 2, "SNMP communities", 'communities', width=16, tip="comma-separated")
         self.device_limit_entry = field(3, 0, "Device time limit (s)", 'device_limit',
                                         width=6, tip="per device, 0 = none")
-        chk = ttk.Frame(self.adv_frame, style="Card.TFrame")
-        chk.grid(row=4, column=0, columnspan=9, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(chk, text="Deep scan (read points and registers)",
-                        variable=self.deep_scan).pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Checkbutton(chk, text="ReadPropertyMultiple",
-                        variable=self.use_rpm).pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Checkbutton(chk, text="Trend logs & schedules",
-                        variable=self.read_metadata).pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Checkbutton(chk, text="BBMD tables",
-                        variable=self.read_bbmd_tables).pack(side=tk.LEFT, padx=(0, 18))
-        ttk.Checkbutton(chk, text="Probe MS/TP addresses behind remote routers (slow)",
-                        variable=self.mstp_mac_probe).pack(side=tk.LEFT, padx=(0, 18))
+        self._adv_checks_frame = chk = ttk.Frame(self.adv_frame, style="Card.TFrame")
         self.check_updates_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(chk, text="Check for updates daily",
-                        variable=self.check_updates_var).pack(side=tk.LEFT, padx=(0, 18))
         self.auto_update_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(chk, text="Install updates automatically",
-                        variable=self.auto_update_var).pack(side=tk.LEFT)
+        self._adv_checks = [ttk.Checkbutton(chk, text=text, variable=var) for text, var in (
+            ("Deep scan (read points and registers)", self.deep_scan),
+            ("ReadPropertyMultiple", self.use_rpm),
+            ("Trend logs & schedules", self.read_metadata),
+            ("BBMD tables", self.read_bbmd_tables),
+            ("Probe MS/TP addresses behind remote routers (slow)", self.mstp_mac_probe),
+            ("Check for updates daily", self.check_updates_var),
+            ("Install updates automatically", self.auto_update_var))]
+        self.adv_frame.bind('<Configure>', self._reflow_advanced, add='+')
+        self._reflow_advanced()
         self._adv_open = False
         for var in (*self.adv_vars.values(), *(getattr(self, k) for k in _ADVANCED_TOGGLES)):
             var.trace_add('write', lambda *_a: self._update_adv_label())
+
+    def _reflow_advanced(self, _event=None) -> None:
+        """Grid the Advanced fields as many to a row as the panel's width
+        takes (three, two or one), and wrap the check boxes onto as many lines
+        as they need. Only regrids when the layout changes."""
+        width = self.adv_frame.winfo_width()
+        if width <= 1:                      # not laid out yet: the widest layout
+            width = 10 ** 6
+        fields = self._adv_fields
+        pad_between = 14
+
+        def needed(ncols: int) -> int:
+            total = 0
+            for c in range(ncols):
+                col = fields[c::ncols]
+                total += max(lab.winfo_reqwidth() for lab, _w, _h in col) + 6
+                total += max(w.winfo_reqwidth() + (h.winfo_reqwidth() + 6 if h else 0)
+                             for _l, w, h in col)
+            return total + pad_between * (ncols - 1)
+        ncols = next((n for n in (3, 2) if needed(n) <= width), 1)
+
+        rows, line, used = [], [], 0
+        for cb in self._adv_checks:
+            w = cb.winfo_reqwidth() + 18
+            if line and used + w > width:
+                rows.append(line)
+                line, used = [], 0
+            line.append(cb)
+            used += w
+        rows.append(line)
+        layout = (ncols, tuple(len(r) for r in rows))
+        if layout == self._adv_layout:
+            return
+        self._adv_layout = layout
+
+        for lab, w, hint in fields:
+            for widget in (lab, w, hint):
+                if widget is not None:
+                    widget.grid_forget()
+        for c in range(9):
+            self.adv_frame.columnconfigure(c, weight=0)
+        for i, (lab, w, hint) in enumerate(fields):
+            r, c = divmod(i, ncols)
+            lab.grid(row=r, column=c * 3, sticky="e", padx=(pad_between if c else 0, 6), pady=4)
+            w.grid(row=r, column=c * 3 + 1, sticky="w", pady=4)
+            if hint is not None:
+                hint.grid(row=r, column=c * 3 + 2, sticky="w", padx=(6, 0))
+        chk = self._adv_checks_frame
+        chk.grid(row=(len(fields) + ncols - 1) // ncols, column=0, columnspan=9,
+                 sticky="w", pady=(4, 0))
+        for cb in self._adv_checks:
+            cb.pack_forget()
+        for old in getattr(self, '_adv_check_lines', []):
+            old.destroy()
+        self._adv_check_lines = []
+        for line in rows:
+            lf = ttk.Frame(chk, style="Card.TFrame")
+            lf.pack(side=tk.TOP, anchor="w", pady=(0, 2))
+            self._adv_check_lines.append(lf)
+            for cb in line:
+                cb.pack(in_=lf, side=tk.LEFT, padx=(0, 18))
+                cb.lift(lf)                 # made before the line's frame: keep it on top
 
     def _advanced_changes(self) -> list[str]:
         """The advanced settings that differ from the defaults. They are
@@ -694,7 +786,8 @@ class HVACNetworkScannerGUI:
         self.device_tree = self._make_tree(left, "devices", [
             ("protocol", "Protocol", 100), ("ip", "IP Address", 115),
             ("address", "Device ID", 165), ("name", "Name", 150),
-            ("model", "Model", 190), ("vendor", "Vendor", 160),
+            # 250: "Likely Siemens APOGEE field panel (P2)" was cut at 190.
+            ("model", "Model", 250), ("vendor", "Vendor", 160),
             ("device_type", "Type", 140), ("web_url", "Web UI", 140),
             ("default_creds", "Default Creds", 170), ("description", "Description", 300),
         ])
@@ -891,22 +984,31 @@ class HVACNetworkScannerGUI:
         name = tree._hvac_name                       # type: ignore[attr-defined]
         iid = tree.insert("", tk.END, values=values, tags=tags)
         self._rows[name].append(iid)
+        self._values[(name, iid)] = tuple(values)
         if tags:
-            self._row_tags[iid] = tuple(tags)
+            self._row_tags[(name, iid)] = tuple(tags)
         terms = self._filter_terms(name)
         if terms and not self._matches(values, terms):
             tree.detach(iid)
         else:
             if self._shown[name] % 2:
                 tree.item(iid, tags=tuple(tags) + ("alt",))
+                self._striped.add((name, iid))
             self._shown[name] += 1
         return iid
+
+    def _set_values(self, tree: ttk.Treeview, iid: str, values) -> None:
+        """Change a row's values, in the table and in the copy sorting reads."""
+        tree.item(iid, values=values)
+        self._values[(tree._hvac_name, iid)] = tuple(values)   # type: ignore[attr-defined]
 
     def _clear_tree(self, tree: ttk.Treeview) -> None:
         name = tree._hvac_name                       # type: ignore[attr-defined]
         tree.delete(*self._rows[name])
         for iid in self._rows[name]:
-            self._row_tags.pop(iid, None)
+            self._row_tags.pop((name, iid), None)
+            self._values.pop((name, iid), None)
+            self._striped.discard((name, iid))
         self._rows[name] = []
         self._shown[name] = 0
         self._sort_state.pop(name, None)
@@ -933,8 +1035,16 @@ class HVACNetworkScannerGUI:
         reverse = not prev_reverse if prev_col == col else False
         self._sort_state[name] = (col, reverse)
 
+        # Sort keys come from the rows' values kept in Python: read back from
+        # the widget one row at a time, a sort of 42,000 points froze the
+        # window for 6 to 14 s (audit 2026-11-21).
+        idx = list(tree["columns"]).index(col)
+
+        def cell(iid):
+            vals = self._values.get((name, iid), ())
+            return "" if idx >= len(vals) or vals[idx] is None else str(vals[idx])
         rows = self._rows[name]
-        rows.sort(key=lambda iid: self._sort_key(tree.set(iid, col)), reverse=reverse)
+        rows.sort(key=lambda iid: self._sort_key(cell(iid)), reverse=reverse)
         self._apply_filter_to(tree)
 
         arrow = " ▼" if reverse else " ▲"
@@ -1009,17 +1119,30 @@ class HVACNetworkScannerGUI:
         self._update_filter_count()
 
     def _apply_filter_to(self, tree: ttk.Treeview) -> None:
+        """Show the rows that match the table's filter, in `_rows` order.
+
+        One set_children call puts them in place (and detaches the rest), and
+        only rows whose stripe changes are re-tagged. Until 2.16 each row took
+        three widget calls (values, move, tags): 6 s to clear a filter on
+        42,000 points.
+        """
         name = tree._hvac_name                       # type: ignore[attr-defined]
         terms = self._filter_terms(name)
-        shown = 0
-        for iid in self._rows[name]:
-            if not terms or self._matches(tree.item(iid, 'values'), terms):
-                tree.move(iid, "", shown)
-                tree.item(iid, tags=self._row_tags.get(iid, ()) + (("alt",) if shown % 2 else ()))
-                shown += 1
-            else:
-                tree.detach(iid)
-        self._shown[name] = shown
+        values = self._values
+        visible = [iid for iid in self._rows[name]
+                   if not terms or self._matches(values.get((name, iid), ()), terms)]
+        tree.set_children("", *visible)
+        striped = self._striped
+        for n, iid in enumerate(visible):
+            alt = bool(n % 2)
+            key = (name, iid)
+            if alt != (key in striped):
+                tree.item(iid, tags=self._row_tags.get(key, ()) + (("alt",) if alt else ()))
+                if alt:
+                    striped.add(key)
+                else:
+                    striped.discard(key)
+        self._shown[name] = len(visible)
         self._update_filter_count()
 
     def _update_filter_count(self) -> None:
@@ -1444,7 +1567,10 @@ class HVACNetworkScannerGUI:
 
     def _reject(self, reason: str, widget=None) -> None:
         self.log_message(f"  [!] {reason}")
-        self._set_status(reason if len(reason) < 60 else "Check the settings", Colors.RED)
+        # The reason itself, shortened if it must be (the log has all of it).
+        # It used to be "Check the settings" for anything over 60 characters.
+        short = reason if len(reason) <= 70 else reason[:66].rstrip(" ,.;:") + "…"
+        self._set_status(short, Colors.RED)
         if widget is not None:
             widget.configure(style="Error.TEntry")
             widget.focus_set()
@@ -1486,6 +1612,16 @@ class HVACNetworkScannerGUI:
         elif self.stop_event.is_set():
             self._set_status("Stopped — partial results", Colors.YELLOW)
             self.progress_label.configure(text="Stopped")
+        elif result and not result.complete:
+            # A pass was skipped or failed. Until 2.16 this said "Scan
+            # complete" in green, with the reason one line in the log.
+            gaps = result.gaps()
+            first = gaps[0].split(":")[0] if gaps else "a pass did not run"
+            more = f" (+{len(gaps) - 1})" if len(gaps) > 1 else ""
+            self._set_status(f"Finished — {first}{more}, see the log", Colors.YELLOW)
+            self.progress_label.configure(text=f"Done in {result.elapsed:.1f}s")
+            for gap in gaps:
+                self.log_message(f"Not complete: {gap}")
         else:
             n = len({d.get('ip') for d in result.devices if d.get('ip')}) if result else 0
             self._set_status(f"Scan complete — {n} host(s)", Colors.GREEN)
@@ -1742,7 +1878,7 @@ class HVACNetworkScannerGUI:
         # Fingerprints are computed at the very end of the scan, after the
         # rows were streamed; refresh the identification columns.
         for iid, dev in self._dev_by_iid.items():
-            self.device_tree.item(iid, values=self._device_values(dev))
+            self._set_values(self.device_tree, iid, self._device_values(dev))
         # Rows arrived in whatever order devices finished. Unless the user has
         # sorted already, settle on address order, each router followed by the
         # MS/TP devices behind it.
@@ -2103,12 +2239,19 @@ class HVACNetworkScannerGUI:
         threading.Thread(target=_do_ping, daemon=True).start()
 
     def _show_about(self) -> None:
+        from . import advisories
+        try:
+            advisory_list = advisories.describe()
+        except Exception:                   # the box must open whatever the list does
+            advisory_list = "not available"
         messagebox.showinfo(
             "About HVAC Network Scanner",
             f"HVAC Network Scanner {__version__}\n\n"
             "Multi-protocol discovery for building automation networks: "
-            "BACnet/IP and MS/TP, Modbus TCP, HVAC service ports and SNMP. "
-            "Standard library only.\n\n"
+            "BACnet/IP and MS/TP, BACnet/SC endpoints, Modbus TCP, APOGEE P2, "
+            "KNXnet/IP, LonWorks/IP, serial gateways, SNMP, OPC UA and HVAC "
+            "service ports. Standard library only.\n\n"
+            f"Advisory list: {advisory_list}.\n\n"
             "Only scan networks you own or are authorized to assess. Small "
             "field controllers can misbehave under probe load; use the rate "
             "limit in Advanced on fragile sites.\n\n"
@@ -2378,10 +2521,28 @@ class HVACNetworkScannerGUI:
             self._toggle_advanced(True)
         geo = data.get('geometry')
         if isinstance(geo, str) and geo.count('x') == 1:
+            geo = _onscreen_geometry(geo, self._virtual_screen())
+            if geo:
+                try:
+                    self.root.geometry(geo)
+                except tk.TclError:
+                    pass
+
+    def _virtual_screen(self) -> "tuple[int, int, int, int]":
+        """x, y, width and height of the desktop across every monitor."""
+        if sys.platform == "win32":
             try:
-                self.root.geometry(geo)
-            except tk.TclError:
+                import ctypes
+                m = ctypes.windll.user32.GetSystemMetrics
+                box = (m(76), m(77), m(78), m(79))     # SM_X/Y/CX/CYVIRTUALSCREEN
+                if box[2] > 0 and box[3] > 0:
+                    return box
+            except (AttributeError, OSError):
                 pass
+        r = self.root
+        return (r.winfo_vrootx(), r.winfo_vrooty(),
+                r.winfo_vrootwidth() or r.winfo_screenwidth(),
+                r.winfo_vrootheight() or r.winfo_screenheight())
 
     def _save_settings(self) -> None:
         settings_mod.save(self.settings_path, self._collect_settings())

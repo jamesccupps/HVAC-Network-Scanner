@@ -4,6 +4,7 @@ CISA's data comes from tests/data/csaf, sources are local files."""
 import base64
 import hashlib
 import json
+import os
 import queue
 import sys
 from pathlib import Path
@@ -123,9 +124,18 @@ def test_the_downloaded_list_is_used_only_when_its_serial_is_higher(tmp_path, te
     cache.write_text(advisories.signed_text(_list(serial=base.serial + 3), SEED), encoding="utf-8")
     t = advisories.current(cache)
     assert t.serial == base.serial + 3 and t.origin == "downloaded"
-    cache.write_text(advisories.signed_text(_list(serial=base.serial), SEED), encoding="utf-8")
+
+    def rewrite(text, n):
+        # A new modification time each time: the cache is keyed on it and the
+        # size, and two writes of one size within a clock tick looked like one
+        # file (a failure seen once in a full run, never in the app, whose
+        # downloads are a day apart).
+        cache.write_text(text, encoding="utf-8")
+        st = cache.stat()
+        os.utime(cache, ns=(st.st_atime_ns, st.st_mtime_ns + n * 1_000_000_000))
+    rewrite(advisories.signed_text(_list(serial=base.serial), SEED), 1)
     assert advisories.current(cache) is base
-    cache.write_text("not signed", encoding="utf-8")
+    rewrite("not signed", 2)
     assert advisories.current(cache) is base
 
 

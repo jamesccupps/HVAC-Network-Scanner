@@ -34,6 +34,27 @@ def scan(devices, when='2026-08-19T02:00:00'):
     return {'scan_time': when, 'devices': devices}
 
 
+@pytest.fixture
+def scanned(monkeypatch):
+    """Run the CLI with the scan replaced by a result with these passes and
+    devices: nothing is sent anywhere."""
+    from hvac_scanner import cli
+    from hvac_scanner.engine import ScanResult
+
+    def use(passes, devices=()):
+        class Engine:
+            def __init__(self, opts, callback=None, stop_event=None):
+                pass
+
+            def run(self):
+                r = ScanResult()
+                r.passes = dict(passes)
+                r.devices = [dict(d) for d in devices]
+                return r
+        monkeypatch.setattr(cli, "ScanEngine", Engine)
+    return use
+
+
 # -- identity ---------------------------------------------------------------
 
 class TestDeviceKey:
@@ -180,7 +201,7 @@ class TestReport:
         payload = self._mixed().to_dict()
         json.dumps(payload)
         assert payload['summary'] == {'added': 1, 'removed': 1,
-                                      'changed': 1, 'unchanged': 1}
+                                      'changed': 1, 'unchanged': 1, 'not_compared': 0}
 
     def test_written_files_round_trip(self, tmp_path):
         d = self._mixed()
@@ -241,34 +262,40 @@ class TestCliIntegration:
         assert a.baseline is None and a.save_baseline is None
         assert a.fail_on_change is False
 
-    def test_unchanged_scan_exits_zero_with_fail_on_change(self, tmp_path):
+    # The scan is replaced by a result with a BACnet pass that ran and found
+    # nothing. These used to turn BACnet off and count the baseline's BACnet
+    # device as gone, which since 2.16 it isn't: a pass that didn't run
+    # compares nothing (tests/test_v216.py).
+
+    def test_unchanged_scan_exits_zero_with_fail_on_change(self, tmp_path, scanned):
         from hvac_scanner.cli import main
         from hvac_scanner.engine import ScanResult
         base = tmp_path / 'b.json'
         r = ScanResult()
         r.write_json(str(base))
-        rc = main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-                   '--no-snmp', '--no-mstp', '--quiet', '--print', 'none',
+        scanned({'bacnet': 'scanned'})
+        rc = main(['10.0.0.0/30', '--quiet', '--print', 'none',
                    '--baseline', str(base), '--fail-on-change',
                    '--diff-output', str(tmp_path / 'd.txt')])
         assert rc == 0
 
-    def test_changed_scan_exits_four_with_fail_on_change(self, tmp_path):
+    def test_changed_scan_exits_four_with_fail_on_change(self, tmp_path, scanned):
         from hvac_scanner.cli import main
         base = tmp_path / 'b.json'
         base.write_text(json.dumps(scan([bacnet_dev('10.0.0.9', 42)])), encoding='utf-8')
-        rc = main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-                   '--no-snmp', '--no-mstp', '--quiet', '--print', 'none',
+        scanned({'bacnet': 'scanned'})
+        rc = main(['10.0.0.0/30', '--quiet', '--print', 'none',
                    '--baseline', str(base), '--fail-on-change',
                    '--diff-output', str(tmp_path / 'd.txt')])
         assert rc == 4
+        assert "NOT RESPONDING (1)" in (tmp_path / 'd.txt').read_text(encoding='utf-8')
 
-    def test_changed_scan_exits_zero_without_the_flag(self, tmp_path):
+    def test_changed_scan_exits_zero_without_the_flag(self, tmp_path, scanned):
         from hvac_scanner.cli import main
         base = tmp_path / 'b.json'
         base.write_text(json.dumps(scan([bacnet_dev('10.0.0.9', 42)])), encoding='utf-8')
-        rc = main(['10.0.0.0/30', '--no-bacnet', '--no-modbus', '--no-services',
-                   '--no-snmp', '--no-mstp', '--quiet', '--print', 'none',
+        scanned({'bacnet': 'scanned'})
+        rc = main(['10.0.0.0/30', '--quiet', '--print', 'none',
                    '--baseline', str(base),
                    '--diff-output', str(tmp_path / 'd.txt')])
         assert rc == 0

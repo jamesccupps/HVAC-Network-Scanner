@@ -763,7 +763,9 @@ h3 { font-size: 15px; margin: 0; }
 .coverage { border: 1px solid var(--medium); border-radius: 8px; padding: 10px 14px; margin: 0 0 24px; }
 .high { --sev: var(--high); } .medium { --sev: var(--medium); }
 .low { --sev: var(--low); } .info { --sev: var(--info); }
+.tw { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
+@media (max-width: 700px) { td { min-width: 7em; } }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--dim); font-weight: 600; }
 td.mono, .mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 12px; }
@@ -787,7 +789,10 @@ def _table(columns: list[str], rows: list[list[Any]], mono: tuple[int, ...] = (0
         cells = "".join(f'<td class="mono">{_e(v)}</td>' if i in mono else f"<td>{_e(v)}</td>"
                         for i, v in enumerate(row))
         body.append(f"<tr>{cells}</tr>")
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+    # In its own scroll box: on a phone a wide table used to make the whole
+    # page slide sideways, with cells one word to a line.
+    return (f'<div class="tw"><table><thead><tr>{head}</tr></thead>'
+            f"<tbody>{''.join(body)}</tbody></table></div>")
 
 
 _PASS_LABELS = {'bacnet': 'BACnet/IP', 'mstp': 'BACnet MS/TP', 'modbus': 'Modbus TCP',

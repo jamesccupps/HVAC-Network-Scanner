@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 # Device fields worth reporting a change on, in report order.
 # (path, human label) where path is either a top-level key or 'properties.<k>'.
@@ -75,6 +75,9 @@ class ScanDiff:
     unchanged: int = 0
     # BACnet instances that more than one device answers to, in this scan.
     duplicates: dict[str, list[str]] = field(default_factory=dict)
+    # Baseline devices of a protocol whose pass did not run in this scan,
+    # by why ("BACnet skipped: ..."). They are neither gone nor present.
+    not_compared: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def has_changes(self) -> bool:
@@ -89,7 +92,10 @@ class ScanDiff:
                 'removed': len(self.removed),
                 'changed': len(self.changed),
                 'unchanged': self.unchanged,
+                'not_compared': sum(len(v) for v in self.not_compared.values()),
             },
+            'not_compared': {why: [_summarize(d) for d in devs]
+                             for why, devs in self.not_compared.items()},
             'added': [_summarize(d) for d in self.added],
             'removed': [_summarize(d) for d in self.removed],
             'changed': [
@@ -204,8 +210,50 @@ def _summarize(dev: dict[str, Any]) -> dict[str, Any]:
 # the diff
 # ---------------------------------------------------------------------------
 
+# Which passes find a device of each protocol (coverage.passes keys), and
+# what to call them. MS/TP devices need the BACnet pass as well as their own.
+_PROTOCOL_PASSES: dict[str, tuple[str, ...]] = {
+    'BACnet/IP': ('bacnet',), 'BACnet/MSTP': ('bacnet', 'mstp'),
+    'Modbus TCP': ('modbus',), 'APOGEE P2': ('p2',), 'KNXnet/IP': ('knx',),
+    'LonWorks/IP': ('lon',), 'Moxa': ('gateways',), 'Service': ('services',),
+    'SNMP': ('snmp',),
+}
+PASS_LABELS = {'all': 'The scan', 'bacnet': 'BACnet', 'mstp': 'MS/TP', 'modbus': 'Modbus',
+               'p2': 'APOGEE P2', 'knx': 'KNXnet/IP', 'lon': 'LonWorks/IP',
+               'gateways': 'Serial gateways', 'services': 'Services', 'snmp': 'SNMP'}
+
+
+def pass_gap(key: str, status: str) -> str:
+    """'BACnet skipped: the BBMD did not answer', for a pass that didn't scan."""
+    return f"{PASS_LABELS.get(key, key)} {status}"
+
+
+def _unscanned_pass(dev: dict[str, Any], passes: dict[str, Any]) -> Optional[str]:
+    """The pass that didn't scan this device's protocol in `passes`, or None.
+
+    An export without coverage (older than 2.5) compares everything, as before.
+    """
+    if not passes:
+        return None
+    if 'all' in passes and passes['all'] != 'scanned':
+        return 'all'
+    for key in _PROTOCOL_PASSES.get(str(dev.get('protocol') or ''), ()):
+        status = passes.get(key)
+        if status is not None and status != 'scanned':
+            return key
+    return None
+
+
 def diff_scans(baseline: dict[str, Any], current: dict[str, Any]) -> ScanDiff:
-    """Compare two scan exports (the dicts written by ScanResult.write_json)."""
+    """Compare two scan exports (the dicts written by ScanResult.write_json).
+
+    A baseline device of a protocol whose pass did not run in the current
+    scan (skipped, failed, stopped, or turned off) is "not compared", not
+    "not responding": until 2.16 a BBMD that didn't answer made every BACnet
+    device of the site look gone.
+    """
+    passes = (current.get('coverage') or {}).get('passes')
+    passes = passes if isinstance(passes, dict) else {}
     dup_now = duplicate_instances(current.get('devices', []))
     duplicated = set(dup_now) | set(duplicate_instances(baseline.get('devices', [])))
     base_devs = {device_key(d, duplicated): d for d in baseline.get('devices', [])}
@@ -220,7 +268,12 @@ def diff_scans(baseline: dict[str, Any], current: dict[str, Any]) -> ScanDiff:
     for key in cur_devs.keys() - base_devs.keys():
         out.added.append(cur_devs[key])
     for key in base_devs.keys() - cur_devs.keys():
-        out.removed.append(base_devs[key])
+        dev = base_devs[key]
+        gap = _unscanned_pass(dev, passes)
+        if gap:
+            out.not_compared.setdefault(pass_gap(gap, str(passes[gap])), []).append(dev)
+        else:
+            out.removed.append(dev)
 
     for key in sorted(base_devs.keys() & cur_devs.keys()):
         before, after = base_devs[key], cur_devs[key]
@@ -241,6 +294,8 @@ def diff_scans(baseline: dict[str, Any], current: dict[str, Any]) -> ScanDiff:
 
     out.added.sort(key=lambda d: str(d.get('ip', '')))
     out.removed.sort(key=lambda d: str(d.get('ip', '')))
+    for devs in out.not_compared.values():
+        devs.sort(key=lambda d: str(d.get('ip', '')))
     return out
 
 
@@ -272,10 +327,17 @@ def format_text(diff: ScanDiff, show_unchanged: bool = False) -> str:
         dup_lines += [f"  ! device {inst} answers at {', '.join(where)}"
                       for inst, where in sorted(diff.duplicates.items())]
 
+    gap_lines = []
+    if diff.not_compared:
+        n = sum(len(v) for v in diff.not_compared.values())
+        gap_lines += ["", f"NOT COMPARED ({n})", "-" * 70]
+        gap_lines += [f"  ? {why}: {len(devs)} device(s) from the baseline not checked"
+                      for why, devs in diff.not_compared.items()]
+
     if not diff.has_changes:
         add("")
         add(f"No changes. {diff.unchanged} device(s) match the baseline.")
-        lines += dup_lines
+        lines += gap_lines + dup_lines
         return "\n".join(lines) + "\n"
 
     if diff.added:
@@ -311,11 +373,13 @@ def format_text(diff: ScanDiff, show_unchanged: bool = False) -> str:
             for c in d.changes:
                 add(f"      {c}")
 
-    lines += dup_lines
+    lines += gap_lines + dup_lines
     add("")
     add("=" * 70)
+    skipped = sum(len(v) for v in diff.not_compared.values())
     add(f"{len(diff.added)} new, {len(diff.removed)} not responding, "
-        f"{len(diff.changed)} changed, {diff.unchanged} unchanged")
+        f"{len(diff.changed)} changed, {diff.unchanged} unchanged"
+        + (f", {skipped} not compared" if skipped else ""))
     if show_unchanged:
         add("(unchanged devices omitted from the detail above)")
     return "\n".join(lines) + "\n"

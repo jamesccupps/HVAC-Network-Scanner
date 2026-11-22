@@ -139,6 +139,8 @@ class BACnetClient:
         self._request_counts: dict[str, list[int]] = {}
         # Per thread: whether its last confirmed request got no reply at all.
         self._local = threading.local()
+        # The last _request_many's (seconds waited, last reply at, replies).
+        self.last_wait: tuple = (0.0, None, 0)
         # ip -> recent reply times (seconds), for the adaptive timeout.
         self._reply_times: dict[str, deque] = {}
         # ip -> seconds spent waiting on requests that were never answered.
@@ -318,7 +320,9 @@ class BACnetClient:
             return []
 
         window = self.timeout if wait is None else wait
-        return self._collect_iam(deadline=time.time() + window + extra_wait)
+        return self._collect_iam(deadline=time.time() + window + extra_wait,
+                                 what=(None if (low, high) != (None, None) else
+                                       "Who-Is" if dnet is None else f"Who-Is to network {dnet}"))
 
     def discover_who_is_networks(self, target_ip: str, dnets: "list[int]",
                                  extra_wait: float = 0.0,
@@ -344,7 +348,8 @@ class BACnetClient:
             if spacing_s and i < len(dnets) - 1:
                 time.sleep(spacing_s)
         wanted = set(dnets)
-        return [d for d in self._collect_iam(deadline=time.time() + self.timeout + extra_wait)
+        return [d for d in self._collect_iam(deadline=time.time() + self.timeout + extra_wait,
+                                             what="routed Who-Is")
                 if d.get('source_network') in wanted]
 
     # -- BBMD / foreign device -------------------------------------------
@@ -446,7 +451,8 @@ class BACnetClient:
             self._log(f"  BBMD Who-Is send error: {e}")
             return []
         window = self.timeout if wait is None else wait
-        return self._collect_iam(deadline=time.time() + window + extra_wait)
+        return self._collect_iam(deadline=time.time() + window + extra_wait,
+                                 what=None if (low, high) != (None, None) else "Who-Is through the BBMD")
 
     def discover_routers(self, target_ip: str = "255.255.255.255") -> tuple[list[dict], list[int]]:
         """Send Who-Is-Router-To-Network. Returns (routers, networks)."""
@@ -462,12 +468,16 @@ class BACnetClient:
 
         routers: list[dict[str, Any]] = []
         networks: set[int] = set()
-        deadline = time.time() + self.timeout
+        started, last = time.time(), None
+        deadline = started + self.timeout
 
         old_timeout = self._sock.gettimeout()
-        self._sock.settimeout(self.timeout)
         try:
             while time.time() < deadline:
+                # The time left, not the whole timeout: one unrelated datagram
+                # just before the end used to stretch the window to twice its
+                # length (audit 2026-11-21).
+                self._sock.settimeout(max(0.01, deadline - time.time()))
                 try:
                     data, addr = self._sock.recvfrom(4096)
                 except socket.timeout:
@@ -482,6 +492,7 @@ class BACnetClient:
                     # the BBMD the datagram came from.
                     ip, port = codec.forwarded_origin(data) or addr
                     networks.update(parsed)
+                    last = time.time() - started
                     # A router can be heard twice, directly and through a
                     # BBMD: one entry each, its networks merged.
                     known = next((r for r in routers if r['ip'] == ip), None)
@@ -493,7 +504,7 @@ class BACnetClient:
                         self._log(f"  Router at {ip} -> networks: {known['networks']}")
         finally:
             self._sock.settimeout(old_timeout)
-
+        self._log_wait("Who-Is-Router-To-Network", deadline - started, last, len(routers))
         return routers, sorted(networks)
 
     def discover_routers_unicast(self, ips: "list[str]", pace_s: float = 0.002,
@@ -603,13 +614,30 @@ class BACnetClient:
         finally:
             self._sock.settimeout(old_timeout)
 
-    def _collect_iam(self, deadline: float) -> list[dict[str, Any]]:
+    def _log_wait(self, what: Optional[str], waited: float, last: Optional[float],
+                  n: int) -> None:
+        """When the last answer of a discovery wait came, in the scan log: the
+        waits are fixed lengths (`waited` is the planned one), and a site's
+        log shows how long each needs to be before any is shortened (audit
+        2026-11-21). `what` None says nothing: chunked Who-Is, one wait per
+        instance range, would fill the log."""
+        if what is None:
+            return
+        if last is None:
+            self._log(f"    ({what}: no answer in the {waited:.1f} s wait)")
+        else:
+            self._log(f"    ({what}: {n} answer(s), the last {last:.1f} s into the "
+                      f"{waited:.1f} s wait)")
+
+    def _collect_iam(self, deadline: float,
+                     what: Optional[str] = "Who-Is") -> list[dict[str, Any]]:
         assert self._sock is not None
         out: list[dict[str, Any]] = []
         seen: dict[tuple[str, int], dict[str, Any]] = {}
         per_ip: dict[str, int] = {}
         flooding: set[str] = set()
         old_timeout = self._sock.gettimeout()
+        started, last = time.time(), None
         try:
             while time.time() < deadline:
                 remaining = max(0.1, deadline - time.time())
@@ -645,6 +673,7 @@ class BACnetClient:
                 per_ip[device.ip] = per_ip.get(device.ip, 0) + 1
                 seen[key] = _iam_to_dict(device)
                 out.append(seen[key])
+                last = time.time() - started
                 # v2.1.2: Don't log per-I-Am here. The engine applies a
                 # target-spec filter to the results and logs the kept
                 # devices (and a summary of how many were dropped).
@@ -653,6 +682,7 @@ class BACnetClient:
                 # be deep-scanned.
         finally:
             self._sock.settimeout(old_timeout)
+        self._log_wait(what, deadline - started, last, len(out))
         return out
 
     # -- ReadProperty -----------------------------------------------------
@@ -853,14 +883,26 @@ class BACnetClient:
                     log.debug("sendto %s failed: %s", ip, e)
                 if pace_s:
                     time.sleep(pace_s)
-            deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+            started = time.monotonic()
+            deadline = started + (self.timeout if timeout is None else timeout)
+            heard, last = 0, None
             while time.monotonic() < deadline:
                 with self._lock:
-                    if all(self._pending.get(k) is not None for k in keys):
-                        break
+                    n = sum(1 for k in keys if self._pending.get(k) is not None)
+                if n > heard:
+                    heard, last = n, time.monotonic() - started
+                if n == len(keys):
+                    break
                 if stop_fn and stop_fn():
                     break
                 self._read_and_route(min(0.25, deadline - time.monotonic()))
+            with self._lock:
+                n = sum(1 for k in keys if self._pending.get(k) is not None)
+            if n > heard:
+                heard, last = n, time.monotonic() - started
+            # (seconds waited, when the last reply came or None, replies) for
+            # callers that log their wait (see _log_wait).
+            self.last_wait = (deadline - started, last, heard)
             out: dict[str, Any] = {}
             with self._lock:
                 answered = {k: self._pending.get(k) for k in keys}
@@ -901,6 +943,7 @@ class BACnetClient:
         found: dict[str, int] = {}
         answered: set[str] = set()
         refused = 0
+        waits: list[tuple] = []
 
         def ask(addresses: "list[str]") -> None:
             nonlocal refused
@@ -914,6 +957,7 @@ class BACnetClient:
                         'Device', 4194303, 'objectIdentifier', invoke_id=inv), inv))
                 replies = self._request_many(reqs, parser=codec.parse_read_property_ack,
                                              stop_fn=stop_fn)
+                waits.append(self.last_wait)
                 for ip, value in replies.items():
                     answered.add(ip)
                     if (isinstance(value, tuple) and len(value) == 2
@@ -923,6 +967,10 @@ class BACnetClient:
                         refused += 1
 
         ask(list(ips))
+        if waits:
+            lasts = [w[1] for w in waits if w[1] is not None]
+            self._log_wait("unicast probe", max(w[0] for w in waits),
+                           max(lasts) if lasts else None, sum(w[2] for w in waits))
         # Ask the silent addresses once more: a controller on a lossy link
         # can miss one probe (on one site a different controller went
         # missing from each of two scans). Only where something answered,
