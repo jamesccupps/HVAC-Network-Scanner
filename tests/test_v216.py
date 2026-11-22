@@ -284,7 +284,11 @@ def test_a_discovery_wait_logs_its_last_answer(mock_client):
     client = mock_client(timeout=1.0)
     client._log = lines.append
     client.discover_who_is(target_ip="127.0.0.1")
-    assert any("Who-Is: no answer in the" in line for line in lines), lines
+    assert any("Who-Is: no answer in the 1.0 s wait" in line for line in lines), lines
+    # A chunk of a chunked Who-Is says nothing: there is one wait per range.
+    lines.clear()
+    client.discover_who_is(target_ip="127.0.0.1", low=0, high=99, wait=0.2)
+    assert not any("wait)" in line for line in lines), lines
 
 
 # -- 10. exports and small things -------------------------------------------------------

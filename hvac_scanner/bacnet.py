@@ -321,7 +321,8 @@ class BACnetClient:
 
         window = self.timeout if wait is None else wait
         return self._collect_iam(deadline=time.time() + window + extra_wait,
-                                 what="Who-Is" if dnet is None else f"Who-Is to network {dnet}")
+                                 what=(None if (low, high) != (None, None) else
+                                       "Who-Is" if dnet is None else f"Who-Is to network {dnet}"))
 
     def discover_who_is_networks(self, target_ip: str, dnets: "list[int]",
                                  extra_wait: float = 0.0,
@@ -451,7 +452,7 @@ class BACnetClient:
             return []
         window = self.timeout if wait is None else wait
         return self._collect_iam(deadline=time.time() + window + extra_wait,
-                                 what="Who-Is through the BBMD")
+                                 what=None if (low, high) != (None, None) else "Who-Is through the BBMD")
 
     def discover_routers(self, target_ip: str = "255.255.255.255") -> tuple[list[dict], list[int]]:
         """Send Who-Is-Router-To-Network. Returns (routers, networks)."""
@@ -503,7 +504,7 @@ class BACnetClient:
                         self._log(f"  Router at {ip} -> networks: {known['networks']}")
         finally:
             self._sock.settimeout(old_timeout)
-        self._log_wait("Who-Is-Router-To-Network", time.time() - started, last, len(routers))
+        self._log_wait("Who-Is-Router-To-Network", deadline - started, last, len(routers))
         return routers, sorted(networks)
 
     def discover_routers_unicast(self, ips: "list[str]", pace_s: float = 0.002,
@@ -613,12 +614,14 @@ class BACnetClient:
         finally:
             self._sock.settimeout(old_timeout)
 
-    def _log_wait(self, what: str, waited: float, last: Optional[float], n: int) -> None:
+    def _log_wait(self, what: Optional[str], waited: float, last: Optional[float],
+                  n: int) -> None:
         """When the last answer of a discovery wait came, in the scan log: the
-        waits are fixed lengths, and a site's log shows how long each needs to
-        be before any is shortened (audit 2026-11-21). Short waits (chunked
-        Who-Is) say nothing: there can be thousands."""
-        if waited < 1.0:
+        waits are fixed lengths (`waited` is the planned one), and a site's
+        log shows how long each needs to be before any is shortened (audit
+        2026-11-21). `what` None says nothing: chunked Who-Is, one wait per
+        instance range, would fill the log."""
+        if what is None:
             return
         if last is None:
             self._log(f"    ({what}: no answer in the {waited:.1f} s wait)")
@@ -626,7 +629,8 @@ class BACnetClient:
             self._log(f"    ({what}: {n} answer(s), the last {last:.1f} s into the "
                       f"{waited:.1f} s wait)")
 
-    def _collect_iam(self, deadline: float, what: str = "Who-Is") -> list[dict[str, Any]]:
+    def _collect_iam(self, deadline: float,
+                     what: Optional[str] = "Who-Is") -> list[dict[str, Any]]:
         assert self._sock is not None
         out: list[dict[str, Any]] = []
         seen: dict[tuple[str, int], dict[str, Any]] = {}
@@ -678,7 +682,7 @@ class BACnetClient:
                 # be deep-scanned.
         finally:
             self._sock.settimeout(old_timeout)
-        self._log_wait(what, time.time() - started, last, len(out))
+        self._log_wait(what, deadline - started, last, len(out))
         return out
 
     # -- ReadProperty -----------------------------------------------------
@@ -898,7 +902,7 @@ class BACnetClient:
                 heard, last = n, time.monotonic() - started
             # (seconds waited, when the last reply came or None, replies) for
             # callers that log their wait (see _log_wait).
-            self.last_wait = (time.monotonic() - started, last, heard)
+            self.last_wait = (deadline - started, last, heard)
             out: dict[str, Any] = {}
             with self._lock:
                 answered = {k: self._pending.get(k) for k in keys}
